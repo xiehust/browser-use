@@ -101,7 +101,7 @@ class Workflow:
 			# Each step should have exactly one key (action name) and its parameters
 			action_name = next(iter(step_data.keys()))
 			parameters = step_data[action_name]
-			interacted_element = parameters.get('interacted_element', None)
+			interacted_element = step_data.get('interacted_element', None)
 			action = WorkflowAction(
 				action_name=action_name,
 				parameters=parameters or {},

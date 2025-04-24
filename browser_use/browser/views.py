@@ -1,10 +1,13 @@
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from pydantic import BaseModel
 
-from browser_use.dom.history_tree_processor.service import DOMHistoryElement
+from browser_use.dom.history_tree_processor.view import DOMHistoryElement
 from browser_use.dom.views import DOMState
+
+if TYPE_CHECKING:
+	pass
 
 
 # Pydantic

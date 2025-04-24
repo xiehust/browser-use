@@ -470,6 +470,9 @@ class Agent(Generic[Context]):
 						new_action = await self._update_action_indices(interacted_element, model_output.action[0], state)
 						if new_action:
 							model_output.action[0] = new_action
+							logger.info(f'Updated action: {model_output.action[0]}')
+						else:
+							raise ValueError('Workflow element not found in current state')
 
 				else:
 					model_output = await self.get_next_action(input_messages)

@@ -1,9 +1,11 @@
 import hashlib
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-from browser_use.browser.context import BrowserContext
 from browser_use.dom.history_tree_processor.view import DOMHistoryElement, HashedDomElement
 from browser_use.dom.views import DOMElementNode
+
+if TYPE_CHECKING:
+	pass
 
 
 class HistoryTreeProcessor:
@@ -15,9 +17,9 @@ class HistoryTreeProcessor:
 
 	@staticmethod
 	def convert_dom_element_to_history_element(dom_element: DOMElementNode) -> DOMHistoryElement:
-		from browser_use.browser.context import BrowserContext
-
 		parent_branch_path = HistoryTreeProcessor._get_parent_branch_path(dom_element)
+		from browser_use.browser.context import BrowserContext  # Import here to avoid circular dependency
+
 		css_selector = BrowserContext._enhanced_css_selector_for_element(dom_element)
 		return DOMHistoryElement(
 			dom_element.tag_name,
@@ -103,6 +105,8 @@ class HistoryTreeProcessor:
 		branch_path_hash = HistoryTreeProcessor._parent_branch_path_hash(parent_branch_path)
 		attributes_hash = HistoryTreeProcessor._attributes_hash(dom_element.attributes)
 		xpath_hash = HistoryTreeProcessor._xpath_hash(dom_element.xpath)
+		from browser_use.browser.context import BrowserContext  # Import here to avoid circular dependency
+
 		css_selector = BrowserContext._enhanced_css_selector_for_element(dom_element)
 
 		# text_hash = DomTreeProcessor._text_hash(dom_element)
