@@ -1,4 +1,9 @@
 repos:
+  # - repo: https://github.com/frostming/fix-future-annotations
+  #   rev: 0.5.0
+  #   hooks:
+  #     - id: fix-future-annotations
+
   # - repo: https://github.com/asottile/reorder-python-imports
   #   rev: v3.14.0
   #   hooks:
@@ -30,6 +35,7 @@ repos:
     rev: v0.11.2
     hooks:
       - id: ruff
+        args: ["--fix", "--show-fixes"]
       - id: ruff-format
       # see pyproject.toml for more details on ruff config
 
