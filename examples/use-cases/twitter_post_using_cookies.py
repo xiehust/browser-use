@@ -22,7 +22,7 @@ llm = ChatGoogleGenerativeAI(model='gemini-2.0-flash-exp', api_key=SecretStr(api
 browser = Browser(
 	config=BrowserConfig(
 		# browser_binary_path='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-	)
+	),
 )
 file_path = os.path.join(os.path.dirname(__file__), 'twitter_cookies.txt')
 context = BrowserContext(browser=browser, config=BrowserContextConfig(cookies_file=file_path))

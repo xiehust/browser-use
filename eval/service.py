@@ -223,7 +223,7 @@ The potentially important snapshots of the webpage in the agent's trajectory and
 		if int(score) >= score_threshold:
 			jpg_base64_str = encode_image(Image.open(image_path))
 			whole_content_img.append(
-				{'type': 'image_url', 'image_url': {'url': f'data:image/png;base64,{jpg_base64_str}', 'detail': 'high'}}
+				{'type': 'image_url', 'image_url': {'url': f'data:image/png;base64,{jpg_base64_str}', 'detail': 'high'}},
 			)
 			if thought != '':
 				whole_thoughts.append(thought)
@@ -368,7 +368,7 @@ def get_llm(model_name: str):
 
 	if not api_key and api_key_env:
 		logger.warning(
-			f'API key environment variable {api_key_env} not found or empty for model {model_name}. Trying without API key if possible.'
+			f'API key environment variable {api_key_env} not found or empty for model {model_name}. Trying without API key if possible.',
 		)
 		api_key = None
 
@@ -417,7 +417,7 @@ def get_llm(model_name: str):
 			# If base_url is present but key is missing, we might still error depending on the endpoint's auth requirements.
 			# Log a warning here, the constructor will likely raise an error if the key is truly required.
 			logger.warning(
-				f'API key for {model_name} at {config["base_url"]} is missing, but base_url is specified. Authentication may fail.'
+				f'API key for {model_name} at {config["base_url"]} is missing, but base_url is specified. Authentication may fail.',
 			)
 		return ChatOpenAI(**kwargs)
 	else:
@@ -483,7 +483,7 @@ class TaskTracker:
 						'error': result.error,
 						'is_done': result.is_done,
 						'success': result.success,
-					}
+					},
 				)
 
 		# Record end time
@@ -536,7 +536,12 @@ class TaskTracker:
 
 
 async def run_agent_with_tracing(
-	task: Task, llm: BaseChatModel, run_id: str, browser: Browser | None = None, max_steps: int = 25, use_vision: bool = True
+	task: Task,
+	llm: BaseChatModel,
+	run_id: str,
+	browser: Browser | None = None,
+	max_steps: int = 25,
+	use_vision: bool = True,
 ):
 	try:
 		# Create task tracker
@@ -591,7 +596,11 @@ async def judge_task_result(model, task_folder: Path, score_threshold: float = 3
 		try:
 			# Await the async function directly instead of using asyncio.run()
 			eval_result = await Online_Mind2Web_eval_with_retry(
-				task_description, action_history, screenshot_paths, model, score_threshold
+				task_description,
+				action_history,
+				screenshot_paths,
+				model,
+				score_threshold,
 			)
 
 			if eval_result is None:
@@ -785,7 +794,7 @@ async def run_task_with_semaphore(
 
 				except Exception as e:
 					logger.warning(
-						f'Task {task.task_id}: Error reading existing result file {result_file}: {type(e).__name__}: {str(e)}. Proceeding with execution.'
+						f'Task {task.task_id}: Error reading existing result file {result_file}: {type(e).__name__}: {str(e)}. Proceeding with execution.',
 					)
 					# Keep execution_needed = True, payload defaults remain
 					execution_needed = True
@@ -825,7 +834,7 @@ async def run_task_with_semaphore(
 					else:
 						# This is unexpected if run_agent_with_tracing succeeded
 						logger.error(
-							f'Task {task.task_id}: Result file {result_file} missing after presumed successful execution.'
+							f'Task {task.task_id}: Result file {result_file} missing after presumed successful execution.',
 						)
 						raise FileNotFoundError(f'Result file not found after execution for task {task.task_id}')
 
@@ -847,7 +856,7 @@ async def run_task_with_semaphore(
 							await browser.close()
 						except Exception as browser_close_e:
 							logger.warning(
-								f'Task {task.task_id}: Error closing browser: {type(browser_close_e).__name__}: {browser_close_e}'
+								f'Task {task.task_id}: Error closing browser: {type(browser_close_e).__name__}: {browser_close_e}',
 							)
 
 			# 3. Evaluate Task (if needed and possible)
@@ -870,7 +879,7 @@ async def run_task_with_semaphore(
 						# Mark evaluation as succeeded only if the evaluation itself didn't report an error
 						if evaluation.get('error'):
 							logger.warning(
-								f'Task {task.task_id}: Evaluation completed but reported an error: {evaluation.get("error")}'
+								f'Task {task.task_id}: Evaluation completed but reported an error: {evaluation.get("error")}',
 							)
 							evaluation_succeeded = False
 						else:
@@ -886,7 +895,8 @@ async def run_task_with_semaphore(
 
 				except Exception as e:
 					logger.error(
-						f'Task {task.task_id}: Error during evaluation process: {type(e).__name__}: {str(e)}', exc_info=True
+						f'Task {task.task_id}: Error during evaluation process: {type(e).__name__}: {str(e)}',
+						exc_info=True,
 					)  # Add stack trace
 					evaluation_succeeded = False
 					# Update payload to reflect evaluation failure
@@ -975,7 +985,7 @@ async def run_multiple_tasks(
 				semaphore_runs=semaphore_runs,  # Pass the semaphore
 			)
 			for task in tasks_to_run
-		)
+		),
 	)
 
 	# After all tasks are complete, calculate a local summary
@@ -1047,12 +1057,18 @@ def get_git_info():
 	"""Retrieves git branch, commit hash, and commit timestamp using subprocess."""
 	try:
 		branch = subprocess.run(
-			['git', 'rev-parse', '--abbrev-ref', 'HEAD'], capture_output=True, text=True, check=True
+			['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
+			capture_output=True,
+			text=True,
+			check=True,
 		).stdout.strip()
 		commit_hash = subprocess.run(['git', 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
 		# Get commit timestamp as Unix epoch integer
 		commit_timestamp_str = subprocess.run(
-			['git', 'log', '-1', '--format=%ct'], capture_output=True, text=True, check=True
+			['git', 'log', '-1', '--format=%ct'],
+			capture_output=True,
+			text=True,
+			check=True,
 		).stdout.strip()
 		commit_timestamp = int(commit_timestamp_str)
 		return {'branch': branch, 'hash': commit_hash, 'timestamp': commit_timestamp}
@@ -1173,7 +1189,11 @@ if __name__ == '__main__':
 	parser.add_argument('--headless', action='store_true', help='Run in headless mode')
 	parser.add_argument('--evaluate-only', action='store_true', help='Only evaluate existing results without running new tasks')
 	parser.add_argument(
-		'--model', type=str, default='gpt-4o', choices=list(SUPPORTED_MODELS.keys()), help='Model to use for the agent'
+		'--model',
+		type=str,
+		default='gpt-4o',
+		choices=list(SUPPORTED_MODELS.keys()),
+		help='Model to use for the agent',
 	)
 	parser.add_argument('--no-vision', action='store_true', help='Disable vision capabilities in the agent')
 	parser.add_argument(
@@ -1256,7 +1276,7 @@ if __name__ == '__main__':
 			logger.info(f'Successfully loaded {len(tasks)} tasks from the server.')
 		except TypeError as e:
 			logger.error(
-				f'Error creating Task objects from fetched data. Ensure the data structure matches Task requirements (task_id, confirmed_task, etc.). Error: {type(e).__name__}: {e}'
+				f'Error creating Task objects from fetched data. Ensure the data structure matches Task requirements (task_id, confirmed_task, etc.). Error: {type(e).__name__}: {e}',
 			)
 			logger.error(f'First item in fetched data: {fetched_task_data[0] if fetched_task_data else "None"}')
 			exit(1)
@@ -1316,7 +1336,7 @@ if __name__ == '__main__':
 				headless=args.headless,
 				use_vision=not args.no_vision,
 				fresh_start=args.fresh_start,
-			)
+			),
 		)
 
 		logger.info('Task completed. Saving results...')

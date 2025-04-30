@@ -21,7 +21,8 @@ async def main():
 
 		async def get_input():
 			return await asyncio.get_event_loop().run_in_executor(
-				None, lambda: input('Enter task (p: pause current agent, r: resume, b: break): ')
+				None,
+				lambda: input('Enter task (p: pause current agent, r: resume, b: break): '),
 			)
 
 		while True:

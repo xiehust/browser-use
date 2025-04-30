@@ -50,7 +50,7 @@ llm = get_llm(args.provider)
 browser = Browser(
 	config=BrowserConfig(
 		# browser_binary_path='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-	)
+	),
 )
 
 browser_context = BrowserContext(config=BrowserContextConfig(user_agent='foobarfoo'), browser=browser)

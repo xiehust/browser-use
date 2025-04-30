@@ -23,7 +23,7 @@ browser = Browser(
 	config=BrowserConfig(
 		headless=False,
 		browser_binary_path='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-	)
+	),
 )
 controller = Controller()
 

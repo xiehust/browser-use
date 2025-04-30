@@ -105,7 +105,8 @@ class BrowserConfig(BaseModel):
 
 	browser_class: Literal['chromium', 'firefox', 'webkit'] = 'chromium'
 	browser_binary_path: str | None = Field(
-		default=None, validation_alias=AliasChoices('browser_instance_path', 'chrome_instance_path')
+		default=None,
+		validation_alias=AliasChoices('browser_instance_path', 'chrome_instance_path'),
 	)
 	chrome_remote_debugging_port: int | None = CHROME_DEBUG_PORT
 	extra_browser_args: list[str] = Field(default_factory=list)
@@ -167,7 +168,7 @@ class Browser:
 		"""Sets up and returns a Playwright Browser instance with anti-detection measures. Firefox has no longer CDP support."""
 		if 'firefox' in (self.config.browser_binary_path or '').lower():
 			raise ValueError(
-				'CDP has been deprecated for firefox, check: https://fxdx.dev/deprecating-cdp-support-in-firefox-embracing-the-future-with-webdriver-bidi/'
+				'CDP has been deprecated for firefox, check: https://fxdx.dev/deprecating-cdp-support-in-firefox-embracing-the-future-with-webdriver-bidi/',
 			)
 		if not self.config.cdp_url:
 			raise ValueError('CDP URL is required')
@@ -198,11 +199,12 @@ class Browser:
 			# Check if browser is already running
 			async with httpx.AsyncClient() as client:
 				response = await client.get(
-					f'http://localhost:{self.config.chrome_remote_debugging_port}/json/version', timeout=2
+					f'http://localhost:{self.config.chrome_remote_debugging_port}/json/version',
+					timeout=2,
 				)
 				if response.status_code == 200:
 					logger.info(
-						f'🔌  Reusing existing browser found running on http://localhost:{self.config.chrome_remote_debugging_port}'
+						f'🔌  Reusing existing browser found running on http://localhost:{self.config.chrome_remote_debugging_port}',
 					)
 					browser_class = getattr(playwright, self.config.browser_class)
 					browser = await browser_class.connect_over_cdp(
@@ -239,7 +241,8 @@ class Browser:
 			try:
 				async with httpx.AsyncClient() as client:
 					response = await client.get(
-						f'http://localhost:{self.config.chrome_remote_debugging_port}/json/version', timeout=2
+						f'http://localhost:{self.config.chrome_remote_debugging_port}/json/version',
+						timeout=2,
 					)
 					if response.status_code == 200:
 						break
@@ -258,7 +261,7 @@ class Browser:
 		except Exception as e:
 			logger.error(f'❌  Failed to start a new Chrome instance: {str(e)}')
 			raise RuntimeError(
-				'To start chrome in Debug mode, you need to close all existing Chrome instances and try again otherwise we can not connect to the instance.'
+				'To start chrome in Debug mode, you need to close all existing Chrome instances and try again otherwise we can not connect to the instance.',
 			)
 
 	async def _setup_builtin_browser(self, playwright: Playwright) -> PlaywrightBrowser:
@@ -297,13 +300,13 @@ class Browser:
 				*{
 					'-no-remote',
 					*self.config.extra_browser_args,
-				}
+				},
 			],
 			'webkit': [
 				*{
 					'--no-startup-window',
 					*self.config.extra_browser_args,
-				}
+				},
 			],
 		}
 

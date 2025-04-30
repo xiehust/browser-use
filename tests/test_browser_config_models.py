@@ -13,7 +13,10 @@ async def test_proxy_settings_pydantic_model():
 	"""
 	# Create ProxySettings with Pydantic model
 	proxy_settings = ProxySettings(
-		server='http://example.proxy:8080', bypass='localhost', username='testuser', password='testpass'
+		server='http://example.proxy:8080',
+		bypass='localhost',
+		username='testuser',
+		password='testpass',
 	)
 
 	# Verify the model has correct dict-like access
@@ -167,7 +170,10 @@ async def test_proxy_with_real_browser():
 	"""
 	# Create proxy settings with a fake proxy server
 	proxy_settings = ProxySettings(
-		server='http://non.existent.proxy:9999', bypass='localhost', username='testuser', password='testpass'
+		server='http://non.existent.proxy:9999',
+		bypass='localhost',
+		username='testuser',
+		password='testpass',
 	)
 
 	# Test model serialization

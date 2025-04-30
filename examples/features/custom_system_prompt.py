@@ -26,7 +26,7 @@ async def main():
 		json.dumps(
 			agent.message_manager.system_prompt.model_dump(exclude_unset=True),
 			indent=4,
-		)
+		),
 	)
 
 	await agent.run()

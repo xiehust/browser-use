@@ -54,7 +54,11 @@ class TestAgent:
 		"""
 		# Arrange
 		agent = Agent(
-			task='Test task', llm=mock_llm, controller=mock_controller, browser=mock_browser, browser_context=mock_browser_context
+			task='Test task',
+			llm=mock_llm,
+			controller=mock_controller,
+			browser=mock_browser,
+			browser_context=mock_browser_context,
 		)
 		initial_actions = [{'test_action': {'param1': 'value1', 'param2': 'value2'}}]
 
@@ -70,7 +74,8 @@ class TestAgent:
 		# Assert
 		assert len(result) == 1
 		mock_controller.registry.registry.actions['test_action'].param_model.assert_called_once_with(  # type: ignore
-			param1='value1', param2='value2'
+			param1='value1',
+			param2='value2',
 		)
 		mock_action_model.assert_called_once()
 		assert isinstance(result[0], MagicMock)
@@ -109,7 +114,7 @@ class TestAgent:
 					tabs=[],
 					selector_map={},
 					screenshot='',
-				)
+				),
 			)
 
 			# Mock the controller
@@ -202,7 +207,9 @@ class TestRegistry:
 
 		# Execute the action with a browser context
 		result_with_browser = await registry.execute_action(
-			'test_action_with_browser', {'param1': 'test_value'}, browser=mock_browser
+			'test_action_with_browser',
+			{'param1': 'test_value'},
+			browser=mock_browser,
 		)
 		assert result_with_browser == 'Action executed with test_value and browser'
 
@@ -216,7 +223,8 @@ class TestRegistry:
 
 		# Verify that the action functions were called with correct parameters
 		registry.registry.actions['test_action_with_browser'].function.assert_called_once_with(
-			param1='test_value', browser=mock_browser
+			param1='test_value',
+			browser=mock_browser,
 		)
 		registry.registry.actions['test_action_without_browser'].function.assert_called_once_with(param1='test_value')
 
@@ -245,7 +253,7 @@ class TestAgentRetry:
 				tabs=[],
 				selector_map={},
 				screenshot='',
-			)
+			),
 		)
 		return browser_context
 

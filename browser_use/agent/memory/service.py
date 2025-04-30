@@ -75,7 +75,7 @@ class Memory:
 				from sentence_transformers import SentenceTransformer  # noqa: F401
 			except ImportError:
 				raise ImportError(
-					'sentence_transformers is required when enable_memory=True and embedder_provider="huggingface". Please install it with `pip install sentence-transformers`.'
+					'sentence_transformers is required when enable_memory=True and embedder_provider="huggingface". Please install it with `pip install sentence-transformers`.',
 				)
 
 		# Initialize Mem0 with the configuration

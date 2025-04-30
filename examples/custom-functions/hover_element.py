@@ -25,7 +25,7 @@ class HoverAction(BaseModel):
 browser = Browser(
 	config=BrowserConfig(
 		headless=False,
-	)
+	),
 )
 controller = Controller()
 

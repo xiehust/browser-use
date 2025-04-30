@@ -46,7 +46,7 @@ browser = Browser(
 			browser_window_size=BrowserContextWindowSize(width=1280, height=1100),
 			# trace_path='./tmp/web_voyager_agent',
 		),
-	)
+	),
 )
 
 # TASK = """

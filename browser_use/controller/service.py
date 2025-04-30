@@ -219,7 +219,10 @@ class Controller(Generic[Context]):
 			'Extract page content to retrieve specific information from the page, e.g. all company names, a specific description, all information about, links with companies in structured format or simply links',
 		)
 		async def extract_content(
-			goal: str, should_strip_link_urls: bool, browser: BrowserContext, page_extraction_llm: BaseChatModel
+			goal: str,
+			should_strip_link_urls: bool,
+			browser: BrowserContext,
+			page_extraction_llm: BaseChatModel,
 		):
 			page = await browser.get_current_page()
 			import markdownify
@@ -670,7 +673,10 @@ class Controller(Generic[Context]):
 						return ActionResult(error=error_msg, include_in_memory=True)
 
 					source_coords, target_coords = await get_element_coordinates(
-						source_element, target_element, params.element_source_offset, params.element_target_offset
+						source_element,
+						target_element,
+						params.element_source_offset,
+						params.element_target_offset,
 					)
 
 					if not source_coords or not target_coords:

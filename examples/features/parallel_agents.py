@@ -15,7 +15,7 @@ browser = Browser(
 		disable_security=True,
 		headless=False,
 		new_context_config=BrowserContextConfig(save_recording_path='./tmp/recordings'),
-	)
+	),
 )
 llm = ChatOpenAI(model='gpt-4o')
 

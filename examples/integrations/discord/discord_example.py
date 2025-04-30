@@ -59,7 +59,7 @@ bot = DiscordBot(
 	prefix='$bu',  # optional; prefix of messages to trigger browser-use, defaults to "$bu"
 	ack=True,  # optional; whether to acknowledge task receipt with a message, defaults to False
 	browser_config=BrowserConfig(
-		headless=False
+		headless=False,
 	),  # optional; useful for changing headless mode or other browser configs, defaults to headless mode
 )
 

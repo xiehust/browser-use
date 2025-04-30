@@ -90,7 +90,7 @@ class MessageHistory(BaseModel):
 				'args': output.model_dump(mode='json', exclude_unset=True),
 				'id': '1',
 				'type': 'tool_call',
-			}
+			},
 		]
 
 		msg = AIMessage(

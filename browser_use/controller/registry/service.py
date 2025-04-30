@@ -214,8 +214,8 @@ class Registry(Generic[Context]):
 				registered_functions=[
 					RegisteredFunction(name=name, params=action.param_model.model_json_schema())
 					for name, action in available_actions.items()
-				]
-			)
+				],
+			),
 		)
 
 		return create_model('ActionModel', __base__=ActionModel, **fields)  # type:ignore

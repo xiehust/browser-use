@@ -57,7 +57,7 @@ async def test_focus_vs_all_elements():
 	browser = Browser(
 		config=BrowserConfig(
 			# browser_binary_path='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-		)
+		),
 	)
 	context = BrowserContext(browser=browser, config=config)
 
@@ -140,7 +140,7 @@ async def test_focus_vs_all_elements():
 									if target_index in selector_map:
 										element_node = selector_map[target_index]
 										print(
-											f"Inputting text '{text_to_input}' into element {target_index}: {element_node.tag_name}"
+											f"Inputting text '{text_to_input}' into element {target_index}: {element_node.tag_name}",
 										)
 										await context._input_text_element_node(element_node, text_to_input)
 										print('Input successful.')

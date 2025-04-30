@@ -56,7 +56,7 @@ async def test_highlight_elements():
 						json.dumps(
 							ElementTreeSerializer.dom_element_node_to_json(state.element_tree),
 							indent=1,
-						)
+						),
 					)
 
 				# await time_execution_sync('highlight_selector_map_elements')(

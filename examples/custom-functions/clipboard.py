@@ -16,7 +16,7 @@ from browser_use.browser.context import BrowserContext
 browser = Browser(
 	config=BrowserConfig(
 		headless=False,
-	)
+	),
 )
 controller = Controller()
 

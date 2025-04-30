@@ -20,8 +20,8 @@ browser = Browser(
 	config=BrowserConfig(
 		new_context_config=BrowserContextConfig(
 			viewport_expansion=0,
-		)
-	)
+		),
+	),
 )
 
 

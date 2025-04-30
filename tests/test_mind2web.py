@@ -32,7 +32,7 @@ async def browser(event_loop):
 	browser_instance = Browser(
 		config=BrowserConfig(
 			headless=True,
-		)
+		),
 	)
 	yield browser_instance
 	await browser_instance.close()

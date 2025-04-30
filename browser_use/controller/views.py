@@ -89,10 +89,12 @@ class DragDropAction(BaseModel):
 	element_source: Optional[str] = Field(None, description='CSS selector or XPath of the element to drag from')
 	element_target: Optional[str] = Field(None, description='CSS selector or XPath of the element to drop onto')
 	element_source_offset: Optional[Position] = Field(
-		None, description='Precise position within the source element to start drag (in pixels from top-left corner)'
+		None,
+		description='Precise position within the source element to start drag (in pixels from top-left corner)',
 	)
 	element_target_offset: Optional[Position] = Field(
-		None, description='Precise position within the target element to drop (in pixels from top-left corner)'
+		None,
+		description='Precise position within the target element to drop (in pixels from top-left corner)',
 	)
 
 	# Coordinate-based approach (used if selectors not provided)

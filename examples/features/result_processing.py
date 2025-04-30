@@ -17,7 +17,7 @@ browser = Browser(
 	config=BrowserConfig(
 		headless=False,
 		disable_security=True,
-	)
+	),
 )
 
 
@@ -27,7 +27,7 @@ async def main():
 			trace_path='./tmp/result_processing',
 			no_viewport=False,
 			browser_window_size={'width': 1280, 'height': 1000},
-		)
+		),
 	) as browser_context:
 		agent = Agent(
 			task="go to google.com and type 'OpenAI' click search and give me the first url",

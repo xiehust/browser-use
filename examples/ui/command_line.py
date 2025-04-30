@@ -55,7 +55,10 @@ def parse_arguments():
 	"""Parse command-line arguments."""
 	parser = argparse.ArgumentParser(description='Automate browser tasks using an LLM agent.')
 	parser.add_argument(
-		'--query', type=str, help='The query to process', default='go to reddit and search for posts about browser-use'
+		'--query',
+		type=str,
+		help='The query to process',
+		default='go to reddit and search for posts about browser-use',
 	)
 	parser.add_argument(
 		'--provider',

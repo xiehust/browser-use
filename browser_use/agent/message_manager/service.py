@@ -56,7 +56,7 @@ class MessageManager:
 			self._add_message_with_tokens(context_message, message_type='init')
 
 		task_message = HumanMessage(
-			content=f'Your ultimate task is: """{self.task}""". If you achieved your ultimate task, stop everything and use the done action in the next step to complete the task. If not, continue as usual.'
+			content=f'Your ultimate task is: """{self.task}""". If you achieved your ultimate task, stop everything and use the done action in the next step to complete the task. If not, continue as usual.',
 		)
 		self._add_message_with_tokens(task_message, message_type='init')
 
@@ -162,7 +162,7 @@ class MessageManager:
 				'args': model_output.model_dump(mode='json', exclude_unset=True),
 				'id': str(self.state.tool_id),
 				'type': 'tool_call',
-			}
+			},
 		]
 
 		msg = AIMessage(
@@ -195,7 +195,10 @@ class MessageManager:
 		return msg
 
 	def _add_message_with_tokens(
-		self, message: BaseMessage, position: int | None = None, message_type: str | None = None
+		self,
+		message: BaseMessage,
+		position: int | None = None,
+		message_type: str | None = None,
 	) -> None:
 		"""Add message with token count metadata
 		position: None for last, -1 for second last, etc.
@@ -270,7 +273,7 @@ class MessageManager:
 					msg.metadata.tokens -= self.settings.image_tokens
 					self.state.history.current_tokens -= self.settings.image_tokens
 					logger.debug(
-						f'Removed image with {self.settings.image_tokens} tokens - total tokens now: {self.state.history.current_tokens}/{self.settings.max_input_tokens}'
+						f'Removed image with {self.settings.image_tokens} tokens - total tokens now: {self.state.history.current_tokens}/{self.settings.max_input_tokens}',
 					)
 				elif 'text' in item and isinstance(item, dict):
 					text += item['text']
@@ -286,10 +289,10 @@ class MessageManager:
 		if proportion_to_remove > 0.99:
 			raise ValueError(
 				f'Max token limit reached - history is too long - reduce the system prompt or task. '
-				f'proportion_to_remove: {proportion_to_remove}'
+				f'proportion_to_remove: {proportion_to_remove}',
 			)
 		logger.debug(
-			f'Removing {proportion_to_remove * 100:.2f}% of the last message  {proportion_to_remove * msg.metadata.tokens:.2f} / {msg.metadata.tokens:.2f} tokens)'
+			f'Removing {proportion_to_remove * 100:.2f}% of the last message  {proportion_to_remove * msg.metadata.tokens:.2f} / {msg.metadata.tokens:.2f} tokens)',
 		)
 
 		content = msg.message.content
@@ -306,7 +309,7 @@ class MessageManager:
 		last_msg = self.state.history.messages[-1]
 
 		logger.debug(
-			f'Added message with {last_msg.metadata.tokens} tokens - total tokens now: {self.state.history.current_tokens}/{self.settings.max_input_tokens} - total messages: {len(self.state.history.messages)}'
+			f'Added message with {last_msg.metadata.tokens} tokens - total tokens now: {self.state.history.current_tokens}/{self.settings.max_input_tokens} - total messages: {len(self.state.history.messages)}',
 		)
 
 	def _remove_last_state_message(self) -> None:

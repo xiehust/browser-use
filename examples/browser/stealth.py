@@ -18,7 +18,7 @@ browser = Browser(
 			keep_alive=True,
 			disable_security=False,
 		),
-	)
+	),
 )
 
 

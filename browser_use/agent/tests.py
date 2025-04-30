@@ -98,7 +98,7 @@ def sample_history(action_registry):
 					is_done=False,
 					extracted_content='Extracted text',
 					error='Failed to extract completely',
-				)
+				),
 			],
 			state=BrowserStateHistory(
 				url='https://example.com/page2',

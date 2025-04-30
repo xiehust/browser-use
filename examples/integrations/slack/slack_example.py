@@ -30,7 +30,7 @@ slack_bot = SlackBot(
 	signing_secret=signing_secret,  # required; Slack signing secret
 	ack=True,  # optional; whether to acknowledge task receipt with a message, defaults to False
 	browser_config=BrowserConfig(
-		headless=True
+		headless=True,
 	),  # optional; useful for changing headless mode or other browser configs, defaults to headless mode
 )
 

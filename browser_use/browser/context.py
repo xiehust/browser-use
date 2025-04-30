@@ -163,7 +163,7 @@ class BrowserContextConfig(BaseModel):
 	disable_security: bool = False  # disable_security=True is dangerous as any malicious URL visited could embed an iframe for the user's bank, and use their cookies to steal money
 
 	browser_window_size: BrowserContextWindowSize = Field(
-		default_factory=lambda: BrowserContextWindowSize(width=1280, height=1100)
+		default_factory=lambda: BrowserContextWindowSize(width=1280, height=1100),
 	)
 	no_viewport: Optional[bool] = None
 
@@ -483,7 +483,7 @@ class BrowserContext:
 						if 'sameSite' in cookie:
 							if cookie['sameSite'] not in valid_same_site_values:
 								logger.warning(
-									f"Fixed invalid sameSite value '{cookie['sameSite']}' to 'None' for cookie {cookie.get('name')}"
+									f"Fixed invalid sameSite value '{cookie['sameSite']}' to 'None' for cookie {cookie.get('name')}",
 								)
 								cookie['sameSite'] = 'None'
 					logger.info(f'🍪  Loaded {len(cookies)} cookies from {self.config.cookies_file}')
@@ -503,7 +503,7 @@ class BrowserContext:
 					originalQuery(parameters)
 			);
 
-			"""
+			""",
 		)
 
 		return context
@@ -666,7 +666,7 @@ class BrowserContext:
 				if now - start_time > self.config.maximum_wait_page_load_time:
 					logger.debug(
 						f'Network timeout after {self.config.maximum_wait_page_load_time}s with {len(pending_requests)} '
-						f'pending requests: {[r.url for r in pending_requests]}'
+						f'pending requests: {[r.url for r in pending_requests]}',
 					)
 					break
 
@@ -1037,7 +1037,7 @@ class BrowserContext:
                 } catch (e) {
                     console.error('Failed to remove highlights:', e);
                 }
-                """
+                """,
 			)
 		except Exception as e:
 			logger.debug(f'⚠  Failed to remove highlights (this is usually ok): {str(e)}')
@@ -1240,7 +1240,8 @@ class BrowserContext:
 			current_frame = current_frame.frame_locator(css_selector)
 
 		css_selector = self._enhanced_css_selector_for_element(
-			element, include_dynamic_attributes=self.config.include_dynamic_attributes
+			element,
+			include_dynamic_attributes=self.config.include_dynamic_attributes,
 		)
 
 		try:
@@ -1302,7 +1303,10 @@ class BrowserContext:
 
 	@time_execution_async('--get_locate_element_by_text')
 	async def get_locate_element_by_text(
-		self, text: str, nth: Optional[int] = 0, element_type: Optional[str] = None
+		self,
+		text: str,
+		nth: Optional[int] = 0,
+		element_type: Optional[str] = None,
 	) -> Optional[ElementHandle]:
 		"""
 		Locates an element on the page using the provided text.

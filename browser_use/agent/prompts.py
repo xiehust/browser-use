@@ -131,7 +131,7 @@ Interactive elements from top layer of the current page inside the viewport:
 						'type': 'image_url',
 						'image_url': {'url': f'data:image/png;base64,{self.state.screenshot}'},  # , 'detail': 'low'
 					},
-				]
+				],
 			)
 
 		return HumanMessage(content=state_description)
@@ -142,7 +142,9 @@ class PlannerPrompt(SystemPrompt):
 		self.available_actions = available_actions
 
 	def get_system_message(
-		self, is_planner_reasoning: bool, extended_planner_system_prompt: Optional[str] = None
+		self,
+		is_planner_reasoning: bool,
+		extended_planner_system_prompt: Optional[str] = None,
 	) -> Union[SystemMessage, HumanMessage]:
 		"""Get the system message for the planner.
 

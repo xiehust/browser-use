@@ -213,7 +213,7 @@ class Agent(Generic[Context]):
 			self.settings.use_vision = False
 		if 'deepseek' in (self.planner_model_name or '').lower():
 			logger.warning(
-				'⚠️ DeepSeek models do not support use_vision=True yet. Setting use_vision_for_planner=False for now...'
+				'⚠️ DeepSeek models do not support use_vision=True yet. Setting use_vision_for_planner=False for now...',
 			)
 			self.settings.use_vision_for_planner = False
 		# Handle users trying to use use_vision=True with XAI models
@@ -233,7 +233,7 @@ class Agent(Generic[Context]):
 			f'planner_model={self.planner_model_name}'
 			f'{" +reasoning" if self.settings.is_planner_reasoning else ""}'
 			f'{" +vision" if self.settings.use_vision_for_planner else ""}, '
-			f'extraction_model={getattr(self.settings.page_extraction_llm, "model_name", None)} '
+			f'extraction_model={getattr(self.settings.page_extraction_llm, "model_name", None)} ',
 		)
 
 		# Verify we can connect to the LLM
@@ -275,7 +275,7 @@ class Agent(Generic[Context]):
 				)
 			except ImportError:
 				logger.warning(
-					'⚠️ Agent(enable_memory=True) is set but missing some required packages, install and re-run to use memory features: pip install browser-use[memory]'
+					'⚠️ Agent(enable_memory=True) is set but missing some required packages, install and re-run to use memory features: pip install browser-use[memory]',
 				)
 				self.memory = None
 				self.enable_memory = False
@@ -288,7 +288,8 @@ class Agent(Generic[Context]):
 		self.browser = browser or Browser()
 		self.browser.config.new_context_config.disable_security = self.browser.config.disable_security
 		self.browser_context = browser_context or BrowserContext(
-			browser=self.browser, config=self.browser.config.new_context_config
+			browser=self.browser,
+			config=self.browser.config.new_context_config,
 		)
 
 		# Callbacks
@@ -485,7 +486,7 @@ class Agent(Generic[Context]):
 					logger.warning('Model returned empty action. Retrying...')
 
 					clarification_message = HumanMessage(
-						content='You forgot to return an action. Please respond only with a valid JSON action according to the expected format.'
+						content='You forgot to return an action. Please respond only with a valid JSON action according to the expected format.',
 					)
 
 					retry_messages = input_messages + [clarification_message]
@@ -497,7 +498,7 @@ class Agent(Generic[Context]):
 							done={
 								'success': False,
 								'text': 'No next action returned by LLM!',
-							}
+							},
 						)
 						model_output.action = [action_instance]
 
@@ -548,8 +549,9 @@ class Agent(Generic[Context]):
 			# logger.debug('Agent paused')
 			self.state.last_result = [
 				ActionResult(
-					error='The agent was paused mid-step - the last action might need to be repeated', include_in_memory=False
-				)
+					error='The agent was paused mid-step - the last action might need to be repeated',
+					include_in_memory=False,
+				),
 			]
 			return
 		except asyncio.CancelledError:
@@ -571,7 +573,7 @@ class Agent(Generic[Context]):
 					actions=actions,
 					consecutive_failures=self.state.consecutive_failures,
 					step_error=[r.error for r in result if r.error] if result else ['No result'],
-				)
+				),
 			)
 			if not result:
 				return
@@ -603,7 +605,7 @@ class Agent(Generic[Context]):
 				# cut tokens from history
 				self._message_manager.settings.max_input_tokens = self.settings.max_input_tokens - 500
 				logger.info(
-					f'Cutting tokens from history - new max input tokens: {self._message_manager.settings.max_input_tokens}'
+					f'Cutting tokens from history - new max input tokens: {self._message_manager.settings.max_input_tokens}',
 				)
 				self._message_manager.cut_messages()
 			elif 'Could not parse response' in error_msg:
@@ -771,7 +773,7 @@ class Agent(Generic[Context]):
 				chat_model_library=self.chat_model_library,
 				version=self.version,
 				source=self.source,
-			)
+			),
 		)
 
 	async def take_step(self) -> tuple[bool, bool]:
@@ -800,7 +802,10 @@ class Agent(Generic[Context]):
 	# @observe(name='agent.run', ignore_output=True)
 	@time_execution_async('--run (agent)')
 	async def run(
-		self, max_steps: int = 100, on_step_start: AgentHookFunc | None = None, on_step_end: AgentHookFunc | None = None
+		self,
+		max_steps: int = 100,
+		on_step_start: AgentHookFunc | None = None,
+		on_step_end: AgentHookFunc | None = None,
 	) -> AgentHistoryList:
 		"""Execute the task with maximum number of steps"""
 
@@ -878,7 +883,7 @@ class Agent(Generic[Context]):
 							screenshot=None,
 						),
 						metadata=None,
-					)
+					),
 				)
 
 				logger.info(f'❌ {error_message}')
@@ -904,7 +909,7 @@ class Agent(Generic[Context]):
 					errors=self.state.history.errors(),
 					total_input_tokens=self.state.history.total_input_tokens(),
 					total_duration_seconds=self.state.history.total_duration_seconds(),
-				)
+				),
 			)
 
 			await self.close()
@@ -1255,7 +1260,7 @@ class Agent(Generic[Context]):
 
 			if test_answer in response_text:
 				logger.debug(
-					f'🪪 LLM API keys {", ".join(required_keys)} work, {self.llm.__class__.__name__} model is connected & responding correctly.'
+					f'🪪 LLM API keys {", ".join(required_keys)} work, {self.llm.__class__.__name__} model is connected & responding correctly.',
 				)
 				self.llm._verified_api_keys = True
 				return True
@@ -1271,7 +1276,7 @@ class Agent(Generic[Context]):
 			self.llm._verified_api_keys = False
 			if required_keys:
 				logger.error(
-					f'\n\n❌  LLM {self.llm.__class__.__name__} connection test failed. Check that {", ".join(required_keys)} is set correctly in .env and that the LLM API account has sufficient funding.\n\n{e}\n'
+					f'\n\n❌  LLM {self.llm.__class__.__name__} connection test failed. Check that {", ".join(required_keys)} is set correctly in .env and that the LLM API account has sufficient funding.\n\n{e}\n',
 				)
 				return False
 			else:

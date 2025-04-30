@@ -30,7 +30,7 @@ async def main():
 	browser = Browser(
 		config=BrowserConfig(
 			headless=True,
-		)
+		),
 	)
 
 	browser_context = await browser.new_context()

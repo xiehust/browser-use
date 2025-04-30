@@ -34,7 +34,7 @@ browser = Browser(
 	config=BrowserConfig(
 		headless=False,
 		cdp_url='http://localhost:9222',
-	)
+	),
 )
 controller = Controller()
 

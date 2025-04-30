@@ -8,7 +8,10 @@ class MemoryConfig(BaseModel):
 	"""Configuration for procedural memory."""
 
 	model_config = ConfigDict(
-		from_attributes=True, validate_default=True, revalidate_instances='always', validate_assignment=True
+		from_attributes=True,
+		validate_default=True,
+		revalidate_instances='always',
+		validate_assignment=True,
 	)
 
 	# Memory settings
