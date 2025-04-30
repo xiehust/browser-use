@@ -62,6 +62,7 @@ skip = "*.json"
 [tool.ruff]
 line-length = 130
 fix = true
+show-fixes = true
 
 [tool.ruff.lint]
 select = ["ASYNC", "E", "F", "FAST", "I", "PLE"]

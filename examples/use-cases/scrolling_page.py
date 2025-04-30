@@ -1,4 +1,11 @@
-# Goal: Automates webpage scrolling with various scrolling actions and text search functionality.
+"""
+Example: Using the 'Scroll down' action.
+
+This script demonstrates how the agent can navigate to a webpage and scroll down the content.
+If no amount is specified, the agent will scroll down by one page height.
+
+Goal: Automates webpage scrolling with various scrolling actions and text search functionality.
+"""
 
 import asyncio
 import os
@@ -17,12 +24,6 @@ load_dotenv()
 if not os.getenv('OPENAI_API_KEY'):
 	raise ValueError('OPENAI_API_KEY is not set')
 
-"""
-Example: Using the 'Scroll down' action.
-
-This script demonstrates how the agent can navigate to a webpage and scroll down the content.
-If no amount is specified, the agent will scroll down by one page height.
-"""
 
 llm = ChatOpenAI(model='gpt-4o')
 
