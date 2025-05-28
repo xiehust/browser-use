@@ -23,7 +23,7 @@ class InputTextAction(BaseModel):
 
 class DoneAction(BaseModel):
 	text: str
-	success: bool
+	success: bool = True
 
 
 class SwitchTabAction(BaseModel):
