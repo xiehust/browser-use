@@ -1396,7 +1396,7 @@ class BrowserSession(BaseModel):
 		"""Wait for the page to load."""
 		page = page or await self.get_current_page()
 		try:
-			await page.wait_for_load_state(wait_until=wait_until, timeout=timeout)
+			await page.wait_for_load_state(state=wait_until, timeout=timeout)
 		except Exception as e:
 			pass  # doesn't matter if it fails, continue anyway and the LLM can figure it out
 
