@@ -50,15 +50,9 @@ class TestBrowserContext:
 		server.stop()
 
 	@pytest.fixture
-	def base_url(self, http_server):
-		"""Return the base URL for the test HTTP server."""
-		return f'http://{http_server.host}:{http_server.port}'
-
-	@pytest.fixture
 	async def browser_session(self):
 		"""Create and provide a BrowserSession instance with security disabled."""
 		browser_session = BrowserSession(
-			# browser_profile=BrowserProfile(...),
 			headless=True,
 			user_data_dir=None,
 		)
@@ -149,27 +143,25 @@ class TestBrowserContext:
 		)
 		assert actual_selector == expected_selector, f'Expected {expected_selector}, but got {actual_selector}'
 
-	@pytest.mark.asyncio
-	async def test_navigate_and_get_current_page(self, browser_session, base_url):
+	async def test_navigate_and_get_current_page(self, browser_session, http_server: HTTPServer):
 		"""Test that navigate method changes the URL and get_current_page returns the proper page."""
 		# Navigate to the test page
-		await browser_session.navigate(f'{base_url}/')
+		await browser_session.navigate(http_server.url_for('/'))
 
 		# Get the current page
 		page = await browser_session.get_current_page()
 
 		# Verify the page URL matches what we navigated to
-		assert f'{base_url}/' in page.url
+		assert http_server.url_for('/') in page.url
 
 		# Verify the page title
 		title = await page.title()
 		assert title == 'Test Home Page'
 
-	@pytest.mark.asyncio
-	async def test_refresh_page(self, browser_session, base_url):
+	async def test_refresh_page(self, browser_session, http_server):
 		"""Test that refresh_page correctly reloads the current page."""
 		# Navigate to the test page
-		await browser_session.navigate(f'{base_url}/')
+		await browser_session.navigate(http_server.url_for('/'))
 
 		# Get the current page before refresh
 		page_before = await browser_session.get_current_page()
@@ -187,11 +179,10 @@ class TestBrowserContext:
 		title = await page_after.title()
 		assert title == 'Test Home Page'
 
-	@pytest.mark.asyncio
-	async def test_execute_javascript(self, browser_session, base_url):
+	async def test_execute_javascript(self, browser_session, http_server):
 		"""Test that execute_javascript correctly executes JavaScript in the current page."""
 		# Navigate to a test page
-		await browser_session.navigate(f'{base_url}/')
+		await browser_session.navigate(http_server.url_for('/'))
 
 		# Execute a simple JavaScript snippet that returns a value
 		result = await browser_session.execute_javascript('document.title')
@@ -206,11 +197,10 @@ class TestBrowserContext:
 		bg_color = await browser_session.execute_javascript('document.body.style.backgroundColor')
 		assert bg_color == 'red'
 
-	@pytest.mark.asyncio
-	async def test_get_scroll_info(self, browser_session, base_url):
+	async def test_get_scroll_info(self, browser_session, http_server):
 		"""Test that get_scroll_info returns the correct scroll position information."""
 		# Navigate to the scroll test page
-		await browser_session.navigate(f'{base_url}/scroll_test')
+		await browser_session.navigate(http_server.url_for('/scroll_test'))
 		page = await browser_session.get_current_page()
 
 		# Get initial scroll info
@@ -232,11 +222,10 @@ class TestBrowserContext:
 		assert pixels_above_after_scroll >= 400, 'Page should be scrolled down at least 400px'
 		assert pixels_below_after_scroll < pixels_below_initial, 'Less content should be below viewport after scrolling'
 
-	@pytest.mark.asyncio
-	async def test_take_screenshot(self, browser_session, base_url):
+	async def test_take_screenshot(self, browser_session, http_server):
 		"""Test that take_screenshot returns a valid base64 encoded image."""
 		# Navigate to the test page
-		await browser_session.navigate(f'{base_url}/')
+		await browser_session.navigate(http_server.url_for('/'))
 
 		# Take a screenshot
 		screenshot_base64 = await browser_session.take_screenshot()
@@ -253,14 +242,13 @@ class TestBrowserContext:
 		except Exception as e:
 			pytest.fail(f'Failed to decode screenshot as base64: {e}')
 
-	@pytest.mark.asyncio
-	async def test_switch_tab_operations(self, browser_session, base_url):
+	async def test_switch_tab_operations(self, browser_session, http_server):
 		"""Test tab creation, switching, and closing operations."""
 		# Navigate to home page in first tab
-		await browser_session.navigate(f'{base_url}/')
+		await browser_session.navigate(http_server.url_for('/'))
 
 		# Create a new tab
-		await browser_session.create_new_tab(f'{base_url}/scroll_test')
+		await browser_session.create_new_tab(http_server.url_for('/scroll_test'))
 
 		# Verify we have two tabs now
 		tabs_info = await browser_session.get_tabs_info()
@@ -268,14 +256,14 @@ class TestBrowserContext:
 
 		# Verify current tab is the scroll test page
 		current_page = await browser_session.get_current_page()
-		assert f'{base_url}/scroll_test' in current_page.url
+		assert '/scroll_test' in current_page.url
 
 		# Switch back to the first tab
 		await browser_session.switch_to_tab(0)
 
 		# Verify we're back on the home page
 		current_page = await browser_session.get_current_page()
-		assert f'{base_url}/' in current_page.url
+		assert http_server.host in current_page.url and current_page.url.endswith('/')
 
 		# Close the second tab
 		await browser_session.close_tab(1)
@@ -284,11 +272,10 @@ class TestBrowserContext:
 		tabs_info = await browser_session.get_tabs_info()
 		assert len(tabs_info) == 1, 'Should have one tab open after closing the second'
 
-	@pytest.mark.asyncio
-	async def test_remove_highlights(self, browser_session, base_url):
+	async def test_remove_highlights(self, browser_session, http_server):
 		"""Test that remove_highlights successfully removes highlight elements."""
 		# Navigate to a test page
-		await browser_session.navigate(f'{base_url}/')
+		await browser_session.navigate(http_server.url_for('/'))
 
 		# Add a highlight via JavaScript
 		await browser_session.execute_javascript("""

@@ -216,6 +216,8 @@ class BrowserSession(BaseModel):
 	_start_lock: asyncio.Lock = PrivateAttr(default_factory=asyncio.Lock)
 	_tab_visibility_callback: Any = PrivateAttr(default=None)
 	_logger: logging.Logger | None = PrivateAttr(default=None)
+	_pending_downloads: dict[str, asyncio.Future] = PrivateAttr(default_factory=dict)  # Maps page URL to download futures
+	_download_handlers: dict[int, Any] = PrivateAttr(default_factory=dict)  # Maps page id to download handler
 
 	@model_validator(mode='after')
 	def apply_session_overrides_to_profile(self) -> Self:
@@ -354,16 +356,24 @@ class BrowserSession(BaseModel):
 	async def stop(self) -> None:
 		"""Shuts down the BrowserSession, killing the browser process (only works if keep_alive=False)"""
 
-		# trying to launch/kill browsers at the same time is an easy way to trash an entire user_data_dir
-		# it's worth the 1s or 2s of delay in the worst case to avoid race conditions, user_data_dir can be a few GBs
-		# Use timeout to prevent indefinite waiting on lock acquisition
-		async with asyncio.timeout(15):  # 15 second timeout for stop operations
-			async with self._start_lock:
+		try:
+			# Try to acquire lock with short timeout
+			lock_acquired = False
+			try:
+				# Use wait_for instead of timeout context manager for the lock
+				await asyncio.wait_for(self._start_lock.acquire(), timeout=2.0)
+				lock_acquired = True
+			except TimeoutError:
+				self.logger.warning('⏱️ Could not acquire lock for stop operation - proceeding anyway')
+
+			try:
 				# save cookies to disk if cookies_file or storage_state is configured
 				# but only if the browser context is still connected
 				if self.is_connected():
 					try:
-						await self.save_storage_state()
+						await asyncio.wait_for(self.save_storage_state(), timeout=2.0)
+					except TimeoutError:
+						self.logger.debug('Timeout saving storage state')
 					except Exception as e:
 						self.logger.debug(f'Failed to save storage state before stopping: {type(e).__name__}: {e}')
 
@@ -382,15 +392,30 @@ class BrowserSession(BaseModel):
 						)
 						# Add timeout to prevent hanging on close if context is already closed
 						try:
-							async with asyncio.timeout(5):  # 5 second timeout for close operation
-								await (self.browser or self.browser_context.browser).close()
+							# First close the browser context
+							if self.browser_context and self.browser_context.browser:
+								await asyncio.wait_for(self.browser_context.browser.close(), timeout=3.0)
+							# Then close the browser if we have a direct reference
+							if self.browser:
+								await asyncio.wait_for(self.browser.close(), timeout=3.0)
 						except TimeoutError:
 							self.logger.warning('⏱️ Timeout while closing browser/context - it may already be closed')
+						except Exception as e:
+							self.logger.debug(f'Error closing browser: {type(e).__name__}: {e}')
 					except Exception as e:
 						self.logger.debug(
 							f'❌ Error closing playwright browser_context={self.browser_context}: {type(e).__name__}: {e}'
 						)
 					finally:
+						# Cancel any pending download futures
+						for future in self._pending_downloads.values():
+							if not future.done():
+								future.cancel()
+						self._pending_downloads.clear()
+
+						# Clear download handlers
+						self._download_handlers.clear()
+
 						# Always clear references to ensure a fresh start next time
 						self.browser_context = None
 						self.browser = None
@@ -399,62 +424,58 @@ class BrowserSession(BaseModel):
 				if self.browser_pid:
 					try:
 						proc = psutil.Process(pid=self.browser_pid)
-						executable_path = proc.cmdline()[0]
+						executable_path = proc.cmdline()[0] if proc.cmdline() else 'unknown'
 						self.logger.info(f' ↳ Killing browser_pid={self.browser_pid} {_log_pretty_path(executable_path)}')
-						# Add timeout for process termination
+						# Kill child processes synchronously
 						try:
-							async with asyncio.timeout(5):  # 5 second timeout
-								proc.terminate()
-								self._kill_child_processes()
-								await asyncio.to_thread(proc.wait, timeout=4)
-						except (TimeoutError, psutil.TimeoutExpired):
-							self.logger.warning(
-								f'⏱️ Process did not terminate gracefully, force killing browser_pid={self.browser_pid}'
-							)
-							proc.kill()  # Force kill if terminate didn't work
-						self.browser_pid = None
-					except Exception as e:
-						if 'NoSuchProcess' not in type(e).__name__:
-							self.logger.debug(
-								f'❌ Error terminating subprocess with browser_pid={self.browser_pid}: {type(e).__name__}: {e}'
-							)
-
-					# Close playwright if we own it
-					if self.playwright:
-						try:
-							# Add timeout to prevent hanging
-							async with asyncio.timeout(5):
-								await self.playwright.stop()
-							self.playwright = None
+							await asyncio.wait_for(self._kill_child_processes(), timeout=3.0)
 						except TimeoutError:
-							self.logger.warning('⏱️ Timeout while stopping playwright')
-							self.playwright = None
-						except Exception as e:
-							self.logger.debug(f'Error stopping playwright: {type(e).__name__}: {e}')
-							self.playwright = None
-						finally:
-							# Ensure playwright tasks are cancelled
+							self.logger.warning('⏱️ Timeout killing child processes')
+							# Force kill browser process
 							try:
-								loop = asyncio.get_event_loop()
-								if loop and not loop.is_closed():
-									all_tasks = asyncio.all_tasks(loop)
-									for task in all_tasks:
-										if task.done():
-											continue
-										coro_str = str(task)
-										if 'Connection.run' in coro_str and 'playwright' in coro_str:
-											task.cancel()
-							except Exception:
+								proc.kill()
+							except BaseException:
 								pass
+					except psutil.NoSuchProcess:
+						pass  # Process already gone
+					except Exception as e:
+						self.logger.debug(
+							f'❌ Error terminating subprocess with browser_pid={self.browser_pid}: {type(e).__name__}: {e}'
+						)
+					finally:
+						self.browser_pid = None
+
+				# Close playwright if we own it
+				if self.playwright:
+					try:
+						# Give pending tasks a moment to complete
+						await asyncio.sleep(0.1)
+
+						# Add timeout to prevent hanging
+						await asyncio.wait_for(self.playwright.stop(), timeout=3.0)
+						self.playwright = None
+					except TimeoutError:
+						self.logger.warning('⏱️ Timeout while stopping playwright')
+						self.playwright = None
+					except Exception as e:
+						self.logger.debug(f'Error stopping playwright: {type(e).__name__}: {e}')
+						self.playwright = None
 
 				self._reset_connection_state()
 
-				# Cancel any remaining background tasks to prevent hanging on exit
-				if hasattr(self, '_background_tasks'):
-					for task in list(self._background_tasks):
-						if not task.done():
-							task.cancel()
-					self._background_tasks.clear()
+			finally:
+				if lock_acquired:
+					self._start_lock.release()
+
+		except Exception as e:
+			# This should rarely happen now, but if it does, log and continue
+			self.logger.error(f'Unexpected error in stop() method: {type(e).__name__}: {e}')
+			# Force cleanup state
+			self._reset_connection_state()
+			self.browser_context = None
+			self.browser = None
+			self.browser_pid = None
+			self.playwright = None
 
 	async def close(self) -> None:
 		"""Deprecated: Provides backwards-compatibility with old method Browser().close() and playwright BrowserContext.close()"""
@@ -489,9 +510,20 @@ class BrowserSession(BaseModel):
 			profile = getattr(self, 'browser_profile', None)
 			keep_alive = getattr(profile, 'keep_alive', None)
 			user_data_dir = getattr(profile, 'user_data_dir', None)
-			self.logger.debug(
-				f'🛑 Stopping (garbage collected) keep_alive={keep_alive} user_data_dir= {_log_pretty_path(user_data_dir) or "<incognito>"}'
-			)
+			# self.logger.warning(
+			# 	f'🛑 {self} Stopping (garbage collected) keep_alive={keep_alive} user_data_dir= {_log_pretty_path(user_data_dir) or "<incognito>"}'
+			# )
+
+			# Cancel any pending download futures to avoid "Task was destroyed but it is pending" warnings
+			if hasattr(self, '_pending_downloads'):
+				for future in self._pending_downloads.values():
+					if not future.done():
+						future.cancel()
+				self._pending_downloads.clear()
+
+			# Clear download handlers
+			if hasattr(self, '_download_handlers'):
+				self._download_handlers.clear()
 
 			self._kill_child_processes()
 
@@ -505,21 +537,32 @@ class BrowserSession(BaseModel):
 		if not self.browser_profile.keep_alive and self.browser_pid:
 			try:
 				browser_proc = psutil.Process(self.browser_pid)
+				# Kill the main browser process
+				try:
+					# self.logger.debug(f'Killing browser process: {self.browser_pid}')
+					browser_proc.terminate()
+					browser_proc.wait(timeout=5)
+				except (psutil.NoSuchProcess, psutil.AccessDenied):
+					pass
 
 				# Kill all child processes first (recursive)
 				for child in browser_proc.children(recursive=True):
 					try:
-						# self.logger.debug(f'Force killing child process: {child.pid} ({child.name()})')
+						self.logger.warning(
+							f'☠️ Force killing browser_pid={self.browser_pid} child process: {child.name()} pid={child.pid}'
+						)
 						child.kill()
 					except (psutil.NoSuchProcess, psutil.AccessDenied):
 						pass
 
-				# Kill the main browser process
+				# really forreals kill the main browser process
 				try:
-					# self.logger.debug(f'Force killing browser process: {self.browser_pid}')
 					browser_proc.kill()
 				except (psutil.NoSuchProcess, psutil.AccessDenied):
 					pass
+
+				self.browser_pid = None
+
 			except Exception as e:
 				self.logger.warning(f'Error force-killing browser in BrowserSession.__del__: {type(e).__name__}: {e}')
 
@@ -953,10 +996,14 @@ class BrowserSession(BaseModel):
 		except Exception as e:
 			self.logger.debug(f'⚠️ Failed to register init script for tab focus detection: {e}')
 
-		# Set up visibility listeners for all existing tabs
+		# Set up visibility listeners and download handlers for all existing tabs
 		# self.logger.info(f'Setting up visibility listeners for {len(self.browser_context.pages)} pages')
 		for page in self.browser_context.pages:
 			# self.logger.info(f'Processing page with URL: {repr(page.url)}')
+
+			# Set up download handler for this page
+			await self._setup_download_handlers(page)
+
 			# Skip about:blank pages as they can hang when evaluating scripts
 			if page.url == 'about:blank':
 				continue
@@ -969,6 +1016,60 @@ class BrowserSession(BaseModel):
 				self.logger.debug(
 					f'⚠️ Failed to add visibility listener to existing tab, is it crashed or ignoring CDP commands?: [{page_idx}]{page.url}: {type(e).__name__}: {e}'
 				)
+
+	async def _setup_download_handlers(self, page: Page) -> None:
+		"""Set up non-blocking download handler for a page if downloads are enabled."""
+		if not self.browser_profile.downloads_path:
+			return
+
+		# Create a unique key for this page
+		page_key = id(page)
+
+		# Set up the download handler
+		async def handle_download(download):
+			try:
+				# Determine file path
+				suggested_filename = download.suggested_filename
+				unique_filename = await self._get_unique_filename(self.browser_profile.downloads_path, suggested_filename)
+				download_path = os.path.join(self.browser_profile.downloads_path, unique_filename)
+
+				# Save the download
+				await download.save_as(download_path)
+				# Get file size from the saved file
+				file_size = os.path.getsize(download_path)
+				mb_size = file_size / 1024 / 1024
+				self.logger.info(f'⬇️ Downloaded {mb_size:.2f}MB file to downloads_path= {_log_pretty_path(download_path)}')
+
+				# If there's a pending future for this page, resolve it
+				if page_key in self._pending_downloads:
+					future = self._pending_downloads.pop(page_key)
+					if not future.done():
+						future.set_result(download_path)
+			except Exception as e:
+				self.logger.error(f'❌ Error handling download: {type(e).__name__}: {e}')
+				# If there's a pending future, reject it
+				if page_key in self._pending_downloads:
+					future = self._pending_downloads.pop(page_key)
+					if not future.done():
+						future.set_exception(e)
+
+		# Register the handler and track it
+		page.on('download', handle_download)
+		self._download_handlers[page_key] = handle_download
+
+		# Clean up handler when page is closed
+		async def cleanup_handler():
+			if page_key in self._download_handlers:
+				del self._download_handlers[page_key]
+			# Cancel any pending download for this page
+			if page_key in self._pending_downloads:
+				future = self._pending_downloads.pop(page_key)
+				if not future.done():
+					future.cancel()
+
+		page.once('close', cleanup_handler)
+
+		self.logger.debug(f'📥 Set up download handler for page: {page.url}')
 
 	async def _setup_viewports(self) -> None:
 		"""Resize any existing page viewports to match the configured size, set up storage_state, permissions, geolocation, etc."""
@@ -1131,12 +1232,6 @@ class BrowserSession(BaseModel):
 		self._cached_browser_state_summary = None
 		# Don't set playwright to None here - it should be explicitly stopped with playwright.stop()
 
-		# Cancel any background tasks to prevent hanging
-		if hasattr(self, '_background_tasks'):
-			for task in list(self._background_tasks):
-				if not task.done():
-					task.cancel()
-			self._background_tasks.clear()
 		if self.browser_pid:
 			try:
 				# browser_pid is different from all the other state objects, it's closer to cdp_url or wss_url
@@ -1144,7 +1239,7 @@ class BrowserSession(BaseModel):
 				# if we have a self.browser_pid, check if it's still alive and serving a remote debugging port
 				# if so, don't clear it because there's a chance we can re-use it by just reconnecting to the same pid's port
 				proc = psutil.Process(self.browser_pid)
-				proc_is_alive = proc.status() not in (psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD)
+				proc_is_alive = proc.status() not in (psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD, psutil.STATUS_TERMINATED)
 				assert proc_is_alive and '--remote-debugging-port' in ' '.join(proc.cmdline())
 			except Exception:
 				self.logger.info(f'⚰️ Browser browser_pid={self.browser_pid} has gone away or crashed')
@@ -1273,27 +1368,27 @@ class BrowserSession(BaseModel):
 			async def perform_click(click_func):
 				"""Performs the actual click, handling both download and navigation scenarios."""
 
-				# only wait the 5s extra for potential downloads if they are enabled
-				# TODO: instead of blocking for 5s, we should register a non-block page.on('download') event
-				# and then check if the download has been triggered within the event handler
 				if self.browser_profile.downloads_path:
+					# Create a future to track potential downloads
+					page_key = id(page)
+					download_future = asyncio.Future()
+					self._pending_downloads[page_key] = download_future
+
 					try:
-						# Try short-timeout expect_download to detect a file download has been been triggered
-						async with page.expect_download(timeout=5000) as download_info:
-							await click_func()
-						download = await download_info.value
-						# Determine file path
-						suggested_filename = download.suggested_filename
-						unique_filename = await self._get_unique_filename(self.browser_profile.downloads_path, suggested_filename)
-						download_path = os.path.join(self.browser_profile.downloads_path, unique_filename)
-						await download.save_as(download_path)
-						self.logger.debug(f'⬇️ Download triggered. Saved file to: {download_path}')
-						return download_path
-					except Exception:
-						# If no download is triggered, treat as normal click
-						self.logger.debug('No download triggered within timeout. Checking navigation...')
-						await page.wait_for_load_state()
-						await self._check_and_handle_navigation(page)
+						# Perform the click
+						await click_func()
+
+						# Wait a short time to see if a download is triggered
+						try:
+							download_path = await asyncio.wait_for(download_future, timeout=0.5)
+							return download_path
+						except TimeoutError:
+							# No download was triggered, treat as normal navigation
+							await page.wait_for_load_state()
+							await self._check_and_handle_navigation(page)
+					finally:
+						# Clean up the pending download future
+						self._pending_downloads.pop(page_key, None)
 				else:
 					# If downloads are disabled, just perform the click
 					await click_func()
@@ -2623,6 +2718,9 @@ class BrowserSession(BaseModel):
 			assert self.browser_context, 'Browser context is not set'
 
 		new_page = await self.browser_context.new_page()
+
+		# Set up download handler for the new page
+		await self._setup_download_handlers(new_page)
 
 		# Update agent tab reference
 		self.agent_current_page = new_page

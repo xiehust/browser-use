@@ -84,12 +84,12 @@ class TestTabManagement:
 		# Give playwright time to clean up
 		await asyncio.sleep(0.1)
 
-	@pytest.fixture
+	@pytest.fixture(scope='module')
 	def controller(self):
 		"""Create and provide a Controller instance."""
 		return Controller()
 
-	@pytest.fixture
+	@pytest.fixture(scope='module')
 	def base_url(self, http_server):
 		"""Return the base URL for the test HTTP server."""
 		return f'http://{http_server.host}:{http_server.port}'
@@ -362,17 +362,6 @@ class TestTabManagement:
 		# The is_connected() method tries to access browser_context.pages
 		# If the context is closed, this should fail
 		is_connected = browser_session.is_connected()
-
-		# If is_connected is still True, the detection isn't working as expected
-		# Let's verify that accessing pages actually fails
-		if is_connected:
-			try:
-				pages = browser_session.browser_context.pages
-				# If we can still access pages, the context might not be fully closed
-				logger.warning(f'Context appears closed but pages are still accessible: {pages}')
-			except Exception as e:
-				# This is expected - the context is closed
-				logger.info(f'Context is closed as expected: {e}')
 
 		# For now, let's just test that we can recover from the closed state
 		# Try to use the session - should handle the error gracefully
