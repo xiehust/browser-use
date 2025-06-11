@@ -209,7 +209,7 @@ class MessageManager:
 		self.state = state
 		self.system_prompt = system_message
 		self.file_system = file_system
-		self.agent_history_description = '# Agent History\n'
+		self.agent_history_description = '\n'
 		self.read_state_description = ''
 		# Only initialize messages if state is empty
 		if len(self.state.history.messages) == 0:
@@ -228,11 +228,6 @@ class MessageManager:
 			info += '\nTo use them, write <secret>the placeholder name</secret> </sensitive_data>'
 			info_message = HumanMessage(content=info)
 			self._add_message_with_tokens(info_message, message_type='init')
-
-		task_message = HumanMessage(
-			content=f'<user_request>Your ultimate goal is: """{self.task}""" \nIf you achieved your ultimate task, stop everything and use the done action in the next step to complete the task. If not, continue as usual.</user_request>'
-		)
-		self._add_message_with_tokens(task_message, message_type='init')
 
 		placeholder_message = HumanMessage(
 			content='<example_1>Here is an example output of thinking and tool call. You can use it as a reference but do not copy it exactly.'
@@ -356,6 +351,11 @@ My next action is to click on the iPhone link at index [4] to navigate to Apple'
 		)
 		# self._add_message_with_tokens(example_tool_call_2, message_type='init')
 		# self.add_tool_message(content='Clicked on index [4]. </example_2>', message_type='init')
+
+		task_message = HumanMessage(
+			content=f'<user_request>Your ultimate goal is: """{self.task}""" \nIf you achieved your ultimate task, stop everything and use the done action in the next step to complete the task. If not, continue as usual.</user_request>'
+		)
+		self._add_message_with_tokens(task_message, message_type='init')
 
 		if self.settings.available_file_paths:
 			filepaths_msg = HumanMessage(
