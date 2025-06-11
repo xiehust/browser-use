@@ -287,7 +287,7 @@ class Controller(Generic[Context]):
 				except Exception as e:
 					pass
 
-				if iframe.url != page.url and not iframe.url.startswith('data:'):
+				if iframe.url != page.url and not iframe.url.startswith('data:') and not iframe.url == 'about:blank':
 					content += f'\n\nIFRAME {iframe.url}:\n'
 					# Run markdownify in a thread pool for iframe content as well
 					try:
