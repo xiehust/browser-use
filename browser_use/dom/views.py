@@ -191,7 +191,7 @@ class DOMElementNode(DOMBaseNode):
 
 						if attributes_to_include:
 							# Format as key1='value1' key2='value2'
-							attributes_html_str = ' '.join(f"{key}='{value}'" for key, value in attributes_to_include.items())
+							attributes_html_str = ';'.join(f'{value}' for key, value in attributes_to_include.items())
 
 					# Build the line
 					if node.is_new:
