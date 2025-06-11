@@ -327,7 +327,11 @@ class Controller(Generic[Context]):
 			if len(content) > 60000:
 				content = content[:30000] + '... left out the middle because it was too long ...' + content[-30000:]
 
-			prompt = f"""
+			example_answer = {
+				'magnus': 'https://magnus.com',
+				'gregor': 'https://gregor.com',
+			}
+			prompt = """
 			You convert websites into structured information. Extract information from this webpage based on the query. Focus only on content relevant to the query. If the query is vague or does not make sense for the page, provide a brief summary of the page. 
 			Always write first 1-5 words on top of your response which will be used as a filename for the extracted content. 
 			Present your response in JSON format.
@@ -335,7 +339,7 @@ class Controller(Generic[Context]):
 			
 			Profile_links
 			```json
-			{{'magnus': "https://magnus.com", "gregor": "https://gregor.com"}}
+			{example_answer}
 			```
 			
 			Extract now query: {content_to_extract}
@@ -345,9 +349,11 @@ class Controller(Generic[Context]):
 			
 			"""
 
-			template = PromptTemplate(input_variables=['content_to_extract', 'page'], template=prompt)
+			template = PromptTemplate(input_variables=['content_to_extract', 'page', 'example_answer'], template=prompt)
 			try:
-				output = await page_extraction_llm.ainvoke(template.format(content_to_extract=content_to_extract, page=content))
+				output = await page_extraction_llm.ainvoke(
+					template.format(content_to_extract=content_to_extract, page=content, example_answer=example_answer)
+				)
 				output_text = output.content
 				msg = f'📄  Extracted from page\n: {output_text}\n'
 				logger.info(msg + f' for query "{content_to_extract}"')
