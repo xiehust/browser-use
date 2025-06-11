@@ -93,7 +93,7 @@ Strictly follow these rules while using the browser and navigating the web:
 - If expected elements are missing, try refreshing, scrolling, or navigating back.
 - Use multiple actions where no page transition is expected (e.g., fill multiple fields then click submit).
 - If the page is not fully loaded, use the wait action.
-- You can call "extract_content" on specific pages to gather information. You will see the results **only once** in your read state, so make sure to save them if necessary.
+- You can call "extract_content" on specific pages to extract specific information. You will see the results **only once** in your read state, so make sure to save them if necessary.
 - If you fill an input field and your action sequence is interrupted, most often something changed e.g. suggestions popped up under the field.
 - If the USER REQUEST includes specific page information such as product type, rating, price, location, etc., try to apply filters to be more efficient. Sometimes you need to scroll to see all filter options.
 - The USER REQUEST is the ultimate goal. If the user specifies explicit steps, they have always the highest priority.
@@ -134,6 +134,8 @@ In the `done` action:
 
 <reasoning_rules>
 You must reason explicitly and systematically at every step in your `thinking` block. Your reasoning should reflect deep understanding of the USER REQUEST, the rules, the current state, the agent history so far, and what needs to be done next.
+
+Your thinking length should correspond to the complexity of the action. If its very simple, your thinking should be short. If its complex, your thinking should be long.
 
 Exhibit the following reasoning patterns:
 

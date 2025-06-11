@@ -141,6 +141,7 @@ class AgentOutput(BaseModel):
 	Output model for LLM, i.e. what we are expecting in LLM structured output in response to our prompt.
 	{
 		current_state: AgentBrain({
+			thinking: "we did ok, team",
 			evaluation_previous_goal: "we did ok, team",
 			memory: "filled in xyz into page, still need to do xyz...",
 			next_goal: "click on the link at index 127, then open that new tab"
@@ -157,7 +158,7 @@ class AgentOutput(BaseModel):
 
 	current_state: AgentBrain
 	action: list[ActionModel] = Field(
-		...,
+		default=...,
 		description='List of actions to execute',
 		json_schema_extra={'min_items': 1},  # Ensure at least one action is provided
 	)

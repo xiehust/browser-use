@@ -380,9 +380,7 @@ My next action is to click on the iPhone link at index [4] to navigate to Apple'
 		if None in [model_output, result, step_info]:
 			return
 
-		self.read_state_initialization = (
-			'# Read State (displayed only **one time**, save this information if you need it later)\n'
-		)
+		self.read_state_initialization = '(displayed only **one time**, save this information if you need it later)\n'
 		self.read_state_description = self.read_state_initialization
 
 		step_number = step_info.step_number

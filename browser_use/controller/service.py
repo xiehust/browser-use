@@ -258,7 +258,7 @@ class Controller(Generic[Context]):
 
 		# Content Actions
 		@self.registry.action(
-			'Extract specific information from the current webpage. Provide a clear, detailed description of what you want to extract in the "content_to_extract" field. Be extremely specific about the data you need. Set include_links=True if you need to preserve links.',
+			'Extract specific information from the current webpage. Provide a concise description of what you want to extract in the "content_to_extract" field. Be extremely specific about the data you need. Dont be vague in your query otherwise this will take very long. Set include_links=True if you need to extract any links of the page.',
 		)
 		async def extract_content(
 			content_to_extract: str,
@@ -302,7 +302,24 @@ class Controller(Generic[Context]):
 			if len(content) > 60000:
 				content = content[:30000] + '... left out the middle because it was too long ...' + content[-30000:]
 
-			prompt = 'You convert websites into structured information. Extract information from this webpage based on the query. Focus only on content relevant to the query. If the query is vague or does not make sense for the page, provide a brief summary of the page. Respond in JSON format.\nQuery: {content_to_extract}\n answer:\n{page}'
+			prompt = f"""
+			You convert websites into structured information. Extract information from this webpage based on the query. Focus only on content relevant to the query. If the query is vague or does not make sense for the page, provide a brief summary of the page. 
+			Always write first 1-5 words on top of your response which will be used as a filename for the extracted content. 
+			Present your response in JSON format.
+			Example Answer: 
+			
+			Profile_links
+			```json
+			{'magnus': "https://magnus.com", "gregor": "https://gregor.com"}'
+			```
+			
+			Extract now query: {content_to_extract}
+			
+			From the page:
+			{page}. 
+			
+			"""
+
 			template = PromptTemplate(input_variables=['content_to_extract', 'page'], template=prompt)
 			try:
 				output = await page_extraction_llm.ainvoke(template.format(content_to_extract=content_to_extract, page=content))
