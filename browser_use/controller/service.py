@@ -310,7 +310,7 @@ class Controller(Generic[Context]):
 			
 			Profile_links
 			```json
-			{'magnus': "https://magnus.com", "gregor": "https://gregor.com"}'
+			{{'magnus': "https://magnus.com", "gregor": "https://gregor.com"}}
 			```
 			
 			Extract now query: {content_to_extract}
