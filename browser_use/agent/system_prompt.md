@@ -93,7 +93,6 @@ Strictly follow these rules while using the browser and navigating the web:
 - If expected elements are missing, try refreshing, scrolling, or navigating back.
 - Use multiple actions where no page transition is expected (e.g., fill multiple fields then click submit).
 - If the page is not fully loaded, use the wait action.
-- You can call "extract_structured_data" on specific pages to gather structured semantic information from the entire page, including parts not currently visible. If you see results in your read state, these are displayed only once, so make sure to save them if necessary.
 - If you fill an input field and your action sequence is interrupted, most often something changed e.g. suggestions popped up under the field.
 - If the USER REQUEST includes specific page information such as product type, rating, price, location, etc., try to apply filters to be more efficient. Sometimes you need to scroll to see all filter options.
 - The USER REQUEST is the ultimate goal. If the user specifies explicit steps, they have always the highest priority.

@@ -6,7 +6,6 @@ import re
 from typing import Generic, TypeVar, cast
 
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.prompts import PromptTemplate
 from playwright.async_api import ElementHandle, Page
 
 # from lmnr.sdk.laminar import Laminar
@@ -308,80 +307,6 @@ class Controller(Generic[Context]):
 				include_in_memory=True,
 				memory=f'Closed tab {params.page_id} with url {url}, now focused on tab {new_page_idx} with url {new_page.url}.',
 			)
-
-		# Content Actions
-		@self.registry.action(
-			"""Extract structured, semantic data (e.g. product description, price, all information about XYZ) from the current webpage based on a textual query.
-Only use this for extracting info from a single product/article page, not listing or search results pages.
-Use include_links=True if extraction requires links.
-""",
-		)
-		async def extract_structured_data(
-			query: str,
-			page: Page,
-			page_extraction_llm: BaseChatModel,
-			include_links: bool = False,
-		):
-			from functools import partial
-
-			import markdownify
-
-			strip = []
-			if not include_links:
-				strip = ['a', 'img']
-
-			# Run markdownify in a thread pool to avoid blocking the event loop
-			loop = asyncio.get_event_loop()
-			page_html = await page.content()
-			markdownify_func = partial(markdownify.markdownify, strip=strip)
-			content = await loop.run_in_executor(None, markdownify_func, page_html)
-
-			# manually append iframe text into the content so it's readable by the LLM (includes cross-origin iframes)
-			for iframe in page.frames:
-				try:
-					await iframe.wait_for_load_state(timeout=5000)  # extra on top of already loaded page
-				except Exception as e:
-					pass
-
-				if iframe.url != page.url and not iframe.url.startswith('data:'):
-					content += f'\n\nIFRAME {iframe.url}:\n'
-					# Run markdownify in a thread pool for iframe content as well
-					try:
-						iframe_html = await iframe.content()
-						iframe_markdown = await loop.run_in_executor(None, markdownify_func, iframe_html)
-					except Exception as e:
-						logger.debug(f'Error extracting iframe content from within page {page.url}: {type(e).__name__}: {e}')
-						iframe_markdown = ''
-					content += iframe_markdown
-
-			# limit to 60000 characters - remove text in the middle this is approx 20000 tokens
-			max_chars = 60000
-			if len(content) > max_chars:
-				content = (
-					content[: max_chars // 2]
-					+ '\n... left out the middle because it was too long ...\n'
-					+ content[-max_chars // 2 :]
-				)
-
-			prompt = 'You convert websites into structured information. Extract information from this webpage based on the query. Focus only on content relevant to the query. If the query is vague, does not make sense for the page, provide a brief summary of the page. Respond in JSON format.\nQuery: {query}\n Website:\n{page}'
-			template = PromptTemplate(input_variables=['query', 'page'], template=prompt)
-			try:
-				output = await page_extraction_llm.ainvoke(template.format(query=query, page=content))
-				output_text = output.content
-				extracted_content = f'Page Link: {page.url}\nQuery: {query}\nExtracted Content:\n{output_text}'
-				memory = f'Extracted content from {page.url} for query "{query}"'
-				logger.info(f'📄 {memory}')
-				return ActionResult(
-					extracted_content=extracted_content,
-					include_in_memory=False,
-					update_read_state=True,
-					memory=memory,
-				)
-			except Exception as e:
-				logger.debug(f'Error extracting content: {e}')
-				msg = f'📄  Extracted from page\n: {content}\n'
-				logger.info(msg)
-				return ActionResult(error=str(e))
 
 		@self.registry.action(
 			'Get the accessibility tree of the page in the format "role name" with the number_of_elements to return',
