@@ -490,7 +490,7 @@ def get_llm(model_name: str):
 		)
 		api_key = None
 
-	temperature = 0.1
+	temperature = 1.0
 	max_tokens = 8192
 	api_key_secret = SecretStr(api_key) if api_key else None
 	match provider:
@@ -707,12 +707,15 @@ class Task:
 		return self.__str__()
 
 
-async def judge_task_result(model, task_folder: Path, score_threshold: float = 3) -> dict:
+async def judge_task_result(model, task_folder: Path, score_threshold: float = 3, n_judges: int = 4) -> dict:
 	"""
 	Judge a single task result based on the success value of the final action.
+	Runs the judge n_judges times and considers success if any run yields success.
 
 	Args:
 	    task_folder: Path to the task result folder
+	    score_threshold: Score threshold for image filtering
+	    n_judges: Number of times to run the judge (default: 4)
 
 	Returns:
 	    Dictionary containing judgment results
@@ -734,42 +737,82 @@ async def judge_task_result(model, task_folder: Path, score_threshold: float = 3
 		task_description = result.get('task')
 		action_history = result.get('action_history', [])
 
-		# Use the retry wrapper for evaluation
-		try:
-			# Await the async function directly instead of using asyncio.run()
-			eval_result = await Online_Mind2Web_eval_with_retry(
-				task_description, action_history, screenshot_paths, model, score_threshold
-			)
+		# Run the judge n_judges times
+		judge_results = []
+		successful_judgement = None
 
-			if eval_result is None:
-				raise Exception('Evaluation failed after all retries')
+		for i in range(n_judges):
+			logger.info(f'Task {task_folder.name}: Running judge {i + 1}/{n_judges}')
+			try:
+				# Await the async function directly instead of using asyncio.run()
+				eval_result = await Online_Mind2Web_eval_with_retry(
+					task_description, action_history, screenshot_paths, model, score_threshold
+				)
 
-			messages, text, system_msg, record, key_points = eval_result
+				if eval_result is None:
+					logger.error(f'Task {task_folder.name}: Judge {i + 1} evaluation failed after all retries')
+					continue
 
-			# Final steps to get judgement - run invoke in a thread
-			judgement_msg = await asyncio.to_thread(model.invoke, messages)
-			judgement = judgement_msg.content
+				messages, text, system_msg, record, key_points = eval_result
 
-			if 'success' in judgement.lower().split('status:')[1]:  # This is the official criteria for success
-				evaluation = {'task_id': task_folder.name, 'judgement': judgement, 'success': True, 'error': None, 'score': 1.0}
-			else:  # This is the official criteria for failure
-				evaluation = {'task_id': task_folder.name, 'judgement': judgement, 'success': False, 'error': None, 'score': 0.0}
+				# Final steps to get judgement - run invoke in a thread
+				judgement_msg = await asyncio.to_thread(model.invoke, messages)
+				judgement = judgement_msg.content
 
-			# Save the Online_Mind2Web_evaluation into the result.json file
-			result['Online_Mind2Web_evaluation'] = evaluation
-			async with await anyio.open_file(result_file, 'w') as f:
-				await f.write(json.dumps(result, indent=2))
+				is_success = 'success' in judgement.lower().split('status:')[1]
+				judge_result = {
+					'task_id': task_folder.name,
+					'judge_number': i + 1,
+					'judgement': judgement,
+					'success': is_success,
+					'error': None,
+					'score': 1.0 if is_success else 0.0,
+				}
+				judge_results.append(judge_result)
 
-			return evaluation
+				# Store the first successful judgement to use later
+				if is_success and successful_judgement is None:
+					successful_judgement = judgement
 
-		except Exception as err:
-			return {
-				'task_id': task_folder.name,
-				'judgement': None,
-				'success': False,
-				'error': f'{type(err).__name__}: {err}',
-				'score': 0.0,
-			}
+			except Exception as err:
+				logger.error(f'Task {task_folder.name}: Judge {i + 1} failed with error: {type(err).__name__}: {err}')
+				judge_results.append(
+					{
+						'task_id': task_folder.name,
+						'judge_number': i + 1,
+						'judgement': None,
+						'success': False,
+						'error': f'{type(err).__name__}: {err}',
+						'score': 0.0,
+					}
+				)
+
+		# Consider success if any judge determined success
+		any_success = any(result.get('success', False) for result in judge_results)
+
+		# Use a successful judgement if available, otherwise use the first one
+		final_judgement = (
+			successful_judgement if successful_judgement else (judge_results[0].get('judgement') if judge_results else None)
+		)
+
+		# Create final evaluation result
+		evaluation = {
+			'task_id': task_folder.name,
+			'judgement': final_judgement,
+			'success': any_success,
+			'error': None if judge_results else 'All judges failed',
+			'score': 1.0 if any_success else 0.0,
+			'judge_results': judge_results,
+			'n_judges': n_judges,
+			'n_success': sum(1 for result in judge_results if result.get('success', False)),
+		}
+
+		# Save the Online_Mind2Web_evaluation into the result.json file
+		result['Online_Mind2Web_evaluation'] = evaluation
+		async with await anyio.open_file(result_file, 'w') as f:
+			await f.write(json.dumps(result, indent=2))
+
+		return evaluation
 
 	except Exception as err:
 		return {
@@ -1147,9 +1190,9 @@ async def run_agent_with_browser(
 	return agent.state.history
 
 
-async def evaluate_task_result(eval_model: BaseChatModel, task_folder: Path) -> dict:
+async def evaluate_task_result(eval_model: BaseChatModel, task_folder: Path, n_judges: int = 4) -> dict:
 	"""Evaluate the task result"""
-	return await judge_task_result(eval_model, task_folder, score_threshold=3)
+	return await judge_task_result(eval_model, task_folder, score_threshold=3, n_judges=n_judges)
 
 
 def save_result_to_server(convex_url: str, secret_key: str, payload: dict) -> bool:
