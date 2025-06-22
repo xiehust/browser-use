@@ -333,7 +333,12 @@ class Controller(Generic[Context]):
 
 		@self.registry.action('Open a specific url in new tab', param_model=OpenTabAction)
 		async def open_tab(params: OpenTabAction, browser_session: BrowserSession):
-			page = await browser_session.create_new_tab(params.url)
+			try:
+				page = await browser_session.create_new_tab(params.url)
+			except Exception as e:
+				msg = f'Failed to open new tab with url {params.url}'
+				logger.error(msg + f': {e}')
+				return ActionResult(error=msg)
 			tab_idx = browser_session.tabs.index(page)
 			msg = f'🔗  Opened new tab #{tab_idx} with url {params.url}'
 			logger.info(msg)
