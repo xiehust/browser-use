@@ -580,69 +580,59 @@ class BrowserSession(BaseModel):
 
 	async def setup_playwright(self) -> None:
 		"""
-		Set up playwright library client object: usually the result of (await async_playwright().start())
-		Override to customize the set up of the playwright or patchright library object
+		Setup the playwright library connection (if needed).
+		This can either launch a new browser server process, or connect to an existing browser process.
 		"""
-		global GLOBAL_PLAYWRIGHT_API_OBJECT  # one per thread, represents a node.js playwright subprocess that relays commands to the browser via CDP
-		global GLOBAL_PATCHRIGHT_API_OBJECT
-		global GLOBAL_PLAYWRIGHT_EVENT_LOOP  # one per thread, represents a node.js playwright subprocess that relays commands to the browser via CDP
-		global GLOBAL_PATCHRIGHT_EVENT_LOOP
+		if self.playwright:
+			self.logger.debug('Using provided playwright instance')
+			return
 
-		# Get current event loop
-		try:
-			current_loop = asyncio.get_running_loop()
-		except RuntimeError:
-			current_loop = None
+		# Always create a new playwright instance for evaluation tasks to avoid conflicts
+		# Don't use global instances when running multiple browsers in parallel
+		if self.id and ('eval' in self.id.lower() or 'task' in self.id.lower()):
+			self.logger.debug('Creating isolated playwright instance for evaluation task')
+			if self.browser_profile.stealth:
+				self.playwright = await async_patchright.start()
+			else:
+				self.playwright = await async_playwright.start()
+			return
 
-		is_stealth = self.browser_profile.stealth
+		# For non-evaluation tasks, check for global instances
+		global GLOBAL_PLAYWRIGHT_API_OBJECT, GLOBAL_PATCHRIGHT_API_OBJECT
+		global GLOBAL_PLAYWRIGHT_EVENT_LOOP, GLOBAL_PATCHRIGHT_EVENT_LOOP
 
-		# Configure browser channel based on stealth mode
-		if is_stealth:
-			# use patchright + chrome when stealth=True
-			self.browser_profile.channel = self.browser_profile.channel or BrowserChannel.CHROME
-			self.logger.info(f'🕶️ Activated stealth mode using patchright {self.browser_profile.channel.name.lower()} browser...')
+		current_event_loop = asyncio.get_event_loop()
+
+		if self.browser_profile.stealth:
+			# Check if we can reuse the global patchright instance
+			if (
+				GLOBAL_PATCHRIGHT_API_OBJECT
+				and GLOBAL_PATCHRIGHT_EVENT_LOOP == current_event_loop
+				and hasattr(GLOBAL_PATCHRIGHT_API_OBJECT, '_connection')
+				and not GLOBAL_PATCHRIGHT_API_OBJECT._connection.is_closed()
+			):
+				self.playwright = GLOBAL_PATCHRIGHT_API_OBJECT
+				self.logger.debug('Using existing global patchright instance')
+			else:
+				self.playwright = await self._start_global_playwright_subprocess(is_stealth=True)
+				GLOBAL_PATCHRIGHT_API_OBJECT = self.playwright
+				GLOBAL_PATCHRIGHT_EVENT_LOOP = current_event_loop
+				self.logger.debug('Created new global patchright instance')
 		else:
-			# use playwright + chromium by default
-			self.browser_profile.channel = self.browser_profile.channel or BrowserChannel.CHROMIUM
-
-		# Check if we're in a different event loop than the one that created the global object
-		should_recreate = False
-		driver_name = 'patchright' if is_stealth else 'playwright'
-		global_api_object = GLOBAL_PATCHRIGHT_API_OBJECT if is_stealth else GLOBAL_PLAYWRIGHT_API_OBJECT
-		global_event_loop = GLOBAL_PATCHRIGHT_EVENT_LOOP if is_stealth else GLOBAL_PLAYWRIGHT_EVENT_LOOP
-		self.playwright = (
-			self.playwright or global_api_object or await self._start_global_playwright_subprocess(is_stealth=is_stealth)
-		)
-
-		if global_api_object and global_event_loop != current_loop:
-			self.logger.debug(
-				f'Detected event loop change. Previous {driver_name} instance was created in a different event loop. '
-				'Creating new instance to avoid disconnection when the previous loop closes.'
-			)
-			should_recreate = True
-
-		# Also check if the object exists but is no longer functional
-		if global_api_object and not should_recreate:
-			try:
-				# Try to access the chromium property to verify the object is still valid
-				_ = global_api_object.chromium.executable_path
-			except Exception as e:
-				self.logger.debug(f'Detected invalid {driver_name} instance: {type(e).__name__}. Creating new instance.')
-				should_recreate = True
-
-		if should_recreate:
-			self.playwright = await self._start_global_playwright_subprocess(is_stealth=is_stealth)
-
-		# Log stealth best-practices warnings if applicable
-		if is_stealth:
-			if self.browser_profile.channel and self.browser_profile.channel != BrowserChannel.CHROME:
-				self.logger.info(
-					' 🪄 For maximum stealth, BrowserSession(...) should be passed channel=None or BrowserChannel.CHROME'
-				)
-			if not self.browser_profile.user_data_dir:
-				self.logger.info(' 🪄 For maximum stealth, BrowserSession(...) should be passed a persistent user_data_dir=...')
-			if self.browser_profile.headless or not self.browser_profile.no_viewport:
-				self.logger.info(' 🪄 For maximum stealth, BrowserSession(...) should be passed headless=False & viewport=None')
+			# Check if we can reuse the global playwright instance
+			if (
+				GLOBAL_PLAYWRIGHT_API_OBJECT
+				and GLOBAL_PLAYWRIGHT_EVENT_LOOP == current_event_loop
+				and hasattr(GLOBAL_PLAYWRIGHT_API_OBJECT, '_connection')
+				and not GLOBAL_PLAYWRIGHT_API_OBJECT._connection.is_closed()
+			):
+				self.playwright = GLOBAL_PLAYWRIGHT_API_OBJECT
+				self.logger.debug('Using existing global playwright instance')
+			else:
+				self.playwright = await self._start_global_playwright_subprocess(is_stealth=False)
+				GLOBAL_PLAYWRIGHT_API_OBJECT = self.playwright
+				GLOBAL_PLAYWRIGHT_EVENT_LOOP = current_event_loop
+				self.logger.debug('Created new global playwright instance')
 
 	async def setup_browser_via_passed_objects(self) -> None:
 		"""Override to customize the set up of the connection to an existing browser"""

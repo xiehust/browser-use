@@ -55,6 +55,9 @@ import anyio
 import psutil
 from lmnr import AsyncLaminarClient, Laminar, observe
 from PIL import Image
+import random
+import tempfile
+import os
 
 MAX_IMAGE = 5
 
@@ -1257,41 +1260,130 @@ async def run_stage(stage: Stage, stage_func, timeout: int | None = None):
 	return await stage_func()
 
 
-async def setup_browser_session(task: Task, headless: bool, highlight_elements: bool = True) -> BrowserSession:
-	"""Setup browser session for the task"""
-	logger.debug(f'Browser setup: Initializing BrowserSession for task {task.task_id}')
-
-	# Use incognito mode (user_data_dir=None) for evaluations to avoid state pollution
-	profile = BrowserProfile(
+def create_isolated_browser_profile(task_id: str, headless: bool, highlight_elements: bool = True) -> BrowserProfile:
+	"""Create a browser profile with maximum isolation for parallel execution"""
+	import random
+	import tempfile
+	import os
+	
+	# Generate unique identifiers
+	unique_port = 9222 + random.randint(1000, 9000) + hash(task_id) % 1000
+	temp_dir = tempfile.mkdtemp(prefix=f'browser_eval_{task_id}_')
+	
+	return BrowserProfile(
 		user_data_dir=None,  # Incognito mode - no persistent state
 		headless=headless,
 		chromium_sandbox=False,  # running in docker
-		highlight_elements=highlight_elements,  # Control element highlighting (passed to profile)
-		keep_alive=True,
-		# higher timeouts = higher success rates on long tail of slow sites or if on a slow CI server
-		# timeout=60_000,
-		# default_timeout=60_000,
-		# default_navigation_timeout=60_000,
-		# wait_for_network_idle_page_load_time=60.0,
-		# maximum_wait_page_load_time=60.0,
-		# wait_between_actions=0.5,
-		# ignore_https_errors=True,  # some eval tasks have http:// or broken https sites in them
+		highlight_elements=highlight_elements,
+		keep_alive=False,  # Ensure browsers are cleaned up properly
+		# Optimized timeouts for parallel execution
+		timeout=90_000,
+		default_timeout=90_000,
+		default_navigation_timeout=90_000,
+		wait_for_network_idle_page_load_time=15.0,  # Reduced to avoid hanging
+		maximum_wait_page_load_time=15.0,
+		wait_between_actions=0.1,  # Minimal wait time
+		ignore_https_errors=True,
+		
+		# Enhanced isolation args
+		args=[
+			f'--remote-debugging-port={unique_port}',
+			f'--user-data-dir={temp_dir}',  # Use unique temp directory
+			f'--crash-dumps-dir={temp_dir}/crashes',
+			'--no-first-run',
+			'--disable-default-apps',
+			'--disable-background-networking',
+			'--disable-background-timer-throttling',
+			'--disable-backgrounding-occluded-windows',
+			'--disable-renderer-backgrounding',
+			'--disable-field-trial-config',
+			'--disable-ipc-flooding-protection',
+			'--disable-component-update',
+			'--disable-client-side-phishing-detection',
+			'--disable-sync',
+			'--disable-speech-api',
+			'--disable-background-downloads',
+			'--disable-add-to-shelf',
+			'--disable-datasaver-prompt',
+			'--disable-web-security',
+			'--disable-features=TranslateUI,VizDisplayCompositor,AudioServiceOutOfProcess,OutOfBlinkCors',
+			'--enable-features=NetworkService,NetworkServiceInProcess',
+			'--no-zygote',  # Important for isolation
+			'--disable-dev-shm-usage',  # Crucial for Docker
+			'--disable-gpu-sandbox',
+			'--disable-software-rasterizer',
+			'--disable-extensions-file-access-check',
+			'--disable-hang-monitor',
+			'--disable-prompt-on-repost',
+			'--disable-domain-reliability',
+			'--disable-background-mode',
+			'--disable-permissions-api',
+			'--disable-notifications',
+			'--disable-desktop-notifications',
+			'--disable-file-system',
+			'--disable-geolocation',
+			'--disable-media-session-api',
+			'--disable-presentation-api',
+			'--disable-wake-lock-api',
+			'--aggressive-cache-discard',
+			'--memory-pressure-off',
+		],
+		
+		# Additional isolation settings
+		env={
+			'TMPDIR': temp_dir,
+			'TMP': temp_dir,
+			'TEMP': temp_dir,
+		},
 	)
 
+
+async def setup_browser_session(task: Task, headless: bool, highlight_elements: bool = True) -> BrowserSession:
+	"""Setup browser session for the task with improved isolation for parallel execution"""
+	logger.debug(f'Browser setup: Initializing BrowserSession for task {task.task_id}')
+
+	# Use the isolated browser profile for maximum parallel execution safety
+	profile = create_isolated_browser_profile(task.task_id, headless, highlight_elements)
+
+	# Create browser session with improved error handling
 	browser_session = BrowserSession(browser_profile=profile)
 
-	# Start browser session
-	logger.debug(f'Browser setup: Starting browser session for task {task.task_id}')
-	await browser_session.start()
-	logger.debug(f'Browser setup: Browser session started for task {task.task_id}')
+	try:
+		# Start browser session with retry logic
+		logger.debug(f'Browser setup: Starting browser session for task {task.task_id}')
+		max_retries = 3
+		for attempt in range(max_retries):
+			try:
+				await asyncio.wait_for(browser_session.start(), timeout=120)  # 2 minute timeout
+				break
+			except Exception as e:
+				if attempt == max_retries - 1:
+					raise
+				logger.warning(f'Browser setup attempt {attempt + 1} failed for task {task.task_id}: {e}, retrying...')
+				await asyncio.sleep(1)  # Brief delay before retry
+		
+		logger.debug(f'Browser setup: Browser session started for task {task.task_id}')
 
-	# Navigate to task starting url if provided
-	if task.website:
-		logger.debug(f'Browser setup: Navigating to {task.website} for task {task.task_id}')
-		await browser_session.navigate(task.website)
+		# Navigate to task starting url if provided
+		if task.website:
+			logger.debug(f'Browser setup: Navigating to {task.website} for task {task.task_id}')
+			try:
+				await asyncio.wait_for(browser_session.navigate(task.website), timeout=60)
+			except Exception as e:
+				logger.warning(f'Browser setup: Navigation failed for task {task.task_id}: {e}')
+				# Continue anyway - the agent can navigate later
 
-	logger.debug(f'Browser setup: Setup completed for task {task.task_id}')
-	return browser_session
+		logger.debug(f'Browser setup: Setup completed for task {task.task_id}')
+		return browser_session
+		
+	except Exception as e:
+		logger.error(f'Browser setup: Failed to setup browser for task {task.task_id}: {e}')
+		# Ensure cleanup if setup failed
+		try:
+			await browser_session.kill()
+		except:
+			pass  # Ignore cleanup errors
+		raise
 
 
 @observe(name='executor', span_type='EXECUTOR')  # type: ignore[arg-type]
@@ -1349,15 +1441,90 @@ def save_result_to_server(convex_url: str, secret_key: str, payload: dict) -> bo
 
 
 async def cleanup_browser_safe(browser_session: BrowserSession):
-	"""Safe browser cleanup with timeout"""
+	"""Safe browser cleanup with improved timeout and error handling for parallel execution"""
+	temp_dir_to_cleanup = None
+	
 	try:
-		logger.debug('Browser cleanup: Starting close operation for session')
-		await asyncio.wait_for(browser_session.kill(), timeout=30)
-		logger.debug('Browser cleanup: Close operation completed successfully')
-	except TimeoutError:
-		logger.warning('Browser cleanup: Timed out after 30 seconds')
+		# Extract temp directory from browser args for cleanup
+		if hasattr(browser_session.browser_profile, 'args') and browser_session.browser_profile.args:
+			for arg in browser_session.browser_profile.args:
+				if arg.startswith('--user-data-dir=') and 'browser_eval_' in arg:
+					temp_dir_to_cleanup = arg.split('=', 1)[1]
+					break
+		
+		logger.debug(f'Browser cleanup: Starting close operation for session {browser_session.id[-4:]}')
+		
+		# Use aggressive cleanup with multiple fallback strategies
+		cleanup_tasks = []
+		
+		# First, try graceful shutdown
+		async def graceful_cleanup():
+			try:
+				if browser_session.is_connected():
+					await browser_session.stop()
+				else:
+					await browser_session.kill()
+			except Exception as e:
+				logger.debug(f'Browser cleanup: Graceful cleanup failed: {e}')
+				# Force kill as fallback
+				await browser_session.kill()
+		
+		# Create cleanup task with timeout
+		cleanup_task = asyncio.create_task(graceful_cleanup())
+		cleanup_tasks.append(cleanup_task)
+		
+		try:
+			# Wait for cleanup with shorter timeout for parallel execution
+			await asyncio.wait_for(cleanup_task, timeout=15)
+			logger.debug(f'Browser cleanup: Close operation completed successfully for session {browser_session.id[-4:]}')
+		except TimeoutError:
+			logger.warning(f'Browser cleanup: Timed out after 15 seconds for session {browser_session.id[-4:]}, force killing...')
+			
+			# Cancel the cleanup task
+			cleanup_task.cancel()
+			
+			# Force kill the browser
+			try:
+				browser_session.browser_profile.keep_alive = False
+				await asyncio.wait_for(browser_session.kill(), timeout=10)
+			except Exception as e:
+				logger.warning(f'Browser cleanup: Force kill failed: {e}')
+			
+			# If we have a browser PID, try to kill the process directly
+			if browser_session.browser_pid:
+				try:
+					import psutil
+					proc = psutil.Process(browser_session.browser_pid)
+					proc.terminate()
+					try:
+						proc.wait(timeout=3)
+					except psutil.TimeoutExpired:
+						proc.kill()
+					logger.debug(f'Browser cleanup: Killed process {browser_session.browser_pid} directly')
+				except psutil.NoSuchProcess:
+					pass  # Process already gone
+				except Exception as e:
+					logger.warning(f'Browser cleanup: Failed to kill process directly: {e}')
+		
 	except Exception as e:
 		logger.warning(f'Browser cleanup: Failed with error: {type(e).__name__}: {e}')
+	finally:
+		# Always cleanup any remaining tasks
+		for task in cleanup_tasks:
+			if not task.done():
+				task.cancel()
+		
+		# Clean up temporary directory
+		if temp_dir_to_cleanup and os.path.exists(temp_dir_to_cleanup):
+			try:
+				import shutil
+				await asyncio.to_thread(shutil.rmtree, temp_dir_to_cleanup, ignore_errors=True)
+				logger.debug(f'Browser cleanup: Removed temp directory {temp_dir_to_cleanup}')
+			except Exception as e:
+				logger.warning(f'Browser cleanup: Failed to remove temp directory {temp_dir_to_cleanup}: {e}')
+		
+		# Small delay to let cleanup complete
+		await asyncio.sleep(0.1)
 
 
 def determine_current_stage(completed_stages: set) -> Stage:
