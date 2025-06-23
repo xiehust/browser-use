@@ -17,6 +17,7 @@ from browser_use.browser import BrowserSession
 from browser_use.browser.types import ElementHandle, Page
 from browser_use.controller.registry.service import Registry
 from browser_use.controller.views import (
+	AppendFileAction,
 	ClickElementAction,
 	CloseTabAction,
 	DoneAction,
@@ -26,10 +27,12 @@ from browser_use.controller.views import (
 	NoParamsAction,
 	OpenTabAction,
 	Position,
+	ReadFileAction,
 	ScrollAction,
 	SearchGoogleAction,
 	SendKeysAction,
 	SwitchTabAction,
+	WriteFileAction,
 )
 from browser_use.filesystem.file_system import FileSystem
 from browser_use.utils import time_execution_sync
@@ -634,39 +637,45 @@ Explain the content of the page and that the requested information is not availa
 				return ActionResult(error=msg, include_in_memory=True)
 
 		# File System Actions
-		@self.registry.action('Write content to file_name in file system, use only .md or .txt extensions.')
-		async def write_file(file_name: str, content: str, file_system: FileSystem):
-			result = await file_system.write_file(file_name, content)
+		@self.registry.action('Write content to file_name in file system, use only .md or .txt extensions.', param_model=WriteFileAction)
+		async def write_file(params: WriteFileAction, file_system: FileSystem):
+			result = await file_system.write_file(params.file_name, params.content)
 			logger.info(f'💾 {result}')
 			return ActionResult(extracted_content=result, include_in_memory=True, long_term_memory=result)
 
-		@self.registry.action('Append content to file_name in file system')
-		async def append_file(file_name: str, content: str, file_system: FileSystem):
-			result = await file_system.append_file(file_name, content)
+		@self.registry.action('Append content to file_name in file system', param_model=AppendFileAction)
+		async def append_file(params: AppendFileAction, file_system: FileSystem):
+			result = await file_system.append_file(params.file_name, params.content)
 			logger.info(f'💾 {result}')
 			return ActionResult(extracted_content=result, include_in_memory=True, long_term_memory=result)
 
-		@self.registry.action('Read file_name from file system')
-		async def read_file(file_name: str, available_file_paths: list[str], file_system: FileSystem):
-			if available_file_paths and file_name in available_file_paths:
+		@self.registry.action('Read file_name from file system', param_model=ReadFileAction)
+		async def read_file(params: ReadFileAction, available_file_paths: list[str] | None = None, file_system: FileSystem):
+			if available_file_paths and params.file_name in available_file_paths:
 				import anyio
 
-				async with await anyio.open_file(file_name, 'r') as f:
+				async with await anyio.open_file(params.file_name, 'r') as f:
 					content = await f.read()
-					result = f'Read from file {file_name}.\n<content>\n{content}\n</content>'
+					result = f'Read from file {params.file_name}.\n<content>\n{content}\n</content>'
 			else:
-				result = await file_system.read_file(file_name)
+				result = await file_system.read_file(params.file_name)
 
 			MAX_MEMORY_SIZE = 1000
 			if len(result) > MAX_MEMORY_SIZE:
 				lines = result.splitlines()
 				display = ''
+				lines_included = 0
 				for line in lines:
-					if len(display) + len(line) < MAX_MEMORY_SIZE:
+					if len(display) + len(line) + 1 < MAX_MEMORY_SIZE:  # +1 for newline
 						display += line + '\n'
+						lines_included += 1
 					else:
 						break
-				memory = f'{display}{len(lines) - len(display)} more lines...'
+				remaining_lines = len(lines) - lines_included
+				if remaining_lines > 0:
+					memory = f'{display}{remaining_lines} more lines...'
+				else:
+					memory = display
 			else:
 				memory = result
 			logger.info(f'💾 {memory}')
