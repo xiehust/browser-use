@@ -285,7 +285,7 @@ class Controller(Generic[Context]):
 			'Click and input text into a input interactive element',
 			param_model=InputTextAction,
 		)
-		async def input_text(params: InputTextAction, browser_session: BrowserSession, has_sensitive_data: bool = False):
+		async def input_text(params: InputTextAction, browser_session: BrowserSession, has_sensitive_data: bool):
 			if params.index not in await browser_session.get_selector_map():
 				raise Exception(f'Element index {params.index} does not exist - retry or use alternative actions')
 
@@ -650,7 +650,7 @@ Explain the content of the page and that the requested information is not availa
 			return ActionResult(extracted_content=result, include_in_memory=True, long_term_memory=result)
 
 		@self.registry.action('Read file_name from file system', param_model=ReadFileAction)
-		async def read_file(params: ReadFileAction, file_system: FileSystem, available_file_paths: list[str] | None = None):
+		async def read_file(params: ReadFileAction, file_system: FileSystem, available_file_paths: list[str] | None):
 			if available_file_paths and params.file_name in available_file_paths:
 				import anyio
 
