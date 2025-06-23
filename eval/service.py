@@ -1261,9 +1261,22 @@ async def setup_browser_session(task: Task, headless: bool, highlight_elements: 
 	"""Setup browser session for the task"""
 	logger.debug(f'Browser setup: Initializing BrowserSession for task {task.task_id}')
 
-	# Use incognito mode (user_data_dir=None) for evaluations to avoid state pollution
+	# TEMPORARY FIX: Add small delay to prevent PID detection race condition
+	# when multiple browsers launch simultaneously in parallel evaluation
+	# See: https://github.com/browser-use/browser-use/issues/XXX
+	await asyncio.sleep(1)
+	logger.debug(f'Browser setup: Applied race condition mitigation delay for task {task.task_id}')
+
+	# LONG-TERM FIX: Use unique user_data_dir for each task to ensure proper PID tracking
+	# This prevents browser PID detection race conditions in parallel evaluation
+	# Each browser gets its own temporary user_data_dir tagged with task_id
+	import tempfile
+	import time
+
+	unique_user_data_dir = Path(tempfile.gettempdir()) / f'browser_use_eval_{task.task_id}_{time.time()}'
+
 	profile = BrowserProfile(
-		user_data_dir=None,  # Incognito mode - no persistent state
+		user_data_dir=unique_user_data_dir,  # Unique per task - solves PID race condition
 		headless=headless,
 		chromium_sandbox=False,  # running in docker
 		highlight_elements=highlight_elements,  # Control element highlighting (passed to profile)
@@ -1354,6 +1367,20 @@ async def cleanup_browser_safe(browser_session: BrowserSession):
 		logger.debug('Browser cleanup: Starting close operation for session')
 		await asyncio.wait_for(browser_session.kill(), timeout=30)
 		logger.debug('Browser cleanup: Close operation completed successfully')
+
+		# CLEANUP: Remove temporary user_data_dir after browser is closed
+		if browser_session.browser_profile.user_data_dir and 'browser_use_eval_' in str(
+			browser_session.browser_profile.user_data_dir
+		):
+			try:
+				import shutil
+
+				if browser_session.browser_profile.user_data_dir.exists():
+					shutil.rmtree(browser_session.browser_profile.user_data_dir)
+					logger.debug(f'Browser cleanup: Removed temp user_data_dir: {browser_session.browser_profile.user_data_dir}')
+			except Exception as cleanup_e:
+				logger.warning(f'Browser cleanup: Failed to remove temp user_data_dir: {cleanup_e}')
+
 	except TimeoutError:
 		logger.warning('Browser cleanup: Timed out after 30 seconds')
 	except Exception as e:
@@ -1467,7 +1494,6 @@ async def run_task_with_semaphore(
 			logger.info(f'Task {task.task_id}: Starting execution pipeline.')
 			try:
 				agent_history = None  # Initialize to track agent execution
-
 				# Stage 1: Setup browser
 				try:
 					logger.info(f'Task {task.task_id}: Browser setup starting.')
