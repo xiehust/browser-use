@@ -650,7 +650,7 @@ Explain the content of the page and that the requested information is not availa
 			return ActionResult(extracted_content=result, include_in_memory=True, long_term_memory=result)
 
 		@self.registry.action('Read file_name from file system', param_model=ReadFileAction)
-		async def read_file(params: ReadFileAction, available_file_paths: list[str] | None = None, file_system: FileSystem):
+		async def read_file(params: ReadFileAction, file_system: FileSystem, available_file_paths: list[str] | None = None):
 			if available_file_paths and params.file_name in available_file_paths:
 				import anyio
 
