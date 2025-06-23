@@ -1386,3 +1386,382 @@ class TestControllerIntegration:
 		assert 'Site unavailable' in result.error, f"Expected 'Site unavailable' in error message, got: {result.error}"
 		assert 'nonexistentdndbeyond.com' in result.error, 'Expected URL in error message'
 		assert result.include_in_memory is True, 'Network errors should be included in memory'
+
+
+class TestControllerFileSystemActions:
+	"""Test filesystem actions that were moved from agent to controller in PR #2065."""
+
+	@pytest.fixture
+	def file_system_temp_dir(self):
+		"""Create a temporary directory for FileSystem testing."""
+		with tempfile.TemporaryDirectory() as temp_dir:
+			yield temp_dir
+
+	@pytest.fixture
+	def file_system(self, file_system_temp_dir):
+		"""Create a FileSystem instance for testing."""
+		return FileSystem(file_system_temp_dir)
+
+	async def test_write_file_success(self, controller, browser_session, file_system):
+		"""Test that write_file successfully creates and writes content to files."""
+		test_filename = 'test_write.md'
+		test_content = 'This is test content for write_file action.'
+
+		# Create action model for write_file
+		class WriteFileActionModel(ActionModel):
+			write_file: dict[str, str] | None = None
+
+		action_data = {'write_file': {'file_name': test_filename, 'content': test_content}}
+		action_model = WriteFileActionModel(**action_data)
+
+		# Execute the action
+		result = await controller.act(action_model, browser_session, file_system=file_system)
+
+		# Verify the result
+		assert isinstance(result, ActionResult)
+		assert result.error is None, f'Expected no error but got: {result.error}'
+		assert result.extracted_content is not None
+		assert f'Data written to {test_filename} successfully.' in result.extracted_content
+		assert result.include_in_memory is True
+		assert result.long_term_memory is not None
+		assert test_filename in result.long_term_memory
+
+		# Verify the file was actually created and contains the correct content
+		file_path = file_system.get_dir() / test_filename
+		assert file_path.exists(), f'File {test_filename} was not created'
+		actual_content = file_path.read_text()
+		assert actual_content == test_content, f'File content mismatch: expected {test_content}, got {actual_content}'
+
+	async def test_write_file_invalid_filename(self, controller, browser_session, file_system):
+		"""Test that write_file handles invalid filenames correctly."""
+		invalid_filenames = [
+			'invalid_extension.py',  # Wrong extension
+			'no-extension',  # No extension
+			'invalid@name.md',  # Special characters
+			'',  # Empty filename
+			'test file.md',  # Spaces
+		]
+
+		class WriteFileActionModel(ActionModel):
+			write_file: dict[str, str] | None = None
+
+		for invalid_filename in invalid_filenames:
+			action_data = {'write_file': {'file_name': invalid_filename, 'content': 'test content'}}
+			action_model = WriteFileActionModel(**action_data)
+
+			result = await controller.act(action_model, browser_session, file_system=file_system)
+
+			# Verify error is returned for invalid filename
+			assert isinstance(result, ActionResult)
+			assert result.extracted_content is not None
+			assert 'Invalid filename format' in result.extracted_content
+			assert '.txt or .md extension' in result.extracted_content
+
+	async def test_write_file_overwrite_existing(self, controller, browser_session, file_system):
+		"""Test that write_file overwrites existing files."""
+		test_filename = 'overwrite_test.txt'
+		original_content = 'Original content'
+		new_content = 'New content that overwrites'
+
+		class WriteFileActionModel(ActionModel):
+			write_file: dict[str, str] | None = None
+
+		# Write original content
+		action_data = {'write_file': {'file_name': test_filename, 'content': original_content}}
+		action_model = WriteFileActionModel(**action_data)
+		result1 = await controller.act(action_model, browser_session, file_system=file_system)
+		assert result1.error is None
+
+		# Verify original content was written
+		file_path = file_system.get_dir() / test_filename
+		assert file_path.read_text() == original_content
+
+		# Overwrite with new content
+		action_data = {'write_file': {'file_name': test_filename, 'content': new_content}}
+		action_model = WriteFileActionModel(**action_data)
+		result2 = await controller.act(action_model, browser_session, file_system=file_system)
+
+		# Verify the overwrite succeeded
+		assert isinstance(result2, ActionResult)
+		assert result2.error is None
+		assert f'Data written to {test_filename} successfully.' in result2.extracted_content
+
+		# Verify file content was overwritten
+		actual_content = file_path.read_text()
+		assert actual_content == new_content, f'File was not overwritten: expected {new_content}, got {actual_content}'
+
+	async def test_append_file_success(self, controller, browser_session, file_system):
+		"""Test that append_file successfully appends content to existing files."""
+		test_filename = 'append_test.md'
+		initial_content = 'Initial content\n'
+		append_content = 'Appended content\n'
+
+		class WriteFileActionModel(ActionModel):
+			write_file: dict[str, str] | None = None
+
+		class AppendFileActionModel(ActionModel):
+			append_file: dict[str, str] | None = None
+
+		# First create a file with initial content
+		write_action = {'write_file': {'file_name': test_filename, 'content': initial_content}}
+		write_model = WriteFileActionModel(**write_action)
+		write_result = await controller.act(write_model, browser_session, file_system=file_system)
+		assert write_result.error is None
+
+		# Now append content to the existing file
+		append_action = {'append_file': {'file_name': test_filename, 'content': append_content}}
+		append_model = AppendFileActionModel(**append_action)
+		append_result = await controller.act(append_model, browser_session, file_system=file_system)
+
+		# Verify the append operation succeeded
+		assert isinstance(append_result, ActionResult)
+		assert append_result.error is None
+		assert f'Data appended to {test_filename} successfully.' in append_result.extracted_content
+		assert append_result.include_in_memory is True
+		assert append_result.long_term_memory is not None
+
+		# Verify the file contains both original and appended content
+		file_path = file_system.get_dir() / test_filename
+		actual_content = file_path.read_text()
+		expected_content = initial_content + append_content
+		assert actual_content == expected_content, f'Append failed: expected {expected_content}, got {actual_content}'
+
+	async def test_append_file_multiple_appends(self, controller, browser_session, file_system):
+		"""Test that multiple append operations work correctly."""
+		test_filename = 'multi_append_test.txt'
+		contents = ['Line 1\n', 'Line 2\n', 'Line 3\n']
+
+		class WriteFileActionModel(ActionModel):
+			write_file: dict[str, str] | None = None
+
+		class AppendFileActionModel(ActionModel):
+			append_file: dict[str, str] | None = None
+
+		# Create initial file
+		write_action = {'write_file': {'file_name': test_filename, 'content': contents[0]}}
+		write_model = WriteFileActionModel(**write_action)
+		await controller.act(write_model, browser_session, file_system=file_system)
+
+		# Append remaining content
+		for content in contents[1:]:
+			append_action = {'append_file': {'file_name': test_filename, 'content': content}}
+			append_model = AppendFileActionModel(**append_action)
+			result = await controller.act(append_model, browser_session, file_system=file_system)
+			assert result.error is None
+
+		# Verify all content was appended correctly
+		file_path = file_system.get_dir() / test_filename
+		actual_content = file_path.read_text()
+		expected_content = ''.join(contents)
+		assert actual_content == expected_content
+
+	async def test_append_file_nonexistent_file(self, controller, browser_session, file_system):
+		"""Test that append_file handles non-existent files correctly."""
+		nonexistent_filename = 'nonexistent.md'
+
+		class AppendFileActionModel(ActionModel):
+			append_file: dict[str, str] | None = None
+
+		append_action = {'append_file': {'file_name': nonexistent_filename, 'content': 'some content'}}
+		append_model = AppendFileActionModel(**append_action)
+		result = await controller.act(append_model, browser_session, file_system=file_system)
+
+		# Verify error is returned for non-existent file
+		assert isinstance(result, ActionResult)
+		assert result.extracted_content is not None
+		assert f"File '{nonexistent_filename}' not found." in result.extracted_content
+
+	async def test_append_file_invalid_filename(self, controller, browser_session, file_system):
+		"""Test that append_file handles invalid filenames correctly."""
+		invalid_filename = 'invalid.py'
+
+		class AppendFileActionModel(ActionModel):
+			append_file: dict[str, str] | None = None
+
+		append_action = {'append_file': {'file_name': invalid_filename, 'content': 'content'}}
+		append_model = AppendFileActionModel(**append_action)
+		result = await controller.act(append_model, browser_session, file_system=file_system)
+
+		# Verify error is returned for invalid filename
+		assert isinstance(result, ActionResult)
+		assert result.extracted_content is not None
+		assert 'Invalid filename format' in result.extracted_content
+
+	async def test_read_file_success(self, controller, browser_session, file_system):
+		"""Test that read_file successfully reads file content."""
+		test_filename = 'read_test.md'
+		test_content = 'This is test content for reading.\nIt has multiple lines.\nLine 3 here.'
+
+		class WriteFileActionModel(ActionModel):
+			write_file: dict[str, str] | None = None
+
+		class ReadFileActionModel(ActionModel):
+			read_file: dict[str, str] | None = None
+
+		# First create a file to read
+		write_action = {'write_file': {'file_name': test_filename, 'content': test_content}}
+		write_model = WriteFileActionModel(**write_action)
+		write_result = await controller.act(write_model, browser_session, file_system=file_system)
+		assert write_result.error is None
+
+		# Now read the file
+		read_action = {'read_file': {'file_name': test_filename}}
+		read_model = ReadFileActionModel(**read_action)
+		read_result = await controller.act(read_model, browser_session, file_system=file_system)
+
+		# Verify the read operation succeeded
+		assert isinstance(read_result, ActionResult)
+		assert read_result.error is None
+		assert read_result.extracted_content is not None
+		assert f'Read from file {test_filename}' in read_result.extracted_content
+		assert '<content>' in read_result.extracted_content
+		assert test_content in read_result.extracted_content
+		assert read_result.include_in_memory is True
+		assert read_result.include_extracted_content_only_once is True
+
+	async def test_read_file_with_available_file_paths(self, controller, browser_session, file_system_temp_dir):
+		"""Test that read_file uses available_file_paths when provided."""
+		# Create a file outside the FileSystem's managed directory
+		external_file = Path(file_system_temp_dir) / 'external_file.txt'
+		external_content = 'This is content in an external file.'
+		external_file.write_text(external_content)
+
+		# Create FileSystem instance
+		file_system = FileSystem(file_system_temp_dir + '/fs')
+
+		class ReadFileActionModel(ActionModel):
+			read_file: dict[str, str] | None = None
+
+		# Read the external file using available_file_paths
+		read_action = {'read_file': {'file_name': str(external_file)}}
+		read_model = ReadFileActionModel(**read_action)
+		
+		# The available_file_paths parameter should contain the external file path
+		available_file_paths = [str(external_file)]
+		
+		read_result = await controller.act(
+			read_model, 
+			browser_session, 
+			file_system=file_system, 
+			available_file_paths=available_file_paths
+		)
+
+		# Verify the read operation succeeded using external path
+		assert isinstance(read_result, ActionResult)
+		assert read_result.error is None
+		assert read_result.extracted_content is not None
+		assert f'Read from file {external_file}' in read_result.extracted_content
+		assert external_content in read_result.extracted_content
+
+	async def test_read_file_large_content_memory_handling(self, controller, browser_session, file_system):
+		"""Test that read_file handles large content correctly for memory."""
+		test_filename = 'large_content.md'
+		# Create content larger than the memory threshold (1000 chars)
+		large_content = 'A' * 1500  # Much larger than MAX_MEMORY_SIZE
+
+		class WriteFileActionModel(ActionModel):
+			write_file: dict[str, str] | None = None
+
+		class ReadFileActionModel(ActionModel):
+			read_file: dict[str, str] | None = None
+
+		# Create large file
+		write_action = {'write_file': {'file_name': test_filename, 'content': large_content}}
+		write_model = WriteFileActionModel(**write_action)
+		await controller.act(write_model, browser_session, file_system=file_system)
+
+		# Read the large file
+		read_action = {'read_file': {'file_name': test_filename}}
+		read_model = ReadFileActionModel(**read_action)
+		read_result = await controller.act(read_model, browser_session, file_system=file_system)
+
+		# Verify the result structure for large content
+		assert isinstance(read_result, ActionResult)
+		assert read_result.error is None
+		assert read_result.extracted_content is not None
+		assert large_content in read_result.extracted_content  # Full content in extracted_content
+		assert read_result.long_term_memory is not None
+		# Memory should be truncated with "more lines..." indicator
+		assert len(read_result.long_term_memory) < len(large_content)
+		assert 'more lines...' in read_result.long_term_memory
+
+	async def test_read_file_nonexistent_file(self, controller, browser_session, file_system):
+		"""Test that read_file handles non-existent files correctly."""
+		nonexistent_filename = 'does_not_exist.md'
+
+		class ReadFileActionModel(ActionModel):
+			read_file: dict[str, str] | None = None
+
+		read_action = {'read_file': {'file_name': nonexistent_filename}}
+		read_model = ReadFileActionModel(**read_action)
+		read_result = await controller.act(read_model, browser_session, file_system=file_system)
+
+		# Verify error is returned for non-existent file
+		assert isinstance(read_result, ActionResult)
+		assert read_result.extracted_content is not None
+		assert f"File '{nonexistent_filename}' not found." in read_result.extracted_content
+
+	async def test_read_file_invalid_filename(self, controller, browser_session, file_system):
+		"""Test that read_file handles invalid filenames correctly."""
+		invalid_filename = 'invalid.exe'
+
+		class ReadFileActionModel(ActionModel):
+			read_file: dict[str, str] | None = None
+
+		read_action = {'read_file': {'file_name': invalid_filename}}
+		read_model = ReadFileActionModel(**read_action)
+		read_result = await controller.act(read_model, browser_session, file_system=file_system)
+
+		# Verify error is returned for invalid filename
+		assert isinstance(read_result, ActionResult)
+		assert read_result.extracted_content is not None
+		assert 'Invalid filename format' in read_result.extracted_content
+
+	async def test_filesystem_actions_integration(self, controller, browser_session, file_system):
+		"""Test integration of write, append, and read operations together."""
+		test_filename = 'integration_test.txt'
+		initial_content = 'Initial line\n'
+		appended_content1 = 'Second line\n'
+		appended_content2 = 'Third line\n'
+
+		class WriteFileActionModel(ActionModel):
+			write_file: dict[str, str] | None = None
+
+		class AppendFileActionModel(ActionModel):
+			append_file: dict[str, str] | None = None
+
+		class ReadFileActionModel(ActionModel):
+			read_file: dict[str, str] | None = None
+
+		# Step 1: Write initial content
+		write_action = {'write_file': {'file_name': test_filename, 'content': initial_content}}
+		write_model = WriteFileActionModel(**write_action)
+		write_result = await controller.act(write_model, browser_session, file_system=file_system)
+		assert write_result.error is None
+
+		# Step 2: Append first additional content
+		append_action1 = {'append_file': {'file_name': test_filename, 'content': appended_content1}}
+		append_model1 = AppendFileActionModel(**append_action1)
+		append_result1 = await controller.act(append_model1, browser_session, file_system=file_system)
+		assert append_result1.error is None
+
+		# Step 3: Append second additional content
+		append_action2 = {'append_file': {'file_name': test_filename, 'content': appended_content2}}
+		append_model2 = AppendFileActionModel(**append_action2)
+		append_result2 = await controller.act(append_model2, browser_session, file_system=file_system)
+		assert append_result2.error is None
+
+		# Step 4: Read final content
+		read_action = {'read_file': {'file_name': test_filename}}
+		read_model = ReadFileActionModel(**read_action)
+		read_result = await controller.act(read_model, browser_session, file_system=file_system)
+
+		# Verify final content contains all parts
+		assert read_result.error is None
+		expected_final_content = initial_content + appended_content1 + appended_content2
+		assert expected_final_content in read_result.extracted_content
+
+		# Verify the file on disk matches expected content
+		file_path = file_system.get_dir() / test_filename
+		actual_content = file_path.read_text()
+		assert actual_content == expected_final_content
