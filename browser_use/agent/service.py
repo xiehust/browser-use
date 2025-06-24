@@ -93,7 +93,8 @@ def log_response(response: AgentOutput, registry=None, logger=None) -> None:
 	else:
 		emoji = '❔'
 
-	logger.info(f'💡 Thinking:\n{response.current_state.thinking}')
+	if response.current_state.thinking:
+		logger.info(f'💡 Thinking:\n{response.current_state.thinking}')
 	logger.info(f'{emoji} Eval: {response.current_state.evaluation_previous_goal}')
 	logger.info(f'🧠 Memory: {response.current_state.memory}')
 	logger.info(f'🎯 Next goal: {response.current_state.next_goal}\n')
@@ -179,6 +180,7 @@ class Agent(Generic[Context]):
 		file_system_path: str | None = None,
 		task_id: str | None = None,
 		cloud_sync: CloudSync | None = None,
+		disable_thinking: bool = False,
 	):
 		if page_extraction_llm is None:
 			page_extraction_llm = llm
@@ -197,6 +199,7 @@ class Agent(Generic[Context]):
 		self.llm = llm
 		self.controller = controller
 		self.sensitive_data = sensitive_data
+		self.disable_thinking = disable_thinking
 
 		self.settings = AgentSettings(
 			use_vision=use_vision,
@@ -220,6 +223,7 @@ class Agent(Generic[Context]):
 			planner_interval=planner_interval,
 			is_planner_reasoning=is_planner_reasoning,
 			extend_planner_system_message=extend_planner_system_message,
+			disable_thinking=disable_thinking,
 		)
 
 		# Memory settings
@@ -290,6 +294,7 @@ class Agent(Generic[Context]):
 				max_actions_per_step=self.settings.max_actions_per_step,
 				override_system_message=override_system_message,
 				extend_system_message=extend_system_message,
+				disable_thinking=disable_thinking,
 			).get_system_message(),
 			file_system=self.file_system,
 			settings=MessageManagerSettings(
@@ -298,6 +303,7 @@ class Agent(Generic[Context]):
 				message_context=self.settings.message_context,
 				sensitive_data=sensitive_data,
 				available_file_paths=self.settings.available_file_paths,
+				disable_thinking=disable_thinking,
 			),
 			available_file_paths=self.settings.available_file_paths,
 			state=self.state.message_manager_state,

@@ -55,21 +55,24 @@ class AgentSettings(BaseModel):
 		'type',
 		'name',
 		'role',
-		'tabindex',
 		'aria-label',
 		'placeholder',
 		'value',
 		'alt',
 		'aria-expanded',
+		'data-date-format',
+		'checked',
+		'data-state',
+		'aria-checked',
 	]
-	max_actions_per_step: int = 10
-
+	max_actions_per_step: int = 1
 	tool_calling_method: ToolCallingMethod | None = 'auto'
 	page_extraction_llm: BaseChatModel | None = None
 	planner_llm: BaseChatModel | None = None
 	planner_interval: int = 1  # Run planner every N steps
-	is_planner_reasoning: bool = False  # type: ignore
+	is_planner_reasoning: bool = False
 	extend_planner_system_message: str | None = None
+	disable_thinking: bool = False
 
 
 class AgentState(BaseModel):
@@ -152,7 +155,7 @@ class StepMetadata(BaseModel):
 
 
 class AgentBrain(BaseModel):
-	thinking: str
+	thinking: str | None = None
 	evaluation_previous_goal: str
 	memory: str
 	next_goal: str
@@ -161,7 +164,7 @@ class AgentBrain(BaseModel):
 class AgentOutput(BaseModel):
 	model_config = ConfigDict(arbitrary_types_allowed=True)
 
-	thinking: str
+	thinking: str | None = None
 	evaluation_previous_goal: str
 	memory: str
 	next_goal: str
@@ -227,12 +230,14 @@ class AgentHistory(BaseModel):
 		if self.model_output:
 			action_dump = [action.model_dump(exclude_none=True) for action in self.model_output.action]
 			model_output_dump = {
-				'thinking': self.model_output.thinking,
 				'evaluation_previous_goal': self.model_output.evaluation_previous_goal,
 				'memory': self.model_output.memory,
 				'next_goal': self.model_output.next_goal,
 				'action': action_dump,  # This preserves the actual action data
 			}
+			# Only include thinking if it's not None
+			if self.model_output.thinking is not None:
+				model_output_dump['thinking'] = self.model_output.thinking
 
 		return {
 			'model_output': model_output_dump,

@@ -196,6 +196,7 @@ class MessageManagerSettings(BaseModel):
 	# Support both old format {key: value} and new format {domain: {key: value}}
 	sensitive_data: dict[str, str | dict[str, str]] | None = None
 	available_file_paths: list[str] | None = None
+	disable_thinking: bool = False
 
 
 class MessageManager:
@@ -213,7 +214,7 @@ class MessageManager:
 		self.state = state
 		self.system_prompt = system_message
 		self.file_system = file_system
-		self.agent_history_description = '<system>Agent initialized</system>\n'
+		self.agent_history_description = '<s>Agent initialized</s>\n'
 		self.read_state_description = ''
 		self.sensitive_data_description = ''
 		self.available_file_paths = available_file_paths
@@ -235,33 +236,26 @@ class MessageManager:
 			info_message = HumanMessage(content=info)
 			self._add_message_with_tokens(info_message, message_type='init')
 
-		placeholder_message = HumanMessage(
-			content='<example_1>\nHere is an example output of thinking and tool call. You can use it as a reference but do not copy it exactly.'
-		)
+		if not self.settings.disable_thinking:
+			placeholder_message = HumanMessage(
+				content='<example_1>\nHere is an example output of thinking and tool call. You can use it as a reference but do not copy it exactly.'
+			)
+		else:
+			placeholder_message = HumanMessage(
+				content='<example_1>\nHere is an example output of tool call. You can use it as a reference but do not copy it exactly.'
+			)
 		# placeholder_message = HumanMessage(content='Example output:')
 		self._add_message_with_tokens(placeholder_message, message_type='init')
 
-		example_tool_call_1 = AIMessage(
-			content='',
-			tool_calls=[
+		example_args = {
+			'evaluation_previous_goal': 'Navigated to GitHub explore page. Verdict: Success',
+			'memory': 'Found initial repositories such as bytedance/UI-TARS-desktop and ray-project/kuberay.',
+			'next_goal': 'Create todo.md checklist to track progress, initialize github.md for collecting information, and click on bytedance/UI-TARS-desktop.',
+			'action': [
 				{
-					'name': 'AgentOutput',
-					'args': {
-						'thinking': """I have successfully navigated to https://github.com/explore and can see the page has loaded with a list of featured repositories. The page contains interactive elements and I can identify specific repositories like bytedance/UI-TARS-desktop (index [4]) and ray-project/kuberay (index [5]). The user's request is to explore GitHub repositories and collect information about them such as descriptions, stars, or other metadata. So far, I haven't collected any information.
-My navigation to the GitHub explore page was successful. The page loaded correctly and I can see the expected content.
-I need to capture the key repositories I've identified so far into my memory and into a file.
-Since this appears to be a multi-step task involving visiting multiple repositories and collecting their information, I need to create a structured plan in todo.md.
-After writing todo.md, I can also initialize a github.md file to accumulate the information I've collected.
-The file system actions do not change the browser state, so I can also click on the bytedance/UI-TARS-desktop (index [4]) to start collecting information.
-""",
-						'evaluation_previous_goal': 'Navigated to GitHub explore page. Verdict: Success',
-						'memory': 'Found initial repositories such as bytedance/UI-TARS-desktop and ray-project/kuberay.',
-						'next_goal': 'Create todo.md checklist to track progress, initialize github.md for collecting information, and click on bytedance/UI-TARS-desktop.',
-						'action': [
-							{
-								'write_file': {
-									'path': 'todo.md',
-									'content': """
+					'write_file': {
+						'path': 'todo.md',
+						'content': """
 # Interesting Github Repositories in Explore Section
 
 ## Tasks
@@ -274,23 +268,40 @@ The file system actions do not change the browser state, so I can also click on 
 - [ ] Validate that I have not missed anything in the page
 - [ ] Report final results to user
 """.strip('\n'),
-								}
-							},
-							{
-								'write_file': {
-									'path': 'github.md',
-									'content': """
+					}
+				},
+				{
+					'write_file': {
+						'path': 'github.md',
+						'content': """
 # Github Repositories:
 """,
-								}
-							},
-							{
-								'click_element_by_index': {
-									'index': 4,
-								}
-							},
-						],
-					},
+					}
+				},
+				{
+					'click_element_by_index': {
+						'index': 4,
+					}
+				},
+			],
+		}
+		
+		# Add thinking field if not disabled
+		if not self.settings.disable_thinking:
+			example_args['thinking'] = """I have successfully navigated to https://github.com/explore and can see the page has loaded with a list of featured repositories. The page contains interactive elements and I can identify specific repositories like bytedance/UI-TARS-desktop (index [4]) and ray-project/kuberay (index [5]). The user's request is to explore GitHub repositories and collect information about them such as descriptions, stars, or other metadata. So far, I haven't collected any information.
+My navigation to the GitHub explore page was successful. The page loaded correctly and I can see the expected content.
+I need to capture the key repositories I've identified so far into my memory and into a file.
+Since this appears to be a multi-step task involving visiting multiple repositories and collecting their information, I need to create a structured plan in todo.md.
+After writing todo.md, I can also initialize a github.md file to accumulate the information I've collected.
+The file system actions do not change the browser state, so I can also click on the bytedance/UI-TARS-desktop (index [4]) to start collecting information.
+"""
+
+		example_tool_call_1 = AIMessage(
+			content='',
+			tool_calls=[
+				{
+					'name': 'AgentOutput',
+					'args': example_args,
 					'id': str(self.state.tool_id),
 					'type': 'tool_call',
 				},

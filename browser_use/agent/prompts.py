@@ -17,15 +17,21 @@ class SystemPrompt:
 		max_actions_per_step: int = 10,
 		override_system_message: str | None = None,
 		extend_system_message: str | None = None,
+		disable_thinking: bool = False,
 	):
 		self.default_action_description = action_description
 		self.max_actions_per_step = max_actions_per_step
+		self.disable_thinking = disable_thinking
 		prompt = ''
 		if override_system_message:
 			prompt = override_system_message
 		else:
 			self._load_prompt_template()
 			prompt = self.prompt_template.format(max_actions=self.max_actions_per_step)
+			
+			# Modify prompt if thinking is disabled
+			if disable_thinking:
+				prompt = self._remove_thinking_requirements(prompt)
 
 		if extend_system_message:
 			prompt += f'\n{extend_system_message}'
@@ -40,6 +46,25 @@ class SystemPrompt:
 				self.prompt_template = f.read()
 		except Exception as e:
 			raise RuntimeError(f'Failed to load system prompt template: {e}')
+
+	def _remove_thinking_requirements(self, prompt: str) -> str:
+		"""Remove thinking requirements from the system prompt when thinking is disabled."""
+		# Remove the reasoning_rules section that mandates thinking
+		import re
+		
+		# Remove the entire reasoning_rules section
+		prompt = re.sub(r'<reasoning_rules>.*?</reasoning_rules>', '', prompt, flags=re.DOTALL)
+		
+		# Remove the thinking field from the output format
+		prompt = re.sub(r'"thinking": "A structured.*?",\s*', '', prompt, flags=re.DOTALL)
+		
+		# Update the output format description to remove thinking reference
+		prompt = prompt.replace(
+			'You must reason explicitly and systematically at every step in your `thinking` block.',
+			'You must analyze the situation and determine the next action to take.'
+		)
+		
+		return prompt
 
 	def get_system_message(self) -> SystemMessage:
 		"""
