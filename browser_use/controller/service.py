@@ -27,7 +27,7 @@ from browser_use.controller.views import (
 	SendKeysAction,
 	SwitchTabAction,
 )
-from browser_use.filesystem.file_system import FileSystem
+# FileSystem import removed - using generic file_system parameter instead
 from browser_use.llm.base import BaseChatModel
 from browser_use.llm.messages import UserMessage
 from browser_use.utils import time_execution_sync
@@ -108,7 +108,7 @@ class Controller(Generic[Context]):
 				'Complete task - provide a summary of results for the user. Set success=True if task completed successfully, false otherwise. Text should be your response to the user summarizing results. Include files you would like to display to the user in files_to_display.',
 				param_model=DoneAction,
 			)
-			async def done(params: DoneAction, file_system: FileSystem):
+			async def done(params: DoneAction, file_system):
 				user_message = params.text
 
 				len_text = len(params.text)
@@ -133,14 +133,19 @@ class Controller(Generic[Context]):
 					else:
 						logger.warning('Agent wanted to display files but none were found')
 
-				attachments = [str(file_system.get_dir() / file_name) for file_name in attachments]
+				# Use MemoryFileSystem's materialize_files method for attachments
+				if hasattr(file_system, 'materialize_files'):
+					attachment_paths = file_system.materialize_files(attachments)
+				else:
+					# Fallback for original FileSystem (for backward compatibility)
+					attachment_paths = [str(file_system.get_dir() / file_name) for file_name in attachments]
 
 				return ActionResult(
 					is_done=True,
 					success=params.success,
 					extracted_content=user_message,
 					long_term_memory=memory,
-					attachments=attachments,
+					attachments=attachment_paths,
 				)
 
 		# Basic Navigation Actions
@@ -373,7 +378,7 @@ Only use this for extracting info from a single product/article page, not for en
 			query: str,
 			page: Page,
 			page_extraction_llm: BaseChatModel,
-			file_system: FileSystem,
+			file_system,
 		):
 			from functools import partial
 
@@ -636,19 +641,19 @@ Explain the content of the page and that the requested information is not availa
 
 		# File System Actions
 		@self.registry.action('Write content to file_name in file system, use only .md or .txt extensions.')
-		async def write_file(file_name: str, content: str, file_system: FileSystem):
+		async def write_file(file_name: str, content: str, file_system):
 			result = await file_system.write_file(file_name, content)
 			logger.info(f'💾 {result}')
 			return ActionResult(extracted_content=result, include_in_memory=True, long_term_memory=result)
 
 		@self.registry.action('Append content to file_name in file system')
-		async def append_file(file_name: str, content: str, file_system: FileSystem):
+		async def append_file(file_name: str, content: str, file_system):
 			result = await file_system.append_file(file_name, content)
 			logger.info(f'💾 {result}')
 			return ActionResult(extracted_content=result, include_in_memory=True, long_term_memory=result)
 
 		@self.registry.action('Read file_name from file system')
-		async def read_file(file_name: str, available_file_paths: list[str], file_system: FileSystem):
+		async def read_file(file_name: str, available_file_paths: list[str], file_system):
 			if available_file_paths and file_name in available_file_paths:
 				import anyio
 
@@ -1189,7 +1194,7 @@ Explain the content of the page and that the requested information is not availa
 		page_extraction_llm: BaseChatModel | None = None,
 		sensitive_data: dict[str, str | dict[str, str]] | None = None,
 		available_file_paths: list[str] | None = None,
-		file_system: FileSystem | None = None,
+		file_system = None,
 		#
 		context: Context | None = None,
 	) -> ActionResult:

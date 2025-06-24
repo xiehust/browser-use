@@ -19,6 +19,7 @@ from browser_use.dom.history_tree_processor.service import (
 	HistoryTreeProcessor,
 )
 from browser_use.dom.views import SelectorMap
+from browser_use.filesystem.memory_file_system import MemoryFileSystem
 from browser_use.llm.base import BaseChatModel
 
 
@@ -73,9 +74,9 @@ class AgentState(BaseModel):
 	stopped: bool = False
 
 	message_manager_state: MessageManagerState = Field(default_factory=MessageManagerState)
+	file_system: MemoryFileSystem = Field(default_factory=MemoryFileSystem, description="In-memory file system for agent")
 
-	# class Config:
-	# 	arbitrary_types_allowed = True
+	model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 @dataclass

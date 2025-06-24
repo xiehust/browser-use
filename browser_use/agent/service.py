@@ -66,7 +66,7 @@ from browser_use.dom.history_tree_processor.service import (
 	HistoryTreeProcessor,
 )
 from browser_use.exceptions import LLMException
-from browser_use.filesystem.file_system import FileSystem
+from browser_use.filesystem.memory_file_system import MemoryFileSystem
 from browser_use.sync import CloudSync
 from browser_use.telemetry.service import ProductTelemetry
 from browser_use.telemetry.views import AgentTelemetryEvent
@@ -514,17 +514,14 @@ class Agent(Generic[Context]):
 			self.logger.info(f'📁 No new downloads detected (tracking {len(current_files)} files)')
 
 	def _set_file_system(self, file_system_path: str | None = None) -> None:
-		# Initialize file system
-		if file_system_path:
-			self.file_system = FileSystem(file_system_path)
-			self.file_system_path = file_system_path
-		else:
-			# create a temporary file system using agent ID
-			base_tmp = tempfile.gettempdir()  # e.g., /tmp on Unix
-			self.file_system_path = os.path.join(base_tmp, f'browser_use_agent_{self.id}')
-			self.file_system = FileSystem(self.file_system_path)
+		# Use the MemoryFileSystem from AgentState (always in-memory)
+		self.file_system = self.state.file_system
+		
+		# Set file_system_path to None since we're using memory-based storage
+		# Only used for logging compatibility - actual storage is in memory
+		self.file_system_path = None
 
-		logger.info(f'💾 File system path: {self.file_system_path}')
+		logger.info(f'💾 File system: In-memory (serializable)')
 
 		# TODO: move this logic to special registries -> we have methods to combine controllers
 
