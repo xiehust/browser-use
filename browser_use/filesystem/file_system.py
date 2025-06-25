@@ -169,17 +169,28 @@ class FileSystem(BaseModel):
 		'txt': TxtFile,
 	}
 
-	def __init__(self, dir_path: str, _restore_mode: bool = False, **kwargs):
+	def __init__(self, dir_path: str, _restore_mode: bool = False, _use_existing_dir: bool = False, **kwargs):
 		# Handle the Path conversion before calling super().__init__
 		base_dir = Path(dir_path)
-		base_dir.mkdir(parents=True, exist_ok=True)
-
-		# Create and use a dedicated subfolder for all operations
-		data_dir = base_dir / 'browseruse_agent_data'
-		if data_dir.exists():
-			# clean the data directory
-			shutil.rmtree(data_dir)
-		data_dir.mkdir(exist_ok=True)
+		
+		if not _restore_mode:
+			base_dir.mkdir(parents=True, exist_ok=True)
+			# Create and use a dedicated subfolder for all operations
+			data_dir = base_dir / 'browseruse_agent_data'
+			if data_dir.exists():
+				# clean the data directory
+				shutil.rmtree(data_dir)
+			data_dir.mkdir(exist_ok=True)
+		else:
+			# In restore mode, use the provided path directly or ensure it exists
+			if _use_existing_dir:
+				data_dir = base_dir
+				data_dir.mkdir(parents=True, exist_ok=True)
+			else:
+				# Legacy restore mode - create browseruse_agent_data subfolder
+				base_dir.mkdir(parents=True, exist_ok=True)
+				data_dir = base_dir / 'browseruse_agent_data'
+				data_dir.mkdir(parents=True, exist_ok=True)
 
 		super().__init__(base_dir=data_dir, **kwargs)
 
@@ -416,26 +427,69 @@ class FileSystem(BaseModel):
 	@classmethod
 	def from_state(cls, state: FileSystemState) -> 'FileSystem':
 		"""Restore file system from serializable state using direct initialization"""
-		# Get the parent directory (state.base_dir points to browseruse_agent_data folder)
-		base_dir = Path(state.base_dir)
-		parent_dir = str(base_dir.parent)
+		try:
+			# Parse the base_dir from state
+			state_base_dir = Path(state.base_dir)
+			
+			# Check if state.base_dir already points to the browseruse_agent_data folder
+			if state_base_dir.name == 'browseruse_agent_data':
+				# Use the existing directory structure
+				instance = cls(
+					str(state_base_dir), 
+					_restore_mode=True, 
+					_use_existing_dir=True,
+					extracted_content_count=state.extracted_content_count
+				)
+			else:
+				# Legacy case: state.base_dir points to parent, create browseruse_agent_data subfolder
+				instance = cls(
+					str(state_base_dir), 
+					_restore_mode=True, 
+					_use_existing_dir=False,
+					extracted_content_count=state.extracted_content_count
+				)
 
-		# Use constructor in restore mode (bypasses safety checks and default file creation)
-		instance = cls(parent_dir, _restore_mode=True, extracted_content_count=state.extracted_content_count)
+			# Build dynamic type mapping from the class registry
+			# Access the class attribute correctly - use the __dict__ to bypass Pydantic wrapping
+			file_types = cls.__dict__.get('_file_types', {'md': MarkdownFile, 'txt': TxtFile})
+			type_mapping = {}
+			for ext, file_class in file_types.items():
+				type_mapping[file_class.__name__] = file_class
+			
+			# Add fallback for unknown types
+			default_fallback = TxtFile
 
-		# Restore files from state
-		type_mapping = {
-			'MarkdownFile': MarkdownFile,
-			'TxtFile': TxtFile,
-		}
+			# Restore files from state
+			for full_filename, file_data in state.files.items():
+				try:
+					file_type = file_data.get('type', 'TxtFile')
+					file_class = type_mapping.get(file_type, default_fallback)
+					
+					# Validate file data structure
+					if 'data' not in file_data:
+						raise ValueError(f"Invalid file data structure for {full_filename}")
+					
+					# Create file object from data
+					file_obj = file_class(**file_data['data'])
+					instance.files[full_filename] = file_obj
 
-		for full_filename, file_data in state.files.items():
-			file_type = file_data['type']
-			file_class = type_mapping.get(file_type, TxtFile)
-			file_obj = file_class(**file_data['data'])
-			instance.files[full_filename] = file_obj
+					# Write the restored file to disk
+					instance._sync_file_to_disk(file_obj)
+					
+				except Exception as e:
+					# Log warning but continue with other files
+					print(f"Warning: Failed to restore file {full_filename}: {e}")
+					# Create a basic text file as fallback
+					try:
+						name_without_ext, extension = instance._parse_filename(full_filename)
+						fallback_content = file_data.get('data', {}).get('content', '')
+						fallback_obj = default_fallback(name=name_without_ext, content=str(fallback_content))
+						instance.files[full_filename] = fallback_obj
+						instance._sync_file_to_disk(fallback_obj)
+					except Exception as fallback_error:
+						print(f"Error: Could not create fallback for {full_filename}: {fallback_error}")
 
-			# Write the restored file to disk
-			instance._sync_file_to_disk(file_obj)
-
-		return instance
+			return instance
+			
+		except Exception as e:
+			raise ValueError(f"Failed to restore FileSystem from state: {e}") from e
