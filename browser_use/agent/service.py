@@ -712,6 +712,11 @@ class Agent(Generic[Context]):
 				page_action_message = f'For this page, these additional actions are available:\n{page_filtered_actions}'
 				self._message_manager._add_message_with_type(UserMessage(content=page_action_message))
 
+			# Check for potential loop patterns and add guidance if detected
+			loop_guidance = self._detect_and_handle_loops()
+			if loop_guidance:
+				self._message_manager._add_message_with_type(UserMessage(content=loop_guidance))
+
 			self._message_manager.add_state_message(
 				browser_state_summary=browser_state_summary,
 				model_output=self.state.last_model_output,
@@ -882,6 +887,96 @@ class Agent(Generic[Context]):
 				# Emit CreateAgentStepEvent
 				step_event = CreateAgentStepEvent.from_agent_step(self, model_output, result, actions_data, browser_state_summary)
 				self.eventbus.dispatch(step_event)
+
+	def _detect_and_handle_loops(self) -> str | None:
+		"""Detect potential loop patterns and provide guidance to break out of them"""
+		if len(self.state.history.history) < 3:
+			return None
+		
+		recent_steps = self.state.history.history[-3:]
+		
+		# Check for repeated goal patterns
+		recent_goals = []
+		for step in recent_steps:
+			if step.model_output and hasattr(step.model_output.current_state, 'next_goal'):
+				recent_goals.append(step.model_output.current_state.next_goal.lower())
+		
+		# Check for exact goal repetition
+		if len(set(recent_goals)) == 1 and len(recent_goals) >= 2:
+			return """⚠️ LOOP DETECTED: You've been trying the same goal repeatedly. Try a different approach:
+• Use alternative element indexes or actions
+• Scroll to find different elements
+• Navigate to a different page or section
+• Break down the goal into smaller steps
+• Consider if the current approach is feasible"""
+		
+		# Check for similar action patterns
+		recent_actions = []
+		for step in recent_steps:
+			if step.model_output and step.model_output.action:
+				for action in step.model_output.action:
+					action_data = action.model_dump(exclude_unset=True)
+					action_name = next(iter(action_data.keys())) if action_data else 'unknown'
+					recent_actions.append(action_name)
+		
+		# Check for action repetition
+		if len(recent_actions) >= 3:
+			if recent_actions[-1] == recent_actions[-2] == recent_actions[-3]:
+				return f"""⚠️ ACTION LOOP DETECTED: You've used '{recent_actions[-1]}' action 3 times in a row. 
+Try alternative approaches:
+• Wait for page to load completely
+• Scroll or navigate to find different elements
+• Use extract_structured_data to get full page content
+• Try a completely different strategy"""
+		
+		# Check for error repetition
+		recent_errors = [step.result[-1].error for step in recent_steps 
+		               if step.result and step.result[-1].error]
+		
+		if len(recent_errors) >= 2 and recent_errors[-1] == recent_errors[-2]:
+			return """⚠️ REPEATED ERROR DETECTED: Same error occurring multiple times.
+Try recovery strategies:
+• Wait longer for page to load
+• Refresh the page
+• Navigate back and try different path
+• Use alternative elements or actions
+• Update your todo.md with new approach"""
+		
+		return None
+
+	def _get_todo_guidance(self) -> str | None:
+		"""Provide guidance on todo.md usage for better task management"""
+		if self.state.n_steps < 2:
+			return None
+			
+		# Check if this seems like a multi-step task that would benefit from todo.md
+		if self.state.n_steps >= 3:
+			# Try to read current todo.md to see if it needs updating
+			try:
+				if self.file_system:
+					todo_content = self.file_system.read_file_sync("todo.md")
+					if not todo_content or todo_content.strip() == "":
+						return """💡 TASK PLANNING TIP: This seems like a multi-step task. Consider creating a todo.md file to track your progress:
+• Use checkbox format: - [ ] Task description
+• Break down the main goal into specific steps
+• Update checkboxes as you complete each step
+• This helps avoid getting stuck and ensures nothing is missed"""
+					
+					# Check if todo.md hasn't been updated recently
+					unchecked_items = todo_content.count('- [ ]')
+					checked_items = todo_content.count('- [x]')
+					
+					if unchecked_items > 0 and self.state.n_steps % 5 == 0:
+						return """💡 TODO REMINDER: You have uncompleted items in todo.md. Consider:
+• Updating completed items with [x]
+• Adding new items if the plan has changed
+• Removing or modifying items that are no longer relevant
+• This helps track progress and avoid repetition"""
+						
+			except Exception:
+				pass  # todo.md doesn't exist yet, which is fine
+				
+		return None
 
 	@time_execution_async('--handle_step_error (agent)')
 	async def _handle_step_error(self, error: Exception) -> list[ActionResult]:

@@ -36,7 +36,8 @@ logger = logging.getLogger(__name__)
 
 
 async def retry_async_function(
-	func: Callable[[], Awaitable[Any]], error_message: str, n_retries: int = 3, sleep_seconds: float = 1
+	func: Callable[[], Awaitable[Any]], error_message: str, n_retries: int = 3, sleep_seconds: float = 1, 
+	exponential_backoff: bool = True
 ) -> tuple[Any | None, ActionResult | None]:
 	"""
 	Retry an async function n times before giving up and returning an ActionResult with an error.
@@ -45,23 +46,35 @@ async def retry_async_function(
 		func: Async function to retry
 		error_message: Error message to use in ActionResult if all retries fail
 		n_retries: Number of retries (default 3)
-		sleep_seconds: Seconds to sleep between retries (default 1)
+		sleep_seconds: Base seconds to sleep between retries (default 1)
+		exponential_backoff: Whether to use exponential backoff (default True)
 
 	Returns:
 		Tuple of (result, None) on success or (None, ActionResult) on failure
 	"""
+	last_error = None
 	for attempt in range(n_retries):
 		try:
 			result = await func()
 			return result, None
 		except Exception as e:
-			await asyncio.sleep(sleep_seconds)
-			logger.debug(f'Error (attempt {attempt + 1}/{n_retries}): {e}')
-			if attempt == n_retries - 1:  # Last attempt failed
-				return None, ActionResult(error=error_message + str(e))
+			last_error = e
+			if attempt < n_retries - 1:  # Don't sleep on last attempt
+				sleep_time = sleep_seconds * (2 ** attempt) if exponential_backoff else sleep_seconds
+				await asyncio.sleep(sleep_time)
+				logger.debug(f'Retry attempt {attempt + 1}/{n_retries} failed: {e}. Retrying in {sleep_time}s...')
+			else:
+				logger.debug(f'All {n_retries} retry attempts failed. Last error: {e}')
 
-	# Should never reach here but make type checker happy
-	return None, ActionResult(error=error_message)
+	# Create more informative error message
+	detailed_error = f"{error_message} (Failed after {n_retries} attempts. Last error: {str(last_error)})"
+	return None, ActionResult(error=detailed_error)
+
+
+def create_actionable_error_message(base_error: str, suggested_actions: list[str]) -> str:
+	"""Create an actionable error message with suggested next steps"""
+	suggestions = " Suggestions: " + " → ".join(suggested_actions) if suggested_actions else ""
+	return f"{base_error}.{suggestions}"
 
 
 Context = TypeVar('Context')
@@ -189,7 +202,10 @@ class Controller(Generic[Context]):
 						'net::',
 					]
 				):
-					site_unavailable_msg = f'Site unavailable: {params.url} - {error_msg}'
+					site_unavailable_msg = create_actionable_error_message(
+						f'Site unavailable: {params.url} - {error_msg}',
+						['Try alternative URL', 'Check internet connection', 'Try different website']
+					)
 					logger.warning(site_unavailable_msg)
 					return ActionResult(
 						success=False, error=site_unavailable_msg, include_in_memory=True, long_term_memory=site_unavailable_msg
@@ -231,8 +247,16 @@ class Controller(Generic[Context]):
 				if params.index not in selector_map:
 					# Return informative message with the new state instead of error
 					max_index = max(selector_map.keys()) if selector_map else -1
-					msg = f'Element with index {params.index} does not exist. Page has {len(selector_map)} interactive elements (indices 0-{max_index}). State has been refreshed - please use the updated element indices.'
-					return ActionResult(extracted_content=msg, include_in_memory=True, success=False, long_term_memory=msg)
+					available_indexes = list(selector_map.keys())[:10]  # Show first 10 available indexes
+					index_hint = f"Available indexes: {available_indexes}" if available_indexes else "No interactive elements found"
+					
+					error_msg = create_actionable_error_message(
+						f'Element with index {params.index} does not exist. Page has {len(selector_map)} interactive elements (max index: {max_index})',
+						['Use valid index from browser_state', 'Scroll to find more elements', 'Wait for page to load']
+					)
+					error_msg += f" {index_hint}"
+					
+					return ActionResult(extracted_content=error_msg, include_in_memory=True, success=False, long_term_memory=error_msg)
 
 			element_node = await browser_session.get_dom_element_by_index(params.index)
 			initial_pages = len(browser_session.tabs)
@@ -240,7 +264,10 @@ class Controller(Generic[Context]):
 			# if element has file uploader then dont click
 			# Check if element is actually a file input (not just contains file-related keywords)
 			if element_node is not None and browser_session.is_file_input(element_node):
-				msg = f'Index {params.index} - has an element which opens file upload dialog. To upload files please use a specific function to upload files '
+				msg = create_actionable_error_message(
+					f'Index {params.index} is a file upload element',
+					['Use file upload action instead', 'Skip if not needed for task']
+				)
 				logger.info(msg)
 				return ActionResult(extracted_content=msg, include_in_memory=True, success=False, long_term_memory=msg)
 
@@ -248,7 +275,27 @@ class Controller(Generic[Context]):
 
 			try:
 				assert element_node is not None, f'Element with index {params.index} does not exist'
-				download_path = await browser_session._click_element_node(element_node)
+				
+				# Enhanced retry logic for clicking with better error handling
+				async def click_with_retry():
+					return await browser_session._click_element_node(element_node)
+				
+				download_path_result, error_result = await retry_async_function(
+					click_with_retry,
+					f"Failed to click element {params.index}",
+					n_retries=2,
+					sleep_seconds=1
+				)
+				
+				if error_result:
+					# If clicking failed after retries, provide actionable guidance
+					actionable_error = create_actionable_error_message(
+						f'Could not click element {params.index}',
+						['Wait for page to load', 'Scroll to element', 'Try alternative element', 'Refresh page']
+					)
+					return ActionResult(error=actionable_error, success=False, include_in_memory=True)
+				
+				download_path = download_path_result
 				if download_path:
 					emoji = '💾'
 					msg = f'Downloaded file to {download_path}'
@@ -275,24 +322,56 @@ class Controller(Generic[Context]):
 						error='Page navigated during click. Refreshed state provided.', include_in_memory=True, success=False
 					)
 				else:
-					logger.warning(f'Element not clickable with index {params.index} - most likely the page changed')
-					return ActionResult(error=error_msg, success=False)
+					actionable_error = create_actionable_error_message(
+						f'Click failed on element {params.index}: {error_msg}',
+						['Wait for page to stabilize', 'Try different element', 'Scroll to element', 'Refresh page']
+					)
+					logger.warning(actionable_error)
+					return ActionResult(error=actionable_error, success=False)
 
 		@self.registry.action(
 			'Click and input text into a input interactive element',
 			param_model=InputTextAction,
 		)
 		async def input_text(params: InputTextAction, browser_session: BrowserSession, has_sensitive_data: bool = False):
-			if params.index not in await browser_session.get_selector_map():
-				raise Exception(f'Element index {params.index} does not exist - retry or use alternative actions')
+			selector_map = await browser_session.get_selector_map()
+			if params.index not in selector_map:
+				available_indexes = list(selector_map.keys())[:10]
+				error_msg = create_actionable_error_message(
+					f'Element index {params.index} does not exist',
+					['Use valid index from browser_state', 'Scroll to find element', 'Wait for page to load']
+				)
+				error_msg += f" Available indexes: {available_indexes}"
+				raise Exception(error_msg)
 
 			element_node = await browser_session.get_dom_element_by_index(params.index)
 			assert element_node is not None, f'Element with index {params.index} does not exist'
+			
 			try:
-				await browser_session._input_text_element_node(element_node, params.text)
-			except Exception:
-				msg = f'Failed to input text into element {params.index}.'
-				return ActionResult(error=msg)
+				# Enhanced retry logic for input with better error handling
+				async def input_with_retry():
+					return await browser_session._input_text_element_node(element_node, params.text)
+				
+				_, error_result = await retry_async_function(
+					input_with_retry,
+					f"Failed to input text into element {params.index}",
+					n_retries=2,
+					sleep_seconds=0.5
+				)
+				
+				if error_result:
+					actionable_error = create_actionable_error_message(
+						f'Failed to input text into element {params.index}',
+						['Click element first', 'Wait for element to be ready', 'Try different element', 'Clear field first']
+					)
+					return ActionResult(error=actionable_error)
+					
+			except Exception as e:
+				actionable_error = create_actionable_error_message(
+					f'Input operation failed on element {params.index}: {str(e)}',
+					['Wait for element to be interactive', 'Click element first', 'Try alternative input method']
+				)
+				return ActionResult(error=actionable_error)
 
 			if not has_sensitive_data:
 				msg = f'⌨️  Input {params.text} into index {params.index}'
