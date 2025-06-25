@@ -885,59 +885,108 @@ class Agent(Generic[Context]):
 
 	@time_execution_async('--handle_step_error (agent)')
 	async def _handle_step_error(self, error: Exception) -> list[ActionResult]:
-		"""Handle all types of errors that can occur during a step"""
+		"""Enhanced error handling with better categorization and recovery strategies"""
 		include_trace = self.logger.isEnabledFor(logging.DEBUG)
 		error_msg = AgentError.format_error(error, include_trace=include_trace)
 		prefix = f'❌ Result failed {self.state.consecutive_failures + 1}/{self.settings.max_failures} times:\n '
 		self.state.consecutive_failures += 1
 
-		if 'Browser closed' in error_msg:
-			self.logger.error('❌  Browser is closed or disconnected, unable to proceed')
+		# Browser connection errors - highest priority
+		if any(indicator in error_msg for indicator in [
+			'Browser closed', 'TargetClosedError', 'context or browser has been closed',
+			'Connection closed', 'connection was closed', 'Protocol error'
+		]):
+			self.logger.error('❌ Browser is closed or disconnected, unable to proceed')
 			return [
 				ActionResult(
 					error='Browser closed or disconnected, unable to proceed',
 					include_in_memory=True,
+					success=False
 				)
 			]
 
+		# Network and connectivity errors
+		if any(indicator in error_msg for indicator in [
+			'ERR_NAME_NOT_RESOLVED', 'ERR_INTERNET_DISCONNECTED', 
+			'ERR_CONNECTION_REFUSED', 'ERR_TIMED_OUT', 'net::',
+			'ConnectionError', 'TimeoutError', 'ConnectTimeout'
+		]):
+			site_error_msg = f'Network connectivity issue: {error_msg}'
+			self.logger.warning(site_error_msg)
+			return [ActionResult(
+				error=site_error_msg,
+				include_in_memory=True,
+				success=False
+			)]
+
+		# Parsing and validation errors
 		if isinstance(error, (ValidationError, ValueError)):
 			self.logger.error(f'{prefix}{error_msg}')
-			if 'Max token limit reached' in error_msg:
-				# cut tokens from history
-				# self._message_manager.settings.max_input_tokens = self.settings.max_input_tokens - 500
-				# self.logger.info(
-				# 	f'Cutting tokens from history - new max input tokens: {self._message_manager.settings.max_input_tokens}'
-				# )
-				# TODO: figure out what to do here
-				pass
-
-				# no longer cutting messages, because we revamped the message manager
-				# self._message_manager.cut_messages()
-		elif 'Could not parse response' in error_msg or 'tool_use_failed' in error_msg:
-			# give model a hint how output should look like
-			logger.debug(f'Model: {self.llm.model} failed')
-			error_msg += '\n\nReturn a valid JSON object with the required fields.'
-			logger.error(f'{prefix}{error_msg}')
-
+			
+			# Token limit handling
+			if 'Max token limit reached' in error_msg or 'context_length_exceeded' in error_msg:
+				self.logger.warning('Token limit reached - consider reducing message history')
+				return [ActionResult(
+					error='Token limit exceeded. Consider reducing task complexity or using shorter responses.',
+					include_in_memory=True,
+					success=False
+				)]
+				
+			# JSON parsing errors - provide helpful guidance
+			if any(indicator in error_msg for indicator in [
+				'Could not parse response', 'tool_use_failed', 'JSON decode error',
+				'Expecting', 'Invalid JSON'
+			]):
+				error_msg += '\n\nPlease return a valid JSON object with the required fields according to the expected format.'
+				self.logger.error(f'{prefix}{error_msg}')
+		
+		# Rate limiting errors with exponential backoff
 		else:
 			from anthropic import RateLimitError as AnthropicRateLimitError
 			from google.api_core.exceptions import ResourceExhausted
 			from openai import RateLimitError
 
-			# Define a tuple of rate limit error types for easier maintenance
 			RATE_LIMIT_ERRORS = (
 				RateLimitError,  # OpenAI
 				ResourceExhausted,  # Google
 				AnthropicRateLimitError,  # Anthropic
 			)
 
-			if isinstance(error, RATE_LIMIT_ERRORS) or 'on tokens per minute (TPM): Limit' in error_msg:
-				logger.warning(f'{prefix}{error_msg}')
-				await asyncio.sleep(self.settings.retry_delay)
+			if isinstance(error, RATE_LIMIT_ERRORS) or any(indicator in error_msg for indicator in [
+				'Rate limit', 'rate_limit_exceeded', 'tokens per minute', 'TPM'
+			]):
+				# Exponential backoff for rate limits
+				backoff_time = min(self.settings.retry_delay * (2 ** (self.state.consecutive_failures - 1)), 60)
+				self.logger.warning(f'{prefix}{error_msg}. Waiting {backoff_time}s before retry...')
+				await asyncio.sleep(backoff_time)
+				return [ActionResult(
+					error=f'Rate limit exceeded. Waited {backoff_time}s. Please retry.',
+					include_in_memory=True,
+					success=False
+				)]
+			
+			# Page navigation and element errors
+			elif any(indicator in error_msg for indicator in [
+				'Element not found', 'element does not exist', 'Execution context was destroyed',
+				'Cannot find context', 'Element is not attached', 'Node is detached'
+			]):
+				page_error_msg = f'Page state changed: {error_msg}'
+				self.logger.warning(page_error_msg)
+				return [ActionResult(
+					error=f'{page_error_msg}. Page state has been refreshed.',
+					include_in_memory=True,
+					success=False
+				)]
+			
+			# Generic error handling
 			else:
 				self.logger.error(f'{prefix}{error_msg}')
 
-		return [ActionResult(error=error_msg, include_in_memory=True)]
+		return [ActionResult(
+			error=error_msg, 
+			include_in_memory=True,
+			success=False
+		)]
 
 	def _make_history_item(
 		self,

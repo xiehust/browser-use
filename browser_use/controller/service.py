@@ -36,32 +36,66 @@ logger = logging.getLogger(__name__)
 
 
 async def retry_async_function(
-	func: Callable[[], Awaitable[Any]], error_message: str, n_retries: int = 3, sleep_seconds: float = 1
+	func: Callable[[], Awaitable[Any]], 
+	error_message: str, 
+	n_retries: int = 3, 
+	sleep_seconds: float = 1,
+	exponential_backoff: bool = True,
+	allowed_exceptions: tuple = ()
 ) -> tuple[Any | None, ActionResult | None]:
 	"""
-	Retry an async function n times before giving up and returning an ActionResult with an error.
+	Enhanced retry mechanism with exponential backoff and selective exception handling.
 
 	Args:
 		func: Async function to retry
 		error_message: Error message to use in ActionResult if all retries fail
 		n_retries: Number of retries (default 3)
-		sleep_seconds: Seconds to sleep between retries (default 1)
+		sleep_seconds: Base seconds to sleep between retries (default 1)
+		exponential_backoff: Whether to use exponential backoff (default True)
+		allowed_exceptions: Tuple of exception types that should not be retried
 
 	Returns:
 		Tuple of (result, None) on success or (None, ActionResult) on failure
 	"""
+	last_exception = None
+	
 	for attempt in range(n_retries):
 		try:
 			result = await func()
+			if attempt > 0:
+				logger.info(f'Function succeeded on retry attempt {attempt + 1}')
 			return result, None
 		except Exception as e:
-			await asyncio.sleep(sleep_seconds)
-			logger.debug(f'Error (attempt {attempt + 1}/{n_retries}): {e}')
+			last_exception = e
+			
+			# Don't retry for certain exception types
+			if allowed_exceptions and isinstance(e, allowed_exceptions):
+				logger.debug(f'Not retrying due to exception type: {type(e).__name__}')
+				break
+			
+			# Calculate sleep time
+			if exponential_backoff:
+				sleep_time = sleep_seconds * (2 ** attempt)
+			else:
+				sleep_time = sleep_seconds
+			
+			await asyncio.sleep(sleep_time)
+			logger.debug(f'Error (attempt {attempt + 1}/{n_retries}): {e}. Retrying in {sleep_time}s...')
+			
 			if attempt == n_retries - 1:  # Last attempt failed
-				return None, ActionResult(error=error_message + str(e))
+				logger.warning(f'Function failed after {n_retries} attempts. Final error: {e}')
+				return None, ActionResult(
+					error=f"{error_message} (after {n_retries} attempts): {str(e)}",
+					success=False,
+					include_in_memory=True
+				)
 
-	# Should never reach here but make type checker happy
-	return None, ActionResult(error=error_message)
+	# Fallback case
+	return None, ActionResult(
+		error=f"{error_message}: {str(last_exception)}",
+		success=False,
+		include_in_memory=True
+	)
 
 
 Context = TypeVar('Context')
@@ -216,67 +250,117 @@ class Controller(Generic[Context]):
 		# Element Interaction Actions
 		@self.registry.action('Click element by index', param_model=ClickElementAction)
 		async def click_element_by_index(params: ClickElementAction, browser_session: BrowserSession):
-			# Browser is now a BrowserSession itself
-
+			# Enhanced click action with robust error handling and state management
+			
 			# Check if element exists in current selector map
 			selector_map = await browser_session.get_selector_map()
 			if params.index not in selector_map:
 				# Force a state refresh in case the cache is stale
 				logger.info(f'Element with index {params.index} not found in selector map, refreshing state...')
-				await browser_session.get_state_summary(
-					cache_clickable_elements_hashes=True
-				)  # This will refresh the cached state
+				await browser_session.get_state_summary(cache_clickable_elements_hashes=True)
 				selector_map = await browser_session.get_selector_map()
 
 				if params.index not in selector_map:
 					# Return informative message with the new state instead of error
 					max_index = max(selector_map.keys()) if selector_map else -1
 					msg = f'Element with index {params.index} does not exist. Page has {len(selector_map)} interactive elements (indices 0-{max_index}). State has been refreshed - please use the updated element indices.'
-					return ActionResult(extracted_content=msg, include_in_memory=True, success=False, long_term_memory=msg)
+					return ActionResult(
+						extracted_content=msg, 
+						include_in_memory=True, 
+						success=False, 
+						long_term_memory=msg
+					)
 
 			element_node = await browser_session.get_dom_element_by_index(params.index)
 			initial_pages = len(browser_session.tabs)
 
-			# if element has file uploader then dont click
-			# Check if element is actually a file input (not just contains file-related keywords)
+			# Check if element is actually a file input
 			if element_node is not None and browser_session.is_file_input(element_node):
-				msg = f'Index {params.index} - has an element which opens file upload dialog. To upload files please use a specific function to upload files '
+				msg = f'Index {params.index} - has an element which opens file upload dialog. To upload files please use a specific function to upload files'
 				logger.info(msg)
-				return ActionResult(extracted_content=msg, include_in_memory=True, success=False, long_term_memory=msg)
+				return ActionResult(
+					extracted_content=msg, 
+					include_in_memory=True, 
+					success=False, 
+					long_term_memory=msg
+				)
 
 			msg = None
 
+			# Enhanced click with retry mechanism
 			try:
 				assert element_node is not None, f'Element with index {params.index} does not exist'
-				download_path = await browser_session._click_element_node(element_node)
+				
+				# Use retry mechanism for the click operation
+				click_result, error_result = await retry_async_function(
+					lambda: browser_session._click_element_node(element_node),
+					f"Failed to click element {params.index}",
+					n_retries=3,
+					exponential_backoff=True,
+					allowed_exceptions=(ValueError, AssertionError)  # Don't retry on these
+				)
+				
+				if error_result:
+					# Click failed after retries
+					logger.warning(f'Click on element {params.index} failed after retries')
+					return error_result
+				
+				download_path = click_result
+				
 				if download_path:
 					emoji = '💾'
 					msg = f'Downloaded file to {download_path}'
 				else:
 					emoji = '🖱️'
-					msg = f'Clicked button with index {params.index}: {element_node.get_all_text_till_next_clickable_element(max_depth=2)}'
+					element_text = element_node.get_all_text_till_next_clickable_element(max_depth=2)
+					msg = f'Clicked button with index {params.index}: {element_text}'
 
 				logger.info(f'{emoji} {msg}')
 				logger.debug(f'Element xpath: {element_node.xpath}')
+				
+				# Check for new tabs
 				if len(browser_session.tabs) > initial_pages:
 					new_tab_msg = 'New tab opened - switching to it'
 					msg += f' - {new_tab_msg}'
 					emoji = '🔗'
 					logger.info(f'{emoji} {new_tab_msg}')
 					await browser_session.switch_to_tab(-1)
-				return ActionResult(extracted_content=msg, include_in_memory=True, long_term_memory=msg)
+				
+				return ActionResult(
+					extracted_content=msg, 
+					include_in_memory=True, 
+					long_term_memory=msg,
+					success=True
+				)
+				
 			except Exception as e:
 				error_msg = str(e)
+				
+				# Handle specific error cases
 				if 'Execution context was destroyed' in error_msg or 'Cannot find context with specified id' in error_msg:
 					# Page navigated during click - refresh state and return it
 					logger.info('Page context changed during click, refreshing state...')
 					await browser_session.get_state_summary(cache_clickable_elements_hashes=True)
 					return ActionResult(
-						error='Page navigated during click. Refreshed state provided.', include_in_memory=True, success=False
+						error='Page navigated during click. Refreshed state provided.', 
+						include_in_memory=True, 
+						success=False
+					)
+				elif 'TargetClosedError' in error_msg or 'context or browser has been closed' in error_msg:
+					# Browser/tab was closed
+					logger.error(f'Browser/tab closed during click operation on element {params.index}')
+					return ActionResult(
+						error='Browser or tab was closed during click operation', 
+						include_in_memory=True, 
+						success=False
 					)
 				else:
 					logger.warning(f'Element not clickable with index {params.index} - most likely the page changed')
-					return ActionResult(error=error_msg, success=False)
+					return ActionResult(
+						error=f'Click failed: {error_msg}', 
+						success=False,
+						include_in_memory=True
+					)
 
 		@self.registry.action(
 			'Click and input text into a input interactive element',
