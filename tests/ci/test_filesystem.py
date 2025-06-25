@@ -616,6 +616,67 @@ Line 5 with backslashes: \\path\\to\\file"""
 		print('\n📋 ERROR HANDLING TEST:')
 		print(f'Unknown file type handled gracefully: {type(fs.files["invalid.md"]).__name__}')
 
+	async def test_from_state_preserves_existing_data(self):
+		"""Test that from_state doesn't delete existing files during reconstruction (regression test)"""
+		with tempfile.TemporaryDirectory() as temp_dir:
+			# Create original filesystem
+			fs1 = FileSystem(temp_dir)
+			await fs1.write_file('important.md', 'Critical data')
+			await fs1.write_file('config.txt', 'Configuration')
+			
+			# Get state
+			state = fs1.get_state()
+			
+			# Verify files exist before reconstruction
+			important_file = fs1.base_dir / 'important.md'
+			config_file = fs1.base_dir / 'config.txt'
+			assert important_file.exists()
+			assert config_file.exists()
+			
+			# Get the parent directory and try to reconstruct from state
+			# This simulates what happens in from_state()
+			base_dir = Path(state.base_dir)
+			parent_dir = str(base_dir.parent)
+			
+			# Files should still exist in the directory before restoration
+			files_before = list(base_dir.iterdir()) if base_dir.exists() else []
+			files_before_names = {f.name for f in files_before}
+			
+			# Create filesystem in restore mode (this is what from_state does)
+			fs2 = FileSystem(parent_dir, _restore_mode=True)
+			
+			# Files should still exist after calling constructor with _restore_mode=True
+			files_after = list(fs2.base_dir.iterdir()) if fs2.base_dir.exists() else []
+			files_after_names = {f.name for f in files_after}
+			
+			# The key assertion: no files should be lost during reconstruction
+			assert files_before_names == files_after_names, \
+				f"Files were lost during reconstruction. Before: {files_before_names}, After: {files_after_names}"
+			
+			# Complete restoration process
+			type_mapping = {
+				'MarkdownFile': MarkdownFile,
+				'TxtFile': TxtFile,
+			}
+			
+			for full_filename, file_data in state.files.items():
+				file_type = file_data['type']
+				file_class = type_mapping.get(file_type, TxtFile)
+				file_obj = file_class(**file_data['data'])
+				fs2.files[full_filename] = file_obj
+				fs2._sync_file_to_disk(file_obj)
+			
+			# Verify all content is properly restored
+			important_content = await fs2.read_file('important.md')
+			config_content = await fs2.read_file('config.txt')
+			
+			assert 'Critical data' in important_content
+			assert 'Configuration' in config_content
+			
+			print('\n📋 DATA PRESERVATION TEST:')
+			print(f'Files preserved during reconstruction: {len(files_before_names)} before, {len(files_after_names)} after')
+			print(f'Content properly restored: {all(["Critical data" in important_content, "Configuration" in config_content])}')
+
 
 class TestDisplayFunctionality:
 	"""Test file system display functionality with various file sizes and content"""

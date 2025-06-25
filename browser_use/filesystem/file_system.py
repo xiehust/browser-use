@@ -176,9 +176,16 @@ class FileSystem(BaseModel):
 
 		# Create and use a dedicated subfolder for all operations
 		data_dir = base_dir / 'browseruse_agent_data'
-		if data_dir.exists():
+		
+		# Check if directory already exists and has files (unless in restore mode)
+		if not _restore_mode and data_dir.exists() and any(data_dir.iterdir()):
+			raise ValueError('File system directory already exists with data. Use a different directory or restore from state.')
+		
+		# Only clean the data directory if we're not in restore mode
+		if not _restore_mode and data_dir.exists():
 			# clean the data directory
 			shutil.rmtree(data_dir)
+		
 		data_dir.mkdir(exist_ok=True)
 
 		super().__init__(base_dir=data_dir, **kwargs)
