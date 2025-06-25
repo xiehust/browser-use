@@ -141,13 +141,29 @@ class DOMElementNode(DOMBaseNode):
 				return
 
 			if isinstance(node, DOMTextNode):
-				text_parts.append(node.text)
+				# Clean up whitespace and filter out meaningless text
+				cleaned_text = ' '.join(node.text.split())
+				if cleaned_text and len(cleaned_text) > 1:  # Filter out single character noise
+					text_parts.append(cleaned_text)
 			elif isinstance(node, DOMElementNode):
+				# Add semantic spacing for better readability
+				if node.tag_name in ['br', 'p', 'div', 'li']:
+					text_parts.append(' ')
+				
 				for child in node.children:
 					collect_text(child, current_depth + 1)
 
 		collect_text(self, 0)
-		return '\n'.join(text_parts).strip()
+		result = ' '.join(text_parts).strip()
+		
+		# Clean up excessive whitespace
+		result = ' '.join(result.split())
+		
+		# Truncate if too long for better LLM processing
+		if len(result) > 200:
+			result = result[:197] + '...'
+		
+		return result
 
 	@time_execution_sync('--clickable_elements_to_string')
 	def clickable_elements_to_string(self, include_attributes: list[str] | None = None) -> str:
@@ -193,27 +209,31 @@ class DOMElementNode(DOMBaseNode):
 							# Format as key1='value1' key2='value2'
 							attributes_html_str = ' '.join(f"{key}='{value}'" for key, value in attributes_to_include.items())
 
-					# Build the line
+					# Build the line with improved formatting
 					if node.is_new:
 						highlight_indicator = f'*[{node.highlight_index}]*'
 					else:
 						highlight_indicator = f'[{node.highlight_index}]'
 
+					# Start with basic element info
 					line = f'{depth_str}{highlight_indicator}<{node.tag_name}'
 
+					# Add key attributes for context
 					if attributes_html_str:
 						line += f' {attributes_html_str}'
 
+					# Add meaningful text content
 					if text:
-						# Add space before >text only if there were NO attributes added before
-						if not attributes_html_str:
-							line += ' '
-						line += f'>{text}'
-					# Add space before /> only if neither attributes NOR text were added
-					elif not attributes_html_str:
-						line += ' '
+						# Clean up the text for better readability
+						cleaned_text = ' '.join(text.split())
+						if len(cleaned_text) > 100:
+							cleaned_text = cleaned_text[:97] + '...'
+						
+						line += f'>{cleaned_text}</{node.tag_name}>'
+					else:
+						# Self-closing tag for elements without text
+						line += ' />'
 
-					line += ' />'  # 1 token
 					formatted_text.append(line)
 
 				# Process children regardless

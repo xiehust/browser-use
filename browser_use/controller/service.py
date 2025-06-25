@@ -206,17 +206,38 @@ class Controller(Generic[Context]):
 			return ActionResult(extracted_content=msg, include_in_memory=True, long_term_memory='Navigated back')
 
 		# wait for x seconds
-		@self.registry.action('Wait for x seconds default 3')
-		async def wait(seconds: int = 3):
-			msg = f'🕒  Waiting for {seconds} seconds'
+		@self.registry.action('Wait for x seconds (default 3) to allow page loading or animations to complete')
+		async def wait(seconds: int = 3, browser_session: BrowserSession):
+			# Validate wait time
+			if seconds < 0:
+				seconds = 0
+			elif seconds > 30:
+				seconds = 30  # Cap at 30 seconds for safety
+				
+			msg = f'🕒  Waiting for {seconds} seconds for page to load/settle'
 			logger.info(msg)
-			await asyncio.sleep(seconds)
-			return ActionResult(extracted_content=msg, include_in_memory=True, long_term_memory=f'Waited for {seconds} seconds')
+			
+			# For longer waits, also wait for network idle
+			if seconds >= 5:
+				try:
+					page = await browser_session.get_current_page()
+					await page.wait_for_load_state('networkidle', timeout=seconds * 1000)
+					msg += ' (network idle achieved)'
+				except Exception:
+					# If network idle fails, just use regular wait
+					await asyncio.sleep(seconds)
+			else:
+				await asyncio.sleep(seconds)
+				
+			return ActionResult(extracted_content=msg, include_in_memory=True, long_term_memory=f'Waited {seconds}s for page stability')
 
 		# Element Interaction Actions
 		@self.registry.action('Click element by index', param_model=ClickElementAction)
 		async def click_element_by_index(params: ClickElementAction, browser_session: BrowserSession):
-			# Browser is now a BrowserSession itself
+			# Validate index is valid
+			if params.index < 0:
+				msg = f'Invalid element index {params.index}. Element indices must be non-negative.'
+				return ActionResult(extracted_content=msg, include_in_memory=True, success=False, long_term_memory=msg)
 
 			# Check if element exists in current selector map
 			selector_map = await browser_session.get_selector_map()
@@ -229,42 +250,55 @@ class Controller(Generic[Context]):
 				selector_map = await browser_session.get_selector_map()
 
 				if params.index not in selector_map:
-					# Return informative message with the new state instead of error
-					max_index = max(selector_map.keys()) if selector_map else -1
-					msg = f'Element with index {params.index} does not exist. Page has {len(selector_map)} interactive elements (indices 0-{max_index}). State has been refreshed - please use the updated element indices.'
+					# Return informative message with available indices
+					available_indices = sorted(selector_map.keys()) if selector_map else []
+					max_index = max(available_indices) if available_indices else -1
+					indices_preview = str(available_indices[:10])
+					if len(available_indices) > 10:
+						indices_preview = indices_preview[:-1] + f', ... {len(available_indices)} total]'
+					
+					msg = f'Element index {params.index} does not exist. Available indices: {indices_preview}. Page has {len(selector_map)} interactive elements (max index: {max_index}). Refresh the state and use valid indices.'
 					return ActionResult(extracted_content=msg, include_in_memory=True, success=False, long_term_memory=msg)
 
 			element_node = await browser_session.get_dom_element_by_index(params.index)
+			if element_node is None:
+				msg = f'Element node at index {params.index} is None after retrieval. The page may have changed.'
+				return ActionResult(extracted_content=msg, include_in_memory=True, success=False, long_term_memory=msg)
+
 			initial_pages = len(browser_session.tabs)
 
-			# if element has file uploader then dont click
-			# Check if element is actually a file input (not just contains file-related keywords)
-			if element_node is not None and browser_session.is_file_input(element_node):
-				msg = f'Index {params.index} - has an element which opens file upload dialog. To upload files please use a specific function to upload files '
+			# Check if element is a file input
+			if browser_session.is_file_input(element_node):
+				msg = f'Element at index {params.index} is a file upload input. Use dedicated file upload functions instead of clicking.'
 				logger.info(msg)
 				return ActionResult(extracted_content=msg, include_in_memory=True, success=False, long_term_memory=msg)
 
-			msg = None
+			# Get element description for better logging
+			element_text = element_node.get_all_text_till_next_clickable_element(max_depth=2)
+			element_desc = f'{element_node.tag_name}' + (f': {element_text}' if element_text else '')
 
 			try:
-				assert element_node is not None, f'Element with index {params.index} does not exist'
 				download_path = await browser_session._click_element_node(element_node)
 				if download_path:
 					emoji = '💾'
-					msg = f'Downloaded file to {download_path}'
+					msg = f'Downloaded file to {download_path} after clicking {element_desc}'
 				else:
 					emoji = '🖱️'
-					msg = f'Clicked button with index {params.index}: {element_node.get_all_text_till_next_clickable_element(max_depth=2)}'
+					msg = f'Successfully clicked element [{params.index}] {element_desc}'
 
 				logger.info(f'{emoji} {msg}')
 				logger.debug(f'Element xpath: {element_node.xpath}')
+				
+				# Check for new tabs
 				if len(browser_session.tabs) > initial_pages:
 					new_tab_msg = 'New tab opened - switching to it'
 					msg += f' - {new_tab_msg}'
 					emoji = '🔗'
 					logger.info(f'{emoji} {new_tab_msg}')
 					await browser_session.switch_to_tab(-1)
+				
 				return ActionResult(extracted_content=msg, include_in_memory=True, long_term_memory=msg)
+				
 			except Exception as e:
 				error_msg = str(e)
 				if 'Execution context was destroyed' in error_msg or 'Cannot find context with specified id' in error_msg:
@@ -272,11 +306,18 @@ class Controller(Generic[Context]):
 					logger.info('Page context changed during click, refreshing state...')
 					await browser_session.get_state_summary(cache_clickable_elements_hashes=True)
 					return ActionResult(
-						error='Page navigated during click. Refreshed state provided.', include_in_memory=True, success=False
+						error='Page navigation occurred during click. State has been refreshed - examine the new page state.',
+						include_in_memory=True, 
+						success=False
 					)
+				elif 'Element is not clickable' in error_msg or 'element click intercepted' in error_msg:
+					msg = f'Element at index {params.index} ({element_desc}) is not clickable. It may be obscured or not interactive. Try scrolling or finding an alternative element.'
+					logger.warning(msg)
+					return ActionResult(extracted_content=msg, include_in_memory=True, success=False, long_term_memory=msg)
 				else:
-					logger.warning(f'Element not clickable with index {params.index} - most likely the page changed')
-					return ActionResult(error=error_msg, success=False)
+					msg = f'Failed to click element at index {params.index} ({element_desc}): {error_msg}'
+					logger.warning(msg)
+					return ActionResult(error=msg, success=False)
 
 		@self.registry.action(
 			'Click and input text into a input interactive element',
