@@ -283,16 +283,40 @@ class Controller(Generic[Context]):
 			param_model=InputTextAction,
 		)
 		async def input_text(params: InputTextAction, browser_session: BrowserSession, has_sensitive_data: bool = False):
-			if params.index not in await browser_session.get_selector_map():
-				raise Exception(f'Element index {params.index} does not exist - retry or use alternative actions')
+			# Check if element exists in current selector map (consistent with click_element_by_index)
+			selector_map = await browser_session.get_selector_map()
+			if params.index not in selector_map:
+				# Force a state refresh in case the cache is stale
+				logger.info(f'Element with index {params.index} not found in selector map for input, refreshing state...')
+				await browser_session.get_state_summary(
+					cache_clickable_elements_hashes=True
+				)  # This will refresh the cached state
+				selector_map = await browser_session.get_selector_map()
+
+				if params.index not in selector_map:
+					# Return informative message with the new state instead of error
+					max_index = max(selector_map.keys()) if selector_map else -1
+					msg = f'Element with index {params.index} does not exist for input. Page has {len(selector_map)} interactive elements (indices 0-{max_index}). State has been refreshed - please use the updated element indices.'
+					return ActionResult(extracted_content=msg, include_in_memory=True, success=False, long_term_memory=msg)
 
 			element_node = await browser_session.get_dom_element_by_index(params.index)
 			assert element_node is not None, f'Element with index {params.index} does not exist'
+			
 			try:
 				await browser_session._input_text_element_node(element_node, params.text)
-			except Exception:
-				msg = f'Failed to input text into element {params.index}.'
-				return ActionResult(error=msg)
+			except Exception as e:
+				error_msg = str(e)
+				if 'Execution context was destroyed' in error_msg or 'Cannot find context with specified id' in error_msg:
+					# Page navigated during input - refresh state and return it
+					logger.info('Page context changed during input, refreshing state...')
+					await browser_session.get_state_summary(cache_clickable_elements_hashes=True)
+					return ActionResult(
+						error='Page navigated during text input. Refreshed state provided.', include_in_memory=True, success=False
+					)
+				else:
+					msg = f'Failed to input text into element {params.index}: {error_msg}'
+					logger.warning(msg)
+					return ActionResult(error=msg, success=False)
 
 			if not has_sensitive_data:
 				msg = f'⌨️  Input {params.text} into index {params.index}'
