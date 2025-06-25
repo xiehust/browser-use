@@ -554,7 +554,7 @@ class Agent(Generic[Context]):
 		extensions_allowed = self.file_system.get_allowed_extensions()
 
 		@self.controller.registry.action(
-			f'Write content to file_name in file system. Only use extensions {"|".join(extensions_allowed)}'
+			f'Create or overwrite a file with content. Use for initial file creation or complete replacement. Allowed extensions: {"|".join(extensions_allowed)}. Use write_file for todo.md updates.'
 		)
 		async def write_file(file_name: str, content: str):
 			result = await self.file_system.write_file(file_name, content)
@@ -567,7 +567,7 @@ class Agent(Generic[Context]):
 				long_term_memory=result,
 			)
 
-		@self.controller.registry.action('Append content to file_name in file system')
+		@self.controller.registry.action('Add content to the end of an existing file. Use for accumulating results in results.md. Do NOT use for todo.md - use write_file instead.')
 		async def append_file(file_name: str, content: str):
 			result = await self.file_system.append_file(file_name, content)
 			# Update agent state with new file system state
@@ -579,7 +579,7 @@ class Agent(Generic[Context]):
 				long_term_memory=result,
 			)
 
-		@self.controller.registry.action('Read file_name from file system')
+		@self.controller.registry.action('Read the complete contents of a file from the file system. Use to check current state or verify file contents before modifications.')
 		async def read_file(file_name: str):
 			result = await self.file_system.read_file(file_name)
 			max_len = 50

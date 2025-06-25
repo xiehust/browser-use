@@ -206,7 +206,7 @@ class Controller(Generic[Context]):
 			return ActionResult(extracted_content=msg, include_in_memory=True, long_term_memory='Navigated back')
 
 		# wait for x seconds
-		@self.registry.action('Wait for x seconds default 3')
+		@self.registry.action('Wait for page loading, dynamic content, or after form submissions. Use 1-2 seconds for form inputs, 3-5 seconds for page loads.')
 		async def wait(seconds: int = 3):
 			msg = f'🕒  Waiting for {seconds} seconds'
 			logger.info(msg)
@@ -214,7 +214,7 @@ class Controller(Generic[Context]):
 			return ActionResult(extracted_content=msg, include_in_memory=True, long_term_memory=f'Waited for {seconds} seconds')
 
 		# Element Interaction Actions
-		@self.registry.action('Click element by index', param_model=ClickElementAction)
+		@self.registry.action('Click on interactive element by its numeric index. Use this for buttons, links, and clickable elements. Check element index from current browser state.', param_model=ClickElementAction)
 		async def click_element_by_index(params: ClickElementAction, browser_session: BrowserSession):
 			# Browser is now a BrowserSession itself
 
@@ -231,7 +231,7 @@ class Controller(Generic[Context]):
 				if params.index not in selector_map:
 					# Return informative message with the new state instead of error
 					max_index = max(selector_map.keys()) if selector_map else -1
-					msg = f'Element with index {params.index} does not exist. Page has {len(selector_map)} interactive elements (indices 0-{max_index}). State has been refreshed - please use the updated element indices.'
+					msg = f'Element with index {params.index} does not exist. Page has {len(selector_map)} interactive elements (indices 0-{max_index}). State has been refreshed - please use the updated element indices. This often happens when the page changed after your previous action.'
 					return ActionResult(extracted_content=msg, include_in_memory=True, success=False, long_term_memory=msg)
 
 			element_node = await browser_session.get_dom_element_by_index(params.index)
@@ -279,7 +279,7 @@ class Controller(Generic[Context]):
 					return ActionResult(error=error_msg, success=False)
 
 		@self.registry.action(
-			'Click and input text into a input interactive element',
+			'Input text into form fields, search boxes, or text areas. This will click on the element first, then type the text. Wait briefly after using this action if dynamic content might load.',
 			param_model=InputTextAction,
 		)
 		async def input_text(params: InputTextAction, browser_session: BrowserSession, has_sensitive_data: bool = False):
@@ -365,8 +365,12 @@ class Controller(Generic[Context]):
 
 		# Content Actions
 		@self.registry.action(
-			"""Extract structured, semantic data (e.g. product description, price, all information about XYZ) from the current webpage based on a textual query.
-Only use this for extracting info from a single product/article page, not for entire listings or search results pages.
+			"""Extract specific information from the current webpage using a query. This action reads the entire page content (including content not visible in viewport) and extracts relevant data.
+Use this when:
+- You need specific data from a product/article page
+- The information is not visible in the current browser_state
+- You need structured data extraction
+Do NOT use for: search result pages, listings, or when data is already visible in browser_state.
 """,
 		)
 		async def extract_structured_data(
@@ -500,7 +504,7 @@ Explain the content of the page and that the requested information is not availa
 			)
 
 		@self.registry.action(
-			'Scroll down the page by pixel amount - if none is given, scroll one page',
+			'Scroll down to reveal content below. Use when you need to see more content or find elements not in current viewport. Default scrolls one page.',
 			param_model=ScrollAction,
 		)
 		async def scroll_down(params: ScrollAction, browser_session: BrowserSession):
@@ -535,7 +539,7 @@ Explain the content of the page and that the requested information is not availa
 			)
 
 		@self.registry.action(
-			'Scroll up the page by pixel amount - if none is given, scroll one page',
+			'Scroll up to reveal content above. Use when you need to see content higher on the page. Default scrolls one page.',
 			param_model=ScrollAction,
 		)
 		async def scroll_up(params: ScrollAction, browser_session: BrowserSession):

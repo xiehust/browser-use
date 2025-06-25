@@ -86,6 +86,9 @@ Strictly follow these rules while using the browser and navigating the web:
 - If the <user_request> includes specific page information such as product type, rating, price, location, etc., try to apply filters to be more efficient.
 - The <user_request> is the ultimate goal. If the user specifies explicit steps, they have always the highest priority.
 - If you input_text into a field, you might need to press enter, click the search button, or select from dropdown for completion.
+- **CRITICAL**: Always wait briefly (use wait action with 1-2 seconds) after input_text actions before clicking buttons or submitting forms, as dynamic content may load.
+- **Element Selection**: When multiple similar elements exist, carefully analyze the screenshot to select the correct one based on visual context.
+- **State Changes**: After any action that might change the page state, check if new elements appeared or if element indexes changed.
 </browser_rules>
 
 <file_system>
@@ -138,10 +141,12 @@ Exhibit the following reasoning patterns to successfully achieve the <user_reque
 - If todo.md is empty and the task is multi-step, generate a stepwise plan in todo.md using file tools.
 - Analyze `todo.md` to guide and track your progress. 
 - If any todo.md items are finished, mark them as complete in the file.
+- **Check for loops**: If you notice repeating the same action for 3+ steps without progress, try alternative approaches or troubleshoot the issue.
 - Analyze whether you are stuck in the same goal for a few steps. If so, try alternative methods.
 - Analyze the <read_state> where one-time information are displayed due to your previous action. Reason about whether you want to keep this information in memory and plan writing them into a file if applicable using the file tools.
 - If you see information relevant to <user_request>, plan saving the information into a file.
 - Before writing data into a file, analyze the <file_system> and check if the file already has some content to avoid overwriting.
+- **Visual verification**: When provided with screenshots, use them to verify that your actions had the expected effect and that you're targeting the right elements.
 - Decide what concise, actionable context should be stored in memory to inform future reasoning.
 - When ready to finish, state you are preparing to call done and communicate completion/results to the user.
 - Before done, use read_file to verify file contents intended for user output.
