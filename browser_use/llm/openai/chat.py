@@ -169,56 +169,34 @@ class ChatOpenAI(BaseChatModel):
 			return await exponential_backoff_retry(
 				func=_make_api_call,
 				rate_limit_error_types=(RateLimitError,),
-				server_error_types=(APIStatusError,),  # Covers 503, 502, 500, etc.
+				server_error_types=(APIStatusError,),  # Will only retry 5xx errors automatically
 				connection_error_types=(APIConnectionError, httpx.ConnectError, httpx.TimeoutException),
 				max_retries=10,
 			)
 
-		except RateLimitError as e:
-			# This should only happen if all retries failed
-			error_message = e.response.json().get('error', {})
-			error_message = (
-				error_message.get('message', 'Unknown model error') if isinstance(error_message, dict) else error_message
-			)
-			raise ModelProviderError(
-				message=f"Rate limit exceeded after 10 retries: {error_message}",
-				status_code=e.response.status_code,
-				model=self.name,
-			) from e
-
-		except APIConnectionError as e:
-			raise ModelProviderError(message=f"Connection failed after 10 retries: {str(e)}", model=self.name) from e
-
-		except APIStatusError as e:
-			# Check if this is a retryable server error
-			if e.response.status_code in (500, 502, 503, 504):
-				# This should only happen if all retries failed
+		except Exception as e:
+			# All retry attempts failed - convert to standard exception format
+			if isinstance(e, RateLimitError):
 				try:
-					error_message = e.response.json().get('error', {})
+					error_message = e.response.json().get('error', {}).get('message', 'Rate limit exceeded')
 				except Exception:
-					error_message = e.response.text
-				error_message = (
-					error_message.get('message', 'Unknown server error') if isinstance(error_message, dict) else error_message
-				)
+					error_message = 'Rate limit exceeded'
 				raise ModelProviderError(
-					message=f"Server error after 10 retries: {error_message}",
+					message=f'Rate limit exceeded after 10 retries: {error_message}',
 					status_code=e.response.status_code,
+					model=self.name,
+				) from e
+			elif isinstance(e, APIConnectionError):
+				raise ModelProviderError(message=f'Connection failed after 10 retries: {str(e)}', model=self.name) from e
+			elif isinstance(e, APIStatusError):
+				try:
+					error_message = e.response.json().get('error', {}).get('message', 'API error')
+				except Exception:
+					error_message = e.response.text if hasattr(e, 'response') else str(e)
+				raise ModelProviderError(
+					message=error_message,
+					status_code=e.response.status_code if hasattr(e, 'response') else 502,
 					model=self.name,
 				) from e
 			else:
-				# Non-retryable error, handle normally
-				try:
-					error_message = e.response.json().get('error', {})
-				except Exception:
-					error_message = e.response.text
-				error_message = (
-					error_message.get('message', 'Unknown model error') if isinstance(error_message, dict) else error_message
-				)
-				raise ModelProviderError(
-					message=error_message,
-					status_code=e.response.status_code,
-					model=self.name,
-				) from e
-
-		except Exception as e:
-			raise ModelProviderError(message=str(e), model=self.name) from e
+				raise ModelProviderError(message=str(e), model=self.name) from e

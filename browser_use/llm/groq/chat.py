@@ -2,6 +2,7 @@ import logging
 from dataclasses import dataclass
 from typing import Literal, TypeVar, overload
 
+import httpx
 from groq import (
 	DEFAULT_MAX_RETRIES,
 	APIError,
@@ -139,71 +140,42 @@ class ChatGroq(BaseChatModel):
 				)
 
 		try:
-			# Import connection errors from httpx
-			import httpx
-			
-			# Define Groq-specific error handling
-			# 498 is Groq's custom "Flex Tier Capacity Exceeded" error
-			class GroqCapacityError(APIStatusError):
-				"""Custom exception for Groq's 498 capacity exceeded error"""
-				pass
-				
-			async def handle_groq_errors():
-				try:
-					return await _make_api_call()
-				except APIStatusError as e:
-					if e.response.status_code == 498:
-						raise GroqCapacityError(
-							message="Flex Tier Capacity Exceeded",
-							response=e.response,
-							body=e.body
-						)
-					raise
-			
 			# Use exponential backoff retry for multiple error types
 			return await exponential_backoff_retry(
-				func=handle_groq_errors,
+				func=_make_api_call,
 				rate_limit_error_types=(RateLimitError,),
-				server_error_types=(APIStatusError, GroqCapacityError),  # Includes 500, 502, 503, 498, etc.
+				server_error_types=(APIStatusError,),  # Will filter retryable errors automatically
 				connection_error_types=(APIError, httpx.ConnectError, httpx.TimeoutException),
 				max_retries=10,
 			)
 
-		except RateLimitError as e:
-			# This should only happen if all retries failed
-			raise ModelRateLimitError(message=f"Rate limit exceeded after 10 retries: {e.response.text}", status_code=e.response.status_code, model=self.name) from e
-
-		except APIResponseValidationError as e:
-			raise ModelProviderError(message=e.response.text, status_code=e.response.status_code, model=self.name) from e
-
-		except APIStatusError as e:
-			# Check if this is a retryable server error
-			if e.response.status_code in (500, 502, 503, 504, 498):
-				# This should only happen if all retries failed
-				raise ModelProviderError(
-					message=f"Server error after 10 retries (HTTP {e.response.status_code}): {e.response.text}",
-					status_code=e.response.status_code,
-					model=self.name
-				) from e
-			elif output_format is None:
-				raise ModelProviderError(message=e.response.text, status_code=e.response.status_code, model=self.name) from e
-			else:
-				try:
-					logger.debug(f'Groq failed generation: {e.response.text}; fallback to manual parsing')
-
-					parsed_response = try_parse_groq_failed_generation(e, output_format)
-
-					logger.debug('Manual error parsing successful ✅')
-
-					return ChatInvokeCompletion(
-						completion=parsed_response,
-						usage=None,  # because this is a hacky way to get the outputs
-						# TODO: @groq needs to fix their parsers and validators
-					)
-				except Exception as _:
-					raise ModelProviderError(message=str(e), status_code=e.response.status_code, model=self.name) from e
-
-		except APIError as e:
-			raise ModelProviderError(message=f"Connection failed after 10 retries: {e.message}", model=self.name) from e
 		except Exception as e:
-			raise ModelProviderError(message=str(e), model=self.name) from e
+			# All retry attempts failed - convert to standard exception format
+			if isinstance(e, RateLimitError):
+				raise ModelRateLimitError(
+					message=f'Rate limit exceeded after 10 retries: {e.response.text}',
+					status_code=e.response.status_code,
+					model=self.name,
+				) from e
+			elif isinstance(e, APIResponseValidationError):
+				raise ModelProviderError(message=e.response.text, status_code=e.response.status_code, model=self.name) from e
+			elif isinstance(e, APIStatusError):
+				# Special handling for structured output parsing errors
+				if output_format is not None and e.response.status_code not in (500, 502, 503, 504, 498):
+					try:
+						logger.debug(f'Groq failed generation: {e.response.text}; fallback to manual parsing')
+						parsed_response = try_parse_groq_failed_generation(e, output_format)
+						logger.debug('Manual error parsing successful ✅')
+						return ChatInvokeCompletion(
+							completion=parsed_response,
+							usage=None,  # because this is a hacky way to get the outputs
+							# TODO: @groq needs to fix their parsers and validators
+						)
+					except Exception:
+						pass  # Fall through to normal error handling
+
+				raise ModelProviderError(message=e.response.text, status_code=e.response.status_code, model=self.name) from e
+			elif isinstance(e, APIError):
+				raise ModelProviderError(message=f'Connection failed after 10 retries: {e.message}', model=self.name) from e
+			else:
+				raise ModelProviderError(message=str(e), model=self.name) from e

@@ -205,84 +205,66 @@ class ChatGoogle(BaseChatModel):
 					)
 
 		try:
-			# Define custom error classes for Google API errors
-			class GoogleRateLimitError(Exception):
-				pass
-			
-			class GoogleServerError(Exception):
-				pass
-			
-			async def handle_google_errors():
-				try:
-					return await _make_api_call()
-				except Exception as e:
-					error_message = str(e).lower()
-					# Check for various rate limit indicators in error message
-					if any(indicator in error_message for indicator in [
-						'rate limit', 'resource exhausted', 'quota exceeded', 'too many requests', '429'
-					]):
-						raise GoogleRateLimitError(str(e))
-					# Check for server error indicators
-					elif any(indicator in error_message for indicator in [
-						'service unavailable', 'internal server error', 'bad gateway', '503', '502', '500'
-					]):
-						raise GoogleServerError(str(e))
-					raise
-
 			# Use exponential backoff retry for multiple error types
+			# Google API uses generic exceptions, so we rely on the retry mechanism's
+			# built-in error message pattern matching for proper error classification
 			return await exponential_backoff_retry(
-				func=handle_google_errors,
-				rate_limit_error_types=(GoogleRateLimitError,),
-				server_error_types=(GoogleServerError,),
-				connection_error_types=(),  # Google API errors are handled in handle_google_errors
+				func=_make_api_call,
+				rate_limit_error_types=(),  # Google uses generic exceptions
+				server_error_types=(Exception,),  # Let retry mechanism filter by error message patterns
+				connection_error_types=(),  # Handled by server_error_types pattern matching
 				max_retries=10,
 			)
 
 		except Exception as e:
-			# Handle specific Google API errors
+			# All retry attempts failed - convert to standard exception format
 			error_message = str(e)
-			status_code: int | None = None
 
-			# Check if this is a rate limit error first
-			try:
-				from google.api_core.exceptions import ResourceExhausted
-				if isinstance(e, ResourceExhausted):
-					# This should only happen if all retries failed
-					raise ModelProviderError(
-						message=f"Rate limit exceeded after 10 retries: {error_message}",
-						status_code=429,
-						model=self.name,
-					) from e
-			except ImportError:
-				# If google-api-core is not available, check error message
-				if any(indicator in error_message.lower() for indicator in [
-					'rate limit', 'resource exhausted', 'quota exceeded', 'too many requests', '429'
-				]):
-					raise ModelProviderError(
-						message=f"Rate limit exceeded after 10 retries: {error_message}",
-						status_code=429,
-						model=self.name,
-					) from e
+			# Check if this is a rate limit error
+			if any(
+				indicator in error_message.lower()
+				for indicator in ['rate limit', 'resource exhausted', 'quota exceeded', 'too many requests', '429']
+			):
+				raise ModelProviderError(
+					message=f'Rate limit exceeded after 10 retries: {error_message}',
+					status_code=429,
+					model=self.name,
+				) from e
 
 			# Check for server errors
-			if any(indicator in error_message.lower() for indicator in [
-				'service unavailable', 'internal server error', 'bad gateway', '503', '502', '500'
-			]):
+			elif any(
+				indicator in error_message.lower()
+				for indicator in ['service unavailable', 'internal server error', 'bad gateway', '503', '502', '500']
+			):
 				raise ModelProviderError(
-					message=f"Server error after 10 retries: {error_message}",
+					message=f'Server error after 10 retries: {error_message}',
 					status_code=503,
 					model=self.name,
 				) from e
 
-			# Try to extract status code if available
+			# Handle google-api-core exceptions if available
+			try:
+				from google.api_core.exceptions import ResourceExhausted
+
+				if isinstance(e, ResourceExhausted):
+					raise ModelProviderError(
+						message=f'Rate limit exceeded after 10 retries: {error_message}',
+						status_code=429,
+						model=self.name,
+					) from e
+			except ImportError:
+				pass
+
+			# Default error handling
+			status_code = 502
 			if hasattr(e, 'response'):
-				response_obj = getattr(e, 'response', None)
-				if response_obj and hasattr(response_obj, 'status_code'):
-					status_code = getattr(response_obj, 'status_code', None)
+				response = getattr(e, 'response')
+				if response and hasattr(response, 'status_code'):
+					status_code = response.status_code
 
 			raise ModelProviderError(
 				message=error_message,
-				status_code=status_code or 502,  # Use default if None
+				status_code=status_code,
 				model=self.name,
 			) from e
 

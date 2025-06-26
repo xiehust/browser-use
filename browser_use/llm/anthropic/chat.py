@@ -202,53 +202,22 @@ class ChatAnthropic(BaseChatModel):
 				raise ValueError('Expected tool use in response but none found')
 
 		try:
-			# Import connection errors from httpx  
-			import httpx
-			
-			# Define Anthropic-specific error types for retry
-			# 529 is Anthropic's specific "overloaded" error code
-			class AnthropicOverloadedError(APIStatusError):
-				"""Custom exception for Anthropic's 529 overloaded error"""
-				pass
-				
-			# Check if this is a 529 error and wrap it
-			async def handle_anthropic_errors():
-				try:
-					return await _make_api_call()
-				except APIStatusError as e:
-					if e.status_code == 529:
-						raise AnthropicOverloadedError(
-							message=e.message,
-							response=e.response,
-							body=e.body
-						)
-					raise
-			
 			# Use exponential backoff retry for multiple error types
 			return await exponential_backoff_retry(
-				func=handle_anthropic_errors,
+				func=_make_api_call,
 				rate_limit_error_types=(RateLimitError,),
-				server_error_types=(APIStatusError, AnthropicOverloadedError),  # Includes 500, 529, etc.
+				server_error_types=(APIStatusError,),  # Will filter retryable errors automatically
 				connection_error_types=(APIConnectionError, httpx.ConnectError, httpx.TimeoutException),
 				max_retries=10,
 			)
 
-		except APIConnectionError as e:
-			raise ModelProviderError(message=f"Connection failed after 10 retries: {e.message}", model=self.name) from e
-		except RateLimitError as e:
-			# This should only happen if all retries failed
-			raise ModelRateLimitError(message=f"Rate limit exceeded after 10 retries: {e.message}", model=self.name) from e
-		except APIStatusError as e:
-			# Check if this is a retryable server error
-			if e.status_code in (500, 502, 503, 504, 529):
-				# This should only happen if all retries failed
-				raise ModelProviderError(
-					message=f"Server error after 10 retries (HTTP {e.status_code}): {e.message}", 
-					status_code=e.status_code, 
-					model=self.name
-				) from e
-			else:
-				# Non-retryable error
-				raise ModelProviderError(message=e.message, status_code=e.status_code, model=self.name) from e
 		except Exception as e:
-			raise ModelProviderError(message=str(e), model=self.name) from e
+			# All retry attempts failed - convert to standard exception format
+			if isinstance(e, RateLimitError):
+				raise ModelRateLimitError(message=f'Rate limit exceeded after 10 retries: {e.message}', model=self.name) from e
+			elif isinstance(e, APIConnectionError):
+				raise ModelProviderError(message=f'Connection failed after 10 retries: {e.message}', model=self.name) from e
+			elif isinstance(e, APIStatusError):
+				raise ModelProviderError(message=e.message, status_code=e.status_code, model=self.name) from e
+			else:
+				raise ModelProviderError(message=str(e), model=self.name) from e
