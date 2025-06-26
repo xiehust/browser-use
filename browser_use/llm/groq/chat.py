@@ -145,7 +145,7 @@ class ChatGroq(BaseChatModel):
 				func=_make_api_call,
 				rate_limit_error_types=(RateLimitError,),
 				server_error_types=(APIStatusError,),  # Will filter retryable errors automatically
-				connection_error_types=(APIError, httpx.ConnectError, httpx.TimeoutException),
+				connection_error_types=(httpx.ConnectError, httpx.TimeoutException),  # Only true connection errors
 				max_retries=10,
 			)
 
@@ -176,6 +176,13 @@ class ChatGroq(BaseChatModel):
 
 				raise ModelProviderError(message=e.response.text, status_code=e.response.status_code, model=self.name) from e
 			elif isinstance(e, APIError):
-				raise ModelProviderError(message=f'Connection failed after 10 retries: {e.message}', model=self.name) from e
+				# APIError includes both connection and client errors
+				# Only treat as connection error if it's actually a connection issue
+				error_msg = str(e)
+				if any(keyword in error_msg.lower() for keyword in ['connection', 'timeout', 'network']):
+					raise ModelProviderError(message=f'Connection failed after 10 retries: {e.message}', model=self.name) from e
+				else:
+					# Non-connection APIError (client error) - don't mention retries
+					raise ModelProviderError(message=e.message, model=self.name) from e
 			else:
 				raise ModelProviderError(message=str(e), model=self.name) from e

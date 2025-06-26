@@ -205,20 +205,32 @@ class ChatGoogle(BaseChatModel):
 					)
 
 		try:
-			# Use exponential backoff retry for multiple error types
-			# Google API uses generic exceptions, so we rely on the retry mechanism's
-			# built-in error message pattern matching for proper error classification
+			# Define a custom wrapper for Google errors to enable proper retry classification
+			class GoogleAPIError(Exception):
+				def __init__(self, original_error):
+					self.original_error = original_error
+					super().__init__(str(original_error))
+
+			async def _make_api_call_with_error_classification():
+				try:
+					return await _make_api_call()
+				except Exception as e:
+					# Wrap all Google errors to enable retry classification
+					raise GoogleAPIError(e) from e
+
+			# Use exponential backoff retry with proper error classification
 			return await exponential_backoff_retry(
-				func=_make_api_call,
-				rate_limit_error_types=(),  # Google uses generic exceptions
-				server_error_types=(Exception,),  # Let retry mechanism filter by error message patterns
+				func=_make_api_call_with_error_classification,
+				rate_limit_error_types=(),  # Google uses generic exceptions - handled by server_error_types
+				server_error_types=(GoogleAPIError,),  # Let retry mechanism use pattern matching
 				connection_error_types=(),  # Handled by server_error_types pattern matching
 				max_retries=10,
 			)
 
 		except Exception as e:
 			# All retry attempts failed - convert to standard exception format
-			error_message = str(e)
+			original_error = getattr(e, 'original_error', e)
+			error_message = str(original_error)
 
 			# Check if this is a rate limit error
 			if any(
@@ -229,7 +241,7 @@ class ChatGoogle(BaseChatModel):
 					message=f'Rate limit exceeded after 10 retries: {error_message}',
 					status_code=429,
 					model=self.name,
-				) from e
+				) from original_error
 
 			# Check for server errors
 			elif any(
@@ -240,25 +252,25 @@ class ChatGoogle(BaseChatModel):
 					message=f'Server error after 10 retries: {error_message}',
 					status_code=503,
 					model=self.name,
-				) from e
+				) from original_error
 
 			# Handle google-api-core exceptions if available
 			try:
 				from google.api_core.exceptions import ResourceExhausted
 
-				if isinstance(e, ResourceExhausted):
+				if isinstance(original_error, ResourceExhausted):
 					raise ModelProviderError(
 						message=f'Rate limit exceeded after 10 retries: {error_message}',
 						status_code=429,
 						model=self.name,
-					) from e
+					) from original_error
 			except ImportError:
 				pass
 
 			# Default error handling
 			status_code = 502
-			if hasattr(e, 'response'):
-				response = getattr(e, 'response')
+			if hasattr(original_error, 'response'):
+				response = getattr(original_error, 'response')
 				if response and hasattr(response, 'status_code'):
 					status_code = response.status_code
 
@@ -266,7 +278,7 @@ class ChatGoogle(BaseChatModel):
 				message=error_message,
 				status_code=status_code,
 				model=self.name,
-			) from e
+			) from original_error
 
 	def _pydantic_to_gemini_schema(self, model_class: type[BaseModel]) -> dict[str, Any]:
 		"""

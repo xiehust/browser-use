@@ -7,7 +7,7 @@ For easier transition we have
 import asyncio
 import logging
 import random
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any, Protocol, TypeVar, overload
 
 from pydantic import BaseModel
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 async def exponential_backoff_retry(
-	func: Callable,
+	func: Callable[[], Awaitable[Any]],
 	rate_limit_error_types: tuple,
 	server_error_types: tuple = (),
 	connection_error_types: tuple = (),
@@ -35,7 +35,7 @@ async def exponential_backoff_retry(
 	Retry a function with exponential backoff when encountering retryable errors.
 
 	Args:
-		func: The function to retry
+		func: The async function to retry
 		rate_limit_error_types: Tuple of exception types that indicate rate limiting (429, etc.)
 		server_error_types: Tuple of exception types for server errors (503, 502, 500, etc.)
 		connection_error_types: Tuple of exception types for connection/network errors
@@ -86,6 +86,13 @@ async def exponential_backoff_retry(
 
 		return False
 
+	def is_retryable_rate_limit_error(exception):
+		"""Check if an error is a rate limit error based on patterns"""
+		error_msg = str(exception).lower()
+		return any(
+			pattern in error_msg for pattern in ['rate limit', 'resource exhausted', 'quota exceeded', 'too many requests', '429']
+		)
+
 	last_exception = None
 
 	for attempt in range(max_retries + 1):  # +1 because first attempt is not a retry
@@ -116,8 +123,33 @@ async def exponential_backoff_retry(
 		except server_error_types as e:
 			# Check if this specific server error is retryable
 			if not is_retryable_server_error(e):
-				# Non-retryable server error (e.g., 4xx client errors), don't retry
-				raise
+				# For Google: also check rate limit patterns since it uses generic exceptions
+				if is_retryable_rate_limit_error(e):
+					# Treat as rate limit error
+					last_exception = e
+
+					if attempt == max_retries:
+						logger.error(f'Rate limit retry failed after {max_retries} attempts: {e}')
+						raise
+
+					# Use rate limit backoff strategy
+					base_delay = initial_delay * (exponential_base**attempt)
+					delay = min(base_delay, max_delay)
+
+					if jitter:
+						jitter_amount = delay * 0.25
+						delay = delay + random.uniform(-jitter_amount, jitter_amount)
+						delay = max(0.1, delay)
+
+					logger.warning(
+						f'Rate limit error (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying in {delay:.1f} seconds...'
+					)
+
+					await asyncio.sleep(delay)
+					continue
+				else:
+					# Non-retryable server error (e.g., 4xx client errors), don't retry
+					raise
 
 			last_exception = e
 
@@ -145,9 +177,9 @@ async def exponential_backoff_retry(
 				logger.error(f'Connection error retry failed after {max_retries} attempts: {e}')
 				raise
 
-			# For connection errors, use shorter delays
+			# For connection errors, use shorter delays and cap at 60s
 			base_delay = (initial_delay * 0.3) * (exponential_base**attempt)
-			delay = min(base_delay, max(max_delay * 0.5, 60.0))  # Cap at 60s for connection errors
+			delay = min(base_delay, 60.0)  # Cap at 60s for connection errors
 
 			if jitter:
 				jitter_amount = delay * 0.25
