@@ -165,10 +165,12 @@ class ChatOpenAI(BaseChatModel):
 				)
 
 		try:
-			# Use exponential backoff retry for rate limit errors
+			# Use exponential backoff retry for multiple error types
 			return await exponential_backoff_retry(
 				func=_make_api_call,
 				rate_limit_error_types=(RateLimitError,),
+				server_error_types=(APIStatusError,),  # Covers 503, 502, 500, etc.
+				connection_error_types=(APIConnectionError, httpx.ConnectError, httpx.TimeoutException),
 				max_retries=10,
 			)
 
@@ -185,21 +187,38 @@ class ChatOpenAI(BaseChatModel):
 			) from e
 
 		except APIConnectionError as e:
-			raise ModelProviderError(message=str(e), model=self.name) from e
+			raise ModelProviderError(message=f"Connection failed after 10 retries: {str(e)}", model=self.name) from e
 
 		except APIStatusError as e:
-			try:
-				error_message = e.response.json().get('error', {})
-			except Exception:
-				error_message = e.response.text
-			error_message = (
-				error_message.get('message', 'Unknown model error') if isinstance(error_message, dict) else error_message
-			)
-			raise ModelProviderError(
-				message=error_message,
-				status_code=e.response.status_code,
-				model=self.name,
-			) from e
+			# Check if this is a retryable server error
+			if e.response.status_code in (500, 502, 503, 504):
+				# This should only happen if all retries failed
+				try:
+					error_message = e.response.json().get('error', {})
+				except Exception:
+					error_message = e.response.text
+				error_message = (
+					error_message.get('message', 'Unknown server error') if isinstance(error_message, dict) else error_message
+				)
+				raise ModelProviderError(
+					message=f"Server error after 10 retries: {error_message}",
+					status_code=e.response.status_code,
+					model=self.name,
+				) from e
+			else:
+				# Non-retryable error, handle normally
+				try:
+					error_message = e.response.json().get('error', {})
+				except Exception:
+					error_message = e.response.text
+				error_message = (
+					error_message.get('message', 'Unknown model error') if isinstance(error_message, dict) else error_message
+				)
+				raise ModelProviderError(
+					message=error_message,
+					status_code=e.response.status_code,
+					model=self.name,
+				) from e
 
 		except Exception as e:
 			raise ModelProviderError(message=str(e), model=self.name) from e

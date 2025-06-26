@@ -205,18 +205,36 @@ class ChatGoogle(BaseChatModel):
 					)
 
 		try:
-			# Import Google-specific exceptions for rate limiting
-			try:
-				from google.api_core.exceptions import ResourceExhausted
-				rate_limit_errors = (ResourceExhausted,)
-			except ImportError:
-				# If google-api-core is not available, just use Exception as fallback
-				rate_limit_errors = (Exception,)
+			# Define custom error classes for Google API errors
+			class GoogleRateLimitError(Exception):
+				pass
+			
+			class GoogleServerError(Exception):
+				pass
+			
+			async def handle_google_errors():
+				try:
+					return await _make_api_call()
+				except Exception as e:
+					error_message = str(e).lower()
+					# Check for various rate limit indicators in error message
+					if any(indicator in error_message for indicator in [
+						'rate limit', 'resource exhausted', 'quota exceeded', 'too many requests', '429'
+					]):
+						raise GoogleRateLimitError(str(e))
+					# Check for server error indicators
+					elif any(indicator in error_message for indicator in [
+						'service unavailable', 'internal server error', 'bad gateway', '503', '502', '500'
+					]):
+						raise GoogleServerError(str(e))
+					raise
 
-			# Use exponential backoff retry for rate limit errors
+			# Use exponential backoff retry for multiple error types
 			return await exponential_backoff_retry(
-				func=_make_api_call,
-				rate_limit_error_types=rate_limit_errors,
+				func=handle_google_errors,
+				rate_limit_error_types=(GoogleRateLimitError,),
+				server_error_types=(GoogleServerError,),
+				connection_error_types=(),  # Google API errors are handled in handle_google_errors
 				max_retries=10,
 			)
 
@@ -237,12 +255,24 @@ class ChatGoogle(BaseChatModel):
 					) from e
 			except ImportError:
 				# If google-api-core is not available, check error message
-				if '429' in error_message or 'rate limit' in error_message.lower() or 'resource exhausted' in error_message.lower():
+				if any(indicator in error_message.lower() for indicator in [
+					'rate limit', 'resource exhausted', 'quota exceeded', 'too many requests', '429'
+				]):
 					raise ModelProviderError(
 						message=f"Rate limit exceeded after 10 retries: {error_message}",
 						status_code=429,
 						model=self.name,
 					) from e
+
+			# Check for server errors
+			if any(indicator in error_message.lower() for indicator in [
+				'service unavailable', 'internal server error', 'bad gateway', '503', '502', '500'
+			]):
+				raise ModelProviderError(
+					message=f"Server error after 10 retries: {error_message}",
+					status_code=503,
+					model=self.name,
+				) from e
 
 			# Try to extract status code if available
 			if hasattr(e, 'response'):

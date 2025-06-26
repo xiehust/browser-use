@@ -139,10 +139,33 @@ class ChatGroq(BaseChatModel):
 				)
 
 		try:
-			# Use exponential backoff retry for rate limit errors
+			# Import connection errors from httpx
+			import httpx
+			
+			# Define Groq-specific error handling
+			# 498 is Groq's custom "Flex Tier Capacity Exceeded" error
+			class GroqCapacityError(APIStatusError):
+				"""Custom exception for Groq's 498 capacity exceeded error"""
+				pass
+				
+			async def handle_groq_errors():
+				try:
+					return await _make_api_call()
+				except APIStatusError as e:
+					if e.response.status_code == 498:
+						raise GroqCapacityError(
+							message="Flex Tier Capacity Exceeded",
+							response=e.response,
+							body=e.body
+						)
+					raise
+			
+			# Use exponential backoff retry for multiple error types
 			return await exponential_backoff_retry(
-				func=_make_api_call,
+				func=handle_groq_errors,
 				rate_limit_error_types=(RateLimitError,),
+				server_error_types=(APIStatusError, GroqCapacityError),  # Includes 500, 502, 503, 498, etc.
+				connection_error_types=(APIError, httpx.ConnectError, httpx.TimeoutException),
 				max_retries=10,
 			)
 
@@ -154,7 +177,15 @@ class ChatGroq(BaseChatModel):
 			raise ModelProviderError(message=e.response.text, status_code=e.response.status_code, model=self.name) from e
 
 		except APIStatusError as e:
-			if output_format is None:
+			# Check if this is a retryable server error
+			if e.response.status_code in (500, 502, 503, 504, 498):
+				# This should only happen if all retries failed
+				raise ModelProviderError(
+					message=f"Server error after 10 retries (HTTP {e.response.status_code}): {e.response.text}",
+					status_code=e.response.status_code,
+					model=self.name
+				) from e
+			elif output_format is None:
 				raise ModelProviderError(message=e.response.text, status_code=e.response.status_code, model=self.name) from e
 			else:
 				try:
@@ -173,6 +204,6 @@ class ChatGroq(BaseChatModel):
 					raise ModelProviderError(message=str(e), status_code=e.response.status_code, model=self.name) from e
 
 		except APIError as e:
-			raise ModelProviderError(message=e.message, model=self.name) from e
+			raise ModelProviderError(message=f"Connection failed after 10 retries: {e.message}", model=self.name) from e
 		except Exception as e:
 			raise ModelProviderError(message=str(e), model=self.name) from e
