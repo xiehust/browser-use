@@ -875,22 +875,9 @@ class Agent(Generic[Context]):
 			logger.error(f'{prefix}{error_msg}')
 
 		else:
-			from anthropic import RateLimitError as AnthropicRateLimitError
-			from google.api_core.exceptions import ResourceExhausted
-			from openai import RateLimitError
-
-			# Define a tuple of rate limit error types for easier maintenance
-			RATE_LIMIT_ERRORS = (
-				RateLimitError,  # OpenAI
-				ResourceExhausted,  # Google
-				AnthropicRateLimitError,  # Anthropic
-			)
-
-			if isinstance(error, RATE_LIMIT_ERRORS) or 'on tokens per minute (TPM): Limit' in error_msg:
-				logger.warning(f'{prefix}{error_msg}')
-				await asyncio.sleep(self.settings.retry_delay)
-			else:
-				self.logger.error(f'{prefix}{error_msg}')
+			# Rate limiting is now handled at the LLM level with exponential backoff retry
+			# Only log other types of errors here
+			self.logger.error(f'{prefix}{error_msg}')
 
 		return [ActionResult(error=error_msg, include_in_memory=True)]
 

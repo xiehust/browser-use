@@ -20,7 +20,7 @@ from httpx import Timeout
 from pydantic import BaseModel
 
 from browser_use.llm.anthropic.serializer import AnthropicMessageSerializer
-from browser_use.llm.base import BaseChatModel
+from browser_use.llm.base import BaseChatModel, exponential_backoff_retry
 from browser_use.llm.exceptions import ModelProviderError, ModelRateLimitError
 from browser_use.llm.messages import BaseMessage
 from browser_use.llm.views import ChatInvokeCompletion, ChatInvokeUsage
@@ -126,7 +126,7 @@ class ChatAnthropic(BaseChatModel):
 	) -> ChatInvokeCompletion[T] | ChatInvokeCompletion[str]:
 		anthropic_messages, system_prompt = AnthropicMessageSerializer.serialize_messages(messages)
 
-		try:
+		async def _make_api_call():
 			if output_format is None:
 				# Normal completion without structured output
 				response = await self.get_client().messages.create(
@@ -201,10 +201,19 @@ class ChatAnthropic(BaseChatModel):
 				# If no tool use block found, raise an error
 				raise ValueError('Expected tool use in response but none found')
 
+		try:
+			# Use exponential backoff retry for rate limit errors
+			return await exponential_backoff_retry(
+				func=_make_api_call,
+				rate_limit_error_types=(RateLimitError,),
+				max_retries=10,
+			)
+
 		except APIConnectionError as e:
 			raise ModelProviderError(message=e.message, model=self.name) from e
 		except RateLimitError as e:
-			raise ModelRateLimitError(message=e.message, model=self.name) from e
+			# This should only happen if all retries failed
+			raise ModelRateLimitError(message=f"Rate limit exceeded after 10 retries: {e.message}", model=self.name) from e
 		except APIStatusError as e:
 			raise ModelProviderError(message=e.message, status_code=e.status_code, model=self.name) from e
 		except Exception as e:

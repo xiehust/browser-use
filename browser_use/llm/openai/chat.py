@@ -8,7 +8,7 @@ from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.shared.chat_model import ChatModel
 from pydantic import BaseModel
 
-from browser_use.llm.base import BaseChatModel
+from browser_use.llm.base import BaseChatModel, exponential_backoff_retry
 from browser_use.llm.exceptions import ModelProviderError
 from browser_use.llm.messages import BaseMessage
 from browser_use.llm.openai.serializer import OpenAIMessageSerializer
@@ -129,7 +129,7 @@ class ChatOpenAI(BaseChatModel):
 
 		openai_messages = OpenAIMessageSerializer.serialize_messages(messages)
 
-		try:
+		async def _make_api_call():
 			if output_format is None:
 				# Return string response
 				response = await self.get_client().chat.completions.create(
@@ -164,13 +164,22 @@ class ChatOpenAI(BaseChatModel):
 					usage=usage,
 				)
 
+		try:
+			# Use exponential backoff retry for rate limit errors
+			return await exponential_backoff_retry(
+				func=_make_api_call,
+				rate_limit_error_types=(RateLimitError,),
+				max_retries=10,
+			)
+
 		except RateLimitError as e:
+			# This should only happen if all retries failed
 			error_message = e.response.json().get('error', {})
 			error_message = (
 				error_message.get('message', 'Unknown model error') if isinstance(error_message, dict) else error_message
 			)
 			raise ModelProviderError(
-				message=error_message,
+				message=f"Rate limit exceeded after 10 retries: {error_message}",
 				status_code=e.response.status_code,
 				model=self.name,
 			) from e

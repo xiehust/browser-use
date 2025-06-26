@@ -8,7 +8,7 @@ from google.genai import types
 from google.genai.types import MediaModality
 from pydantic import BaseModel
 
-from browser_use.llm.base import BaseChatModel
+from browser_use.llm.base import BaseChatModel, exponential_backoff_retry
 from browser_use.llm.exceptions import ModelProviderError
 from browser_use.llm.google.serializer import GoogleMessageSerializer
 from browser_use.llm.messages import BaseMessage
@@ -134,7 +134,7 @@ class ChatGoogle(BaseChatModel):
 		if system_instruction:
 			config['system_instruction'] = system_instruction
 
-		try:
+		async def _make_api_call():
 			if output_format is None:
 				# Return string response
 				response = await self.get_client().aio.models.generate_content(
@@ -204,10 +204,45 @@ class ChatGoogle(BaseChatModel):
 						usage=usage,
 					)
 
+		try:
+			# Import Google-specific exceptions for rate limiting
+			try:
+				from google.api_core.exceptions import ResourceExhausted
+				rate_limit_errors = (ResourceExhausted,)
+			except ImportError:
+				# If google-api-core is not available, just use Exception as fallback
+				rate_limit_errors = (Exception,)
+
+			# Use exponential backoff retry for rate limit errors
+			return await exponential_backoff_retry(
+				func=_make_api_call,
+				rate_limit_error_types=rate_limit_errors,
+				max_retries=10,
+			)
+
 		except Exception as e:
 			# Handle specific Google API errors
 			error_message = str(e)
 			status_code: int | None = None
+
+			# Check if this is a rate limit error first
+			try:
+				from google.api_core.exceptions import ResourceExhausted
+				if isinstance(e, ResourceExhausted):
+					# This should only happen if all retries failed
+					raise ModelProviderError(
+						message=f"Rate limit exceeded after 10 retries: {error_message}",
+						status_code=429,
+						model=self.name,
+					) from e
+			except ImportError:
+				# If google-api-core is not available, check error message
+				if '429' in error_message or 'rate limit' in error_message.lower() or 'resource exhausted' in error_message.lower():
+					raise ModelProviderError(
+						message=f"Rate limit exceeded after 10 retries: {error_message}",
+						status_code=429,
+						model=self.name,
+					) from e
 
 			# Try to extract status code if available
 			if hasattr(e, 'response'):

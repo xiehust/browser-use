@@ -20,7 +20,7 @@ from groq.types.chat.completion_create_params import (
 from httpx import URL
 from pydantic import BaseModel
 
-from browser_use.llm.base import BaseChatModel, ChatInvokeCompletion
+from browser_use.llm.base import BaseChatModel, ChatInvokeCompletion, exponential_backoff_retry
 from browser_use.llm.exceptions import ModelProviderError, ModelRateLimitError
 from browser_use.llm.groq.parser import try_parse_groq_failed_generation
 from browser_use.llm.groq.serializer import GroqMessageSerializer
@@ -91,7 +91,7 @@ class ChatGroq(BaseChatModel):
 	) -> ChatInvokeCompletion[T] | ChatInvokeCompletion[str]:
 		groq_messages = GroqMessageSerializer.serialize_messages(messages)
 
-		try:
+		async def _make_api_call():
 			if output_format is None:
 				chat_completion = await self.get_client().chat.completions.create(
 					messages=groq_messages,
@@ -138,8 +138,17 @@ class ChatGroq(BaseChatModel):
 					usage=usage,
 				)
 
+		try:
+			# Use exponential backoff retry for rate limit errors
+			return await exponential_backoff_retry(
+				func=_make_api_call,
+				rate_limit_error_types=(RateLimitError,),
+				max_retries=10,
+			)
+
 		except RateLimitError as e:
-			raise ModelRateLimitError(message=e.response.text, status_code=e.response.status_code, model=self.name) from e
+			# This should only happen if all retries failed
+			raise ModelRateLimitError(message=f"Rate limit exceeded after 10 retries: {e.response.text}", status_code=e.response.status_code, model=self.name) from e
 
 		except APIResponseValidationError as e:
 			raise ModelProviderError(message=e.response.text, status_code=e.response.status_code, model=self.name) from e
