@@ -27,7 +27,6 @@ class AgentSettings(BaseModel):
 	"""Configuration options for the Agent"""
 
 	use_vision: bool = True
-	use_vision_for_planner: bool = False
 	save_conversation_path: str | Path | None = None
 	save_conversation_path_encoding: str | None = 'utf-8'
 	max_failures: int = 3
@@ -54,11 +53,45 @@ class AgentSettings(BaseModel):
 	use_thinking: bool = True
 
 	page_extraction_llm: BaseChatModel | None = None
-	planner_llm: BaseChatModel | None = None
-	planner_interval: int = 1  # Run planner every N steps
-	is_planner_reasoning: bool = False  # type: ignore
-	extend_planner_system_message: str | None = None
 	calculate_cost: bool = False
+
+	# Deprecated planner parameters - kept for backward compatibility but do nothing
+	planner_llm: BaseChatModel | None = None
+	planner_interval: int = 1
+	use_vision_for_planner: bool = False
+	is_planner_reasoning: bool = False
+	extend_planner_system_message: str | None = None
+
+	def __init__(self, **data):
+		# Check for deprecated planner parameters and warn users
+		planner_params = [
+			'planner_llm', 'planner_interval', 'use_vision_for_planner', 
+			'is_planner_reasoning', 'extend_planner_system_message'
+		]
+		
+		used_planner_params = [param for param in planner_params if data.get(param) is not None]
+		
+		if used_planner_params:
+			import logging
+			logger = logging.getLogger('browser_use.agent')
+			logger.warning(
+				f"Planner support has been removed as of version 0.3.2. The agent capability for planning is significantly improved and no longer requires the planner system. "
+				f"The following parameters are deprecated and will be ignored: {', '.join(used_planner_params)}. "
+				f"Please remove these parameters from your code."
+			)
+			
+			# Reset planner parameters to their defaults
+			for param in planner_params:
+				if param == 'planner_llm':
+					data[param] = None
+				elif param == 'planner_interval':
+					data[param] = 1
+				elif param in ['use_vision_for_planner', 'is_planner_reasoning']:
+					data[param] = False
+				else:  # extend_planner_system_message
+					data[param] = None
+		
+		super().__init__(**data)
 
 
 class AgentState(BaseModel):

@@ -54,24 +54,8 @@ agent = Agent(
 )
 ```
 
-### Extend Planner System Prompt
+### Planner System Prompt (Deprecated)
 
-You can customize the behavior of the planning agent by extending its system prompt:
-
-```python
-extend_planner_system_message = """
-PRIORITIZE gathering information before taking any action.
-Always suggest exploring multiple options before making a decision.
-"""
-
-# Create agent with extended planner system prompt
-llm = ChatOpenAI(model='gpt-4o')
-planner_llm = ChatOpenAI(model='gpt-4o-mini')
-
-agent = Agent(
-	task="Your task here",
-	llm=llm,
-	planner_llm=planner_llm,
-	extend_planner_system_message=extend_planner_system_message
-)
-```
+<Note>
+  **Important**: Planner support has been removed as of version 0.3.2. The `extend_planner_system_message` parameter is deprecated and will be ignored. The agent's built-in planning capabilities now handle task decomposition and strategic thinking without requiring a separate planner system.
+</Note>

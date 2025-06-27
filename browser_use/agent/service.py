@@ -39,7 +39,7 @@ from browser_use.agent.message_manager.service import (
 from browser_use.agent.message_manager.utils import (
 	save_conversation,
 )
-from browser_use.agent.prompts import PlannerPrompt, SystemPrompt
+from browser_use.agent.prompts import SystemPrompt
 from browser_use.agent.views import (
 	ActionResult,
 	AgentError,
@@ -138,7 +138,6 @@ class Agent(Generic[Context]):
 		register_external_agent_status_raise_error_callback: Callable[[], Awaitable[bool]] | None = None,
 		# Agent settings
 		use_vision: bool = True,
-		use_vision_for_planner: bool = False,
 		save_conversation_path: str | Path | None = None,
 		save_conversation_path_encoding: str | None = 'utf-8',
 		max_failures: int = 3,
@@ -167,10 +166,6 @@ class Agent(Generic[Context]):
 		max_actions_per_step: int = 10,
 		use_thinking: bool = True,
 		page_extraction_llm: BaseChatModel | None = None,
-		planner_llm: BaseChatModel | None = None,
-		planner_interval: int = 1,  # Run planner every N steps
-		is_planner_reasoning: bool = False,
-		extend_planner_system_message: str | None = None,
 		injected_agent_state: AgentState | None = None,
 		context: Context | None = None,
 		source: str | None = None,
@@ -179,6 +174,12 @@ class Agent(Generic[Context]):
 		cloud_sync: CloudSync | None = None,
 		calculate_cost: bool = False,
 		display_files_in_done_text: bool = True,
+		# Deprecated planner parameters - kept for backward compatibility
+		planner_llm: BaseChatModel | None = None,
+		planner_interval: int = 1,
+		use_vision_for_planner: bool = False,
+		is_planner_reasoning: bool = False,
+		extend_planner_system_message: str | None = None,
 		**kwargs,
 	):
 		# Check for deprecated memory parameters
@@ -190,6 +191,34 @@ class Agent(Generic[Context]):
 			)
 			kwargs['enable_memory'] = False
 			kwargs['memory_config'] = None
+
+		# Check for deprecated planner parameters
+		planner_params = {
+			'planner_llm': planner_llm,
+			'planner_interval': planner_interval,
+			'use_vision_for_planner': use_vision_for_planner,
+			'is_planner_reasoning': is_planner_reasoning,
+			'extend_planner_system_message': extend_planner_system_message
+		}
+		
+		used_planner_params = [param for param, value in planner_params.items() 
+							   if (value is not None and param != 'planner_interval') or 
+							   (param == 'planner_interval' and value != 1) or
+							   (param in ['use_vision_for_planner', 'is_planner_reasoning'] and value is True)]
+		
+		if used_planner_params:
+			logger.warning(
+				f"Planner support has been removed as of version 0.3.2. The agent capability for planning is significantly improved and no longer requires the planner system. "
+				f"The following parameters are deprecated and will be ignored: {', '.join(used_planner_params)}. "
+				f"Please remove these parameters from your code."
+			)
+			
+		# Reset planner parameters to defaults (they will be ignored anyway)
+		planner_llm = None
+		planner_interval = 1
+		use_vision_for_planner = False
+		is_planner_reasoning = False
+		extend_planner_system_message = None
 
 		if page_extraction_llm is None:
 			page_extraction_llm = llm
@@ -213,7 +242,6 @@ class Agent(Generic[Context]):
 
 		self.settings = AgentSettings(
 			use_vision=use_vision,
-			use_vision_for_planner=use_vision_for_planner,
 			save_conversation_path=save_conversation_path,
 			save_conversation_path_encoding=save_conversation_path_encoding,
 			max_failures=max_failures,
@@ -227,10 +255,6 @@ class Agent(Generic[Context]):
 			include_attributes=include_attributes,
 			max_actions_per_step=max_actions_per_step,
 			page_extraction_llm=page_extraction_llm,
-			planner_llm=planner_llm,
-			planner_interval=planner_interval,
-			is_planner_reasoning=is_planner_reasoning,
-			extend_planner_system_message=extend_planner_system_message,
 			use_thinking=use_thinking,
 			calculate_cost=calculate_cost,
 		)
@@ -239,8 +263,6 @@ class Agent(Generic[Context]):
 		self.token_cost_service = TokenCost(include_cost=calculate_cost)
 		self.token_cost_service.register_llm(llm)
 		self.token_cost_service.register_llm(page_extraction_llm)
-		if self.settings.planner_llm:
-			self.token_cost_service.register_llm(self.settings.planner_llm)
 
 		# Initialize state
 		self.state = injected_agent_state or AgentState()
@@ -261,28 +283,15 @@ class Agent(Generic[Context]):
 		if 'deepseek' in self.llm.model.lower():
 			self.logger.warning('⚠️ DeepSeek models do not support use_vision=True yet. Setting use_vision=False for now...')
 			self.settings.use_vision = False
-		if self.settings.planner_llm and 'deepseek' in (self.settings.planner_llm.model or '').lower():
-			self.logger.warning(
-				'⚠️ DeepSeek models do not support use_vision=True yet. Setting use_vision_for_planner=False for now...'
-			)
-			self.settings.use_vision_for_planner = False
 		# Handle users trying to use use_vision=True with XAI models
 		if 'grok' in self.llm.model.lower():
 			self.logger.warning('⚠️ XAI models do not support use_vision=True yet. Setting use_vision=False for now...')
 			self.settings.use_vision = False
-		if self.settings.planner_llm and 'grok' in (self.settings.planner_llm.model or '').lower():
-			self.logger.warning(
-				'⚠️ XAI models do not support use_vision=True yet. Setting use_vision_for_planner=False for now...'
-			)
-			self.settings.use_vision_for_planner = False
 
 		self.logger.info(
 			f'🧠 Starting a browser-use agent {self.version} with base_model={self.llm.model}'
 			f'{" +vision" if self.settings.use_vision else ""}'
 			f' extraction_model={self.settings.page_extraction_llm.model if self.settings.page_extraction_llm else "Unknown"}'
-			f'{f" planner_model={self.settings.planner_llm.model}" if self.settings.planner_llm else ""}'
-			f'{" +reasoning" if self.settings.is_planner_reasoning else ""}'
-			f'{" +vision" if self.settings.use_vision_for_planner else ""} '
 			f'{" +file_system" if self.file_system else ""}'
 		)
 
@@ -664,11 +673,7 @@ class Agent(Generic[Context]):
 				sensitive_data=self.sensitive_data,
 			)
 
-			# Run planner at specified intervals if planner is configured
-			if self.settings.planner_llm and self.state.n_steps % self.settings.planner_interval == 0:
-				plan = await self._run_planner()
-				# add plan before last state message
-				self._message_manager.add_plan(plan, position=-1)
+			# Planner functionality has been removed as of version 0.3.2
 
 			if step_info and step_info.is_last_step():
 				# Add last step warning if needed
@@ -1045,7 +1050,7 @@ class Agent(Generic[Context]):
 				task=self.task,
 				model=self.llm.model,
 				model_provider=self.llm.provider,
-				planner_llm=self.settings.planner_llm.model if self.settings.planner_llm else None,
+				planner_llm=None,  # Planner support removed in v0.3.2
 				max_steps=max_steps,
 				max_actions_per_step=self.settings.max_actions_per_step,
 				use_vision=self.settings.use_vision,
@@ -1576,75 +1581,7 @@ class Agent(Generic[Context]):
 			setattr(self.llm, '_verified_api_keys', True)
 			return True
 
-	async def _run_planner(self) -> str | None:
-		"""Run the planner to analyze state and suggest next steps"""
-		# Skip planning if no planner_llm is set
-		if not self.settings.planner_llm:
-			return None
-
-		# Get current state to filter actions by page
-		assert self.browser_session is not None, 'BrowserSession is not set up'
-		page = await self.browser_session.get_current_page()
-
-		# Get all standard actions (no filter) and page-specific actions
-		standard_actions = self.controller.registry.get_prompt_description()  # No page = system prompt actions
-		page_actions = self.controller.registry.get_prompt_description(page)  # Page-specific actions
-
-		# Combine both for the planner
-		all_actions = standard_actions
-		if page_actions:
-			all_actions += '\n' + page_actions
-
-		# Create planner message history using full message history with all available actions
-		planner_messages = [
-			PlannerPrompt(all_actions).get_system_message(
-				is_planner_reasoning=self.settings.is_planner_reasoning,
-				extended_planner_system_prompt=self.settings.extend_planner_system_message,
-			),
-			*self._message_manager.get_messages()[1:],  # Use full message history except the first
-		]
-
-		if not self.settings.use_vision_for_planner and self.settings.use_vision:
-			last_state_message: UserMessage = planner_messages[-1]
-			# remove image from last state message
-			new_msg = ''
-			if isinstance(last_state_message.content, list):
-				for msg in last_state_message.content:
-					if msg.type == 'text':
-						new_msg += msg.text
-					elif msg.type == 'image_url':
-						continue
-			else:
-				new_msg = last_state_message.content
-
-			planner_messages[-1] = UserMessage(content=new_msg)
-
-		# Get planner output
-		try:
-			response = await self.settings.planner_llm.ainvoke(planner_messages)
-		except Exception as e:
-			self.logger.error(f'Failed to invoke planner: {str(e)}')
-			# Extract status code if available (e.g., from HTTP exceptions)
-			status_code = getattr(e, 'status_code', None) or getattr(e, 'code', None) or 500
-			error_msg = f'Planner LLM API call failed: {type(e).__name__}: {str(e)}'
-			raise LLMException(status_code, error_msg) from e
-
-		plan = response.completion
-		# if deepseek-reasoner, remove think tags
-		if self.settings.planner_llm and (
-			'deepseek-r1' in self.settings.planner_llm.model or 'deepseek-reasoner' in self.settings.planner_llm.model
-		):
-			plan = self._remove_think_tags(plan)
-		try:
-			plan_json = json.loads(plan)
-			self.logger.info(f'Planning Analysis:\n{json.dumps(plan_json, indent=4)}')
-		except json.JSONDecodeError:
-			self.logger.info(f'Planning Analysis:\n{plan}')
-		except Exception as e:
-			self.logger.debug(f'Error parsing planning analysis: {e}')
-			self.logger.info(f'Plan: {plan}')
-
-		return plan
+	# _run_planner method removed - planner support discontinued in v0.3.2
 
 	@property
 	def message_manager(self) -> MessageManager:
