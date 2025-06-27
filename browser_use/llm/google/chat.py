@@ -66,8 +66,7 @@ class ChatGoogle(BaseChatModel):
 		llm = ChatGoogle(
 			model='gemini-2.0-flash-exp',
 			config_kwargs={
-				'tools': [types.Tool(code_execution=types.ToolCodeExecution())],
-				'safety_settings': [types.SafetySetting(category='HARM_CATEGORY_DANGEROUS_CONTENT', threshold='BLOCK_NONE')]
+				'tools': [types.Tool(code_execution=types.ToolCodeExecution())]
 			}
 		)
 	"""
