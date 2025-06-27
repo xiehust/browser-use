@@ -44,13 +44,38 @@ class ChatGoogle(BaseChatModel):
 	"""
 	A wrapper around Google's Gemini chat model using the genai client.
 
-	This class accepts all genai.Client parameters while adding model
-	and temperature parameters for the LLM interface.
+	This class accepts all genai.Client parameters while adding model,
+	temperature, and config_kwargs parameters for the LLM interface.
+	
+	Args:
+		model: The Gemini model to use
+		temperature: Temperature for response generation
+		config_kwargs: Additional configuration parameters to pass to generate_content
+			(e.g., tools, safety_settings, etc.). These are merged with the base config
+			but can be overridden by model-specific parameters like temperature.
+		api_key: Google API key
+		vertexai: Whether to use Vertex AI
+		credentials: Google credentials object
+		project: Google Cloud project ID
+		location: Google Cloud location
+		http_options: HTTP options for the client
+		
+	Example:
+		from google.genai import types
+		
+		llm = ChatGoogle(
+			model='gemini-2.0-flash-exp',
+			config_kwargs={
+				'tools': [types.Tool(code_execution=types.ToolCodeExecution())],
+				'safety_settings': [types.SafetySetting(category='HARM_CATEGORY_DANGEROUS_CONTENT', threshold='BLOCK_NONE')]
+			}
+		)
 	"""
 
 	# Model configuration
 	model: VerifiedGeminiModels | str
 	temperature: float | None = None
+	config_kwargs: dict[str, Any] | None = None
 
 	# Client initialization parameters
 	api_key: str | None = None
@@ -142,8 +167,12 @@ class ChatGoogle(BaseChatModel):
 		# Serialize messages to Google format
 		contents, system_instruction = GoogleMessageSerializer.serialize_messages(messages)
 
-		# Return string response
+		# Build config dictionary starting with user-provided config_kwargs
 		config: types.GenerateContentConfigDict = {}
+		if self.config_kwargs:
+			config.update(self.config_kwargs)
+		
+		# Apply model-specific configuration (these can override config_kwargs)
 		if self.temperature is not None:
 			config['temperature'] = self.temperature
 
