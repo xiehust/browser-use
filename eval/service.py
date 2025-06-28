@@ -1121,6 +1121,23 @@ def create_pydantic_model_from_schema(schema: dict, model_name: str = 'DynamicMo
 
 			module = importlib.util.module_from_spec(spec)
 
+			# Add necessary imports to the module namespace before executing
+			from typing import Any, Optional, Union
+
+			from pydantic import BaseModel, Field
+
+			module.__dict__.update(
+				{
+					'Optional': Optional,
+					'Union': Union,
+					'list': list,
+					'dict': dict,
+					'Any': Any,
+					'BaseModel': BaseModel,
+					'Field': Field,
+				}
+			)
+
 			# Execute the generated code in the module's namespace
 			exec(generated_code, module.__dict__)
 
