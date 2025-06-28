@@ -366,9 +366,6 @@ extraction, interaction, login, research, shopping, booking, comparison, qa_test
 - 60-69: Poor execution with significant issues
 - 1-59: Failed execution, major problems
 
-**IMPORTANT: YOU ONLY PROVIDE SCORES - NOT PASS/FAIL DECISIONS**
-The pass/fail determination is handled automatically based on a 70-point threshold. Your job is to provide accurate scoring only.
-
 **IMPORTANT: DO NOT EVALUATE FOR HALLUCINATION**
 The agent has access at every step to browser_state so it has more information than you can see. If the agent states something as fact or provides specific data, assume it is correct. Focus on evaluating trajectory quality, tool usage, and task completion rather than data accuracy.
 
@@ -519,7 +516,7 @@ def parse_judge_response(result_dict: dict, task: str) -> JudgeResult:
 def create_fallback_result(task: str, error_msg: str) -> JudgeResult:
 	"""Create a fallback result when evaluation fails."""
 	# Set scores to be < 40 when there's no response due to error
-	error_score = 35  # Less than 40 as required
+	error_score = 15  # Less than 40 as required
 	
 	return JudgeResult(
 		task_summary=f'Failed to analyze task: {task[:100]}...',
