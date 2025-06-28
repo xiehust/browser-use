@@ -4,9 +4,9 @@ import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
-from typing import Any, Generic, TypeVar, cast
+from typing import Any, Generic, TypeVar, cast, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from browser_use.agent.views import ActionModel, ActionResult
 from browser_use.browser import BrowserSession
@@ -79,9 +79,18 @@ class Controller(Generic[Context]):
 
 		if output_model is not None:
 			# Create a new model that extends the output model with success parameter
-			class ExtendedOutputModel(BaseModel):  # type: ignore
+			class ExtendedOutputModel(BaseModel):
 				success: bool = True
-				data: output_model  # type: ignore
+				data: Any = Field(...)
+				
+				@classmethod
+				def __pydantic_init_subclass__(cls, **kwargs):
+					super().__pydantic_init_subclass__(**kwargs)
+					# Rebuild the model after class creation
+					cls.model_rebuild()
+			
+			# Rebuild the model to ensure it's fully defined
+			ExtendedOutputModel.model_rebuild()
 
 			@self.registry.action(
 				'Complete task - with return text and if the task is finished (success=True) or not yet completely finished (success=False), because last step is reached',
