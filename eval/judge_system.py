@@ -371,6 +371,8 @@ extraction, interaction, login, research, shopping, booking, comparison, qa_test
 **IMPORTANT: DO NOT EVALUATE FOR HALLUCINATION**
 The agent has access at every step to browser_state so it has more information than you can see. If the agent states something as fact or provides specific data, assume it is correct. Focus on evaluating trajectory quality, tool usage, and task completion rather than data accuracy.
 
+**IMPORTANT: You only decide the SCORE (1-100). Do NOT decide pass/fail - that will be determined automatically based on a 70 threshold.**
+
 Respond with EXACTLY this JSON structure (no additional text):
 
 {{
@@ -380,11 +382,11 @@ Respond with EXACTLY this JSON structure (no additional text):
     "reasoning": "Detailed analysis of what went well and what didn't, trajectory quality, planning assessment, output quality, user satisfaction",
     "error_categories": ["error1", "error2"],
     "scores": {{
-        "task_satisfaction": 70
+        "task_satisfaction": 70,
         "tool_calling_effectiveness": 80,
         "agent_reasoning": 85,
         "browser_handling": 65,
-        "trajectory_quality": 75,
+        "trajectory_quality": 75
     }},
     "final_score": 75,
     "critical_issues": [
@@ -481,27 +483,30 @@ def parse_judge_response(result_dict: dict, task: str) -> JudgeResult:
 				except ValueError:
 					logger.warning(f'Unknown error category: {err}')
 
-		# Parse scores
+		# Parse scores - default to 35 (< 40) for error cases
 		scores_dict = result_dict.get('scores', {})
 		scores = ScoreBreakdown(
-			trajectory_quality=scores_dict.get('trajectory_quality', 50),
-			tool_calling_effectiveness=scores_dict.get('tool_calling_effectiveness', 50),
-			agent_reasoning=scores_dict.get('agent_reasoning', 50),
-			browser_handling=scores_dict.get('browser_handling', 50),
-			task_satisfaction=scores_dict.get('task_satisfaction', 50),
+			trajectory_quality=scores_dict.get('trajectory_quality', 35),
+			tool_calling_effectiveness=scores_dict.get('tool_calling_effectiveness', 35),
+			agent_reasoning=scores_dict.get('agent_reasoning', 35),
+			browser_handling=scores_dict.get('browser_handling', 35),
+			task_satisfaction=scores_dict.get('task_satisfaction', 35),
 		)
 
-		final_score = result_dict.get('final_score', 50)
+		final_score = result_dict.get('final_score', 35)
+
+		# Hard code pass/fail logic with 70 as threshold - judge only decides score
+		passed = final_score >= 70
 
 		return JudgeResult(
 			task_summary=result_dict.get('task_summary', 'Task analysis unavailable'),
-			task_clarity_score=result_dict.get('task_clarity_score', 50),
+			task_clarity_score=result_dict.get('task_clarity_score', 35),  # Default < 40 for error cases
 			task_categories=task_categories,
 			reasoning=result_dict.get('reasoning', 'Analysis unavailable'),
 			error_categories=error_categories,
 			scores=scores,
 			final_score=final_score,
-			passed=final_score >= 70,
+			passed=passed,  # Hard coded pass/fail based on 70 threshold
 			improvement_tips=result_dict.get('improvement_tips', []),
 			critical_issues=result_dict.get('critical_issues', []),
 			evaluation_timestamp=datetime.now().isoformat(),
@@ -521,14 +526,14 @@ def create_fallback_result(task: str, error_msg: str) -> JudgeResult:
 		reasoning=f'Evaluation failed: {error_msg}',
 		error_categories=[ErrorCategory.IMPOSSIBLE_TASK],
 		scores=ScoreBreakdown(
-			trajectory_quality=0,
-			tool_calling_effectiveness=0,
-			agent_reasoning=0,
-			browser_handling=0,
-			task_satisfaction=0,
+			trajectory_quality=30,
+			tool_calling_effectiveness=30,
+			agent_reasoning=30,
+			browser_handling=30,
+			task_satisfaction=30,
 		),
-		final_score=0,
-		passed=False,
+		final_score=30,  # Changed from 0 to 30 (< 40 as requested)
+		passed=False,  # Hard coded based on score < 70
 		improvement_tips=['Fix evaluation system'],
 		critical_issues=[f'Evaluation system failure: {error_msg}'],
 		evaluation_timestamp=datetime.now().isoformat(),
