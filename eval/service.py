@@ -1144,6 +1144,8 @@ def create_pydantic_model_from_schema(schema: dict, model_name: str = 'DynamicMo
 			# Get the generated model class
 			if hasattr(module, model_name):
 				model_class = getattr(module, model_name)
+				# Rebuild the model to resolve forward references and type annotations
+				model_class.model_rebuild()
 				logger.debug(f'Successfully created Pydantic model: {model_class}')
 				return model_class
 			else:
@@ -1151,6 +1153,8 @@ def create_pydantic_model_from_schema(schema: dict, model_name: str = 'DynamicMo
 				for attr_name in dir(module):
 					attr = getattr(module, attr_name)
 					if isinstance(attr, type) and issubclass(attr, BaseModel) and attr != BaseModel:
+						# Rebuild the model to resolve forward references and type annotations
+						attr.model_rebuild()
 						logger.debug(f'Using fallback model class: {attr}')
 						return attr
 
