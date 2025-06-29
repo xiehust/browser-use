@@ -346,7 +346,21 @@ Next Goal: {model_output.current_state.next_goal}
 
 		# Log message history for debugging
 		logger.debug(self._log_history_lines())
-		self.last_input_messages = [m.message for m in self.state.history.messages]
+		messages = [m.message for m in self.state.history.messages]
+		
+		# Cache the last 2 messages by creating copies with cache=True
+		cached_messages = []
+		for i, message in enumerate(messages):
+			# Create a copy of the message
+			message_copy = message.model_copy(deep=True)
+			
+			# Set cache=True for the last 2 messages
+			if i >= len(messages) - 2:
+				message_copy.cache = True
+			
+			cached_messages.append(message_copy)
+		
+		self.last_input_messages = cached_messages
 		return self.last_input_messages
 
 	def _add_message_with_type(
