@@ -1309,39 +1309,37 @@ async def setup_browser_session(task: Task, headless: bool, highlight_elements: 
 	"""Setup browser session for the task"""
 	logger.debug(f'Browser setup: Initializing BrowserSession for task {task.task_id}')
 
-	# Use incognito mode (user_data_dir=None) for evaluations to avoid state pollution
-	profile_kwargs = {
-		'user_data_dir': None,  # Incognito mode - no persistent state
-		'headless': headless,
-		'chromium_sandbox': False,  # running in docker
-		'highlight_elements': highlight_elements,  # Control element highlighting (passed to profile)
-		'keep_alive': True,
-		# higher timeouts = higher success rates on long tail of slow sites or if on a slow CI server
-		# timeout=60_000,
-		# default_timeout=60_000,
-		# default_navigation_timeout=60_000,
-		# wait_for_network_idle_page_load_time=60.0,
-		# maximum_wait_page_load_time=60.0,
-		# wait_between_actions=0.5,
-		# ignore_https_errors=True,  # some eval tasks have http:// or broken https sites in them
-	}
-
 	if hasattr(task, 'login_cookie') and task.login_cookie:
 		# For login tasks, configure storage_state to save cookies to JSON file
-		# This works even in incognito mode (user_data_dir=None)
+		# Use storage_state without user_data_dir to avoid conflict warnings
 		task_folder = Path(f'saved_trajectories/{task.task_id}')
 		task_folder.mkdir(parents=True, exist_ok=True)
 
 		storage_state_path = task_folder / 'storage_state.json'
-		profile_kwargs['storage_state'] = str(storage_state_path)
-
 		downloads_dir_path = task_folder / 'downloads'
 		downloads_dir_path.mkdir(parents=True, exist_ok=True)
-		profile_kwargs['downloads_path'] = str(downloads_dir_path)
+
+		profile = BrowserProfile(
+			headless=headless,
+			chromium_sandbox=False,  # running in docker
+			highlight_elements=highlight_elements,
+			keep_alive=True,
+			storage_state=str(storage_state_path),
+			user_data_dir=None,  # Explicitly set to None for storage_state mode
+			downloads_path=str(downloads_dir_path),
+		)
 
 		logger.debug(f'Login task {task.task_id}: Configured to save cookies to {storage_state_path}')
+	else:
+		# For non-login tasks, use incognito mode (user_data_dir=None) to avoid state pollution
+		profile = BrowserProfile(
+			headless=headless,
+			chromium_sandbox=False,  # running in docker
+			highlight_elements=highlight_elements,
+			keep_alive=True,
+			user_data_dir=None,
+		)
 
-	profile = BrowserProfile(**profile_kwargs)
 	browser_session = BrowserSession(browser_profile=profile)
 
 	# Start browser session
