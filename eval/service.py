@@ -1344,7 +1344,7 @@ async def setup_browser_session(task: Task, headless: bool, highlight_elements: 
 	profile = BrowserProfile(**profile_kwargs)
 	browser_session = BrowserSession(
 		browser_profile=profile,
-		viewport={'width': 1200, 'height': 1100},
+		viewport={'width': 1200, 'height': 1200},
 	)
 
 	# Start browser session
