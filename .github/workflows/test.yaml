@@ -20,7 +20,7 @@ on:
     
 jobs:
   find_tests:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       TEST_FILENAMES: ${{ steps.lsgrep.outputs.TEST_FILENAMES }}
       # ["test_browser", "test_controller", "test_browser_session", "test_tab_management", ...]
@@ -41,7 +41,7 @@ jobs:
 
   tests:
     needs: find_tests
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     env:
       IN_DOCKER: 'True'
       ANONYMIZED_TELEMETRY: 'false'
@@ -69,7 +69,7 @@ jobs:
           fi
 
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: useblacksmith/setup-uv@v4
         with:
           enable-cache: true
           activate-environment: true
@@ -80,7 +80,7 @@ jobs:
         run: echo "PLAYWRIGHT_VERSION=$(uv pip list --format json | jq -r '.[] | select(.name == "playwright") | .version')" >> $GITHUB_ENV
 
       - name: Cache playwright binaries
-        uses: actions/cache@v3
+        uses: useblacksmith/cache@v5
         with:
           path: |
             ~/.cache/ms-playwright
@@ -92,7 +92,7 @@ jobs:
       - run: pytest tests/ci/${{ matrix.test_filename }}.py
 
   evaluate-tasks:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     env:
       ANONYMIZED_TELEMETRY: 'false'
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -102,7 +102,7 @@ jobs:
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: useblacksmith/setup-uv@v4
         with:
           enable-cache: true
           activate-environment: true
@@ -113,7 +113,7 @@ jobs:
         run: echo "PLAYWRIGHT_VERSION=$(uv pip list --format json | jq -r '.[] | select(.name == "playwright") | .version')" >> $GITHUB_ENV
 
       - name: Cache playwright binaries
-        uses: actions/cache@v3
+        uses: useblacksmith/cache@v5
         with:
           path: |
             ~/.cache/ms-playwright

@@ -10,7 +10,7 @@ on:
 
 jobs:
   build-base:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     strategy:
       matrix:
         platform: [linux/amd64, linux/arm64]

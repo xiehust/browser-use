@@ -13,30 +13,30 @@ on:
 jobs:
   lint-syntax:
     name: syntax-errors
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: useblacksmith/setup-uv@v4
         with:
           enable-cache: true
       - run: uv run ruff check --no-fix --select PLE
 
   lint-style:
     name: code-style
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: useblacksmith/setup-uv@v4
         with:
           enable-cache: true
       - run: uv run pre-commit run --all-files --show-diff-on-failure
 
   lint-typecheck:
     name: type-checker
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: useblacksmith/setup-uv@v4
         with:
           enable-cache: true
       - run: uv sync --dev --all-extras  # install extras for examples to avoid pyright missing imports errors
