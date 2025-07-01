@@ -1342,10 +1342,7 @@ async def setup_browser_session(task: Task, headless: bool, highlight_elements: 
 		logger.debug(f'Login task {task.task_id}: Configured to save cookies to {storage_state_path}')
 
 	profile = BrowserProfile(**profile_kwargs)
-	browser_session = BrowserSession(
-		browser_profile=profile,
-		viewport={'width': 1200, 'height': 1200},
-	)
+	browser_session = BrowserSession(browser_profile=profile)
 
 	# Start browser session
 	logger.debug(f'Browser setup: Starting browser session for task {task.task_id}')
