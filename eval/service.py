@@ -735,6 +735,8 @@ SUPPORTED_MODELS = {
 	'gpt-4o': {'provider': 'openai', 'model_name': 'gpt-4o', 'api_key_env': 'OPENAI_API_KEY'},
 	'gpt-4o-mini': {'provider': 'openai', 'model_name': 'gpt-4o-mini', 'api_key_env': 'OPENAI_API_KEY'},
 	'gpt-o4-mini': {'provider': 'openai', 'model_name': 'o4-mini', 'api_key_env': 'OPENAI_API_KEY'},
+	'o3-mini': {'provider': 'openai', 'model_name': 'o3-mini-2025-01-31', 'api_key_env': 'OPENAI_API_KEY'},
+	'o4-mini': {'provider': 'openai', 'model_name': 'o4-mini-2025-04-16', 'api_key_env': 'OPENAI_API_KEY'},
 	# X.ai (via OpenAI Compatible API)
 	'grok-2': {
 		'provider': 'openai_compatible',
