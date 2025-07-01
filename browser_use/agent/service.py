@@ -170,6 +170,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		max_actions_per_step: int = 10,
 		use_thinking: bool = True,
 		max_history_items: int = 40,
+		num_screenshots: int = 2,
 		page_extraction_llm: BaseChatModel | None = None,
 		planner_llm: BaseChatModel | None = None,
 		planner_interval: int = 1,  # Run planner every N steps
@@ -238,6 +239,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 			max_actions_per_step=max_actions_per_step,
 			use_thinking=use_thinking,
 			max_history_items=max_history_items,
+			num_screenshots=num_screenshots,
 			page_extraction_llm=page_extraction_llm,
 			planner_llm=planner_llm,
 			planner_interval=planner_interval,
@@ -321,6 +323,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 			message_context=self.settings.message_context,
 			sensitive_data=sensitive_data,
 			max_history_items=self.settings.max_history_items,
+			num_screenshots=self.settings.num_screenshots,
 		)
 
 		if isinstance(browser, BrowserSession):
@@ -654,6 +657,9 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 				page_action_message = f'For this page, these additional actions are available:\n{page_filtered_actions}'
 				self._message_manager._add_message_with_type(UserMessage(content=page_action_message))
 
+			# Gather additional screenshots from history if needed
+			additional_screenshots = self._get_additional_screenshots()
+
 			self._message_manager.add_state_message(
 				browser_state_summary=browser_state_summary,
 				model_output=self.state.last_model_output,
@@ -662,6 +668,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 				use_vision=self.settings.use_vision,
 				page_filtered_actions=page_filtered_actions if page_filtered_actions else None,
 				sensitive_data=self.sensitive_data,
+				additional_screenshots=additional_screenshots,
 			)
 
 			# Run planner at specified intervals if planner is configured
@@ -751,7 +758,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 				self._message_manager._remove_last_state_message()
 				raise e
 
-			result: list[ActionResult] = await self.multi_act(model_output.action)
+			result = await self.multi_act(model_output.action)
 
 			self.state.last_result = result
 			self.state.last_model_output = model_output
@@ -1671,6 +1678,27 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 
 		except Exception as e:
 			self.logger.error(f'Error during cleanup: {e}')
+
+	def _get_additional_screenshots(self) -> list[str]:
+		"""Get additional screenshots from agent history based on num_screenshots setting"""
+		if self.settings.num_screenshots <= 1:
+			return []
+		
+		# We need num_screenshots - 1 additional screenshots (current screenshot is handled separately)
+		additional_count = self.settings.num_screenshots - 1
+		
+		# Get screenshots from the most recent history items
+		screenshots = []
+		history_items = list(reversed(self.state.history.history))  # Most recent first
+		
+		for history_item in history_items:
+			if history_item.state and history_item.state.screenshot:
+				screenshots.append(history_item.state.screenshot)
+				if len(screenshots) >= additional_count:
+					break
+		
+		# Return screenshots in reverse order (oldest first, newest last)
+		return list(reversed(screenshots))
 
 	async def _update_action_models_for_page(self, page) -> None:
 		"""Update action models with page-specific actions"""

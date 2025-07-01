@@ -106,6 +106,7 @@ class MessageManager:
 		message_context: str | None = None,
 		sensitive_data: dict[str, str | dict[str, str]] | None = None,
 		max_history_items: int | None = None,
+		num_screenshots: int = 2,
 	):
 		self.task = task
 		self.state = state
@@ -115,6 +116,7 @@ class MessageManager:
 		self.available_file_paths = available_file_paths
 		self.use_thinking = use_thinking
 		self.max_history_items = max_history_items
+		self.num_screenshots = num_screenshots
 
 		assert max_history_items is None or max_history_items > 5, 'max_history_items must be None or greater than 5'
 
@@ -305,12 +307,17 @@ The file system actions do not change the browser state, so I can also click on 
 		use_vision=True,
 		page_filtered_actions: str | None = None,
 		sensitive_data=None,
+		additional_screenshots: list[str] | None = None,
 	) -> None:
 		"""Add browser state as human message"""
 
 		self._update_agent_history_description(model_output, result, step_info)
 		if sensitive_data:
 			self.sensitive_data_description = self._get_sensitive_data_description(browser_state_summary.url)
+		
+		# Use provided additional screenshots or empty list
+		final_additional_screenshots = additional_screenshots or []
+		
 		# otherwise add state message and result to next message (which will not stay in memory)
 		assert browser_state_summary
 		state_message = AgentMessagePrompt(
@@ -324,6 +331,7 @@ The file system actions do not change the browser state, so I can also click on 
 			page_filtered_actions=page_filtered_actions,
 			sensitive_data=self.sensitive_data_description,
 			available_file_paths=self.available_file_paths,
+			additional_screenshots=final_additional_screenshots,
 		).get_user_message(use_vision)
 
 		self._add_message_with_type(state_message)
