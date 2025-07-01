@@ -249,12 +249,16 @@ class Controller(Generic[Context]):
 				msg = f'⌨️  Input {params.text} into index {params.index}'
 			else:
 				msg = f'⌨️  Input sensitive data into index {params.index}'
+			
+			# Add reminder about follow-up actions
+			reminder_msg = f"{msg}\n🔔 REMINDER: You likely need to follow up this input_text with an action like pressing Enter (send_keys), clicking a search/submit button, or selecting from dropdown to complete the input."
+			
 			logger.info(msg)
 			logger.debug(f'Element xpath: {element_node.xpath}')
 			return ActionResult(
-				extracted_content=msg,
+				extracted_content=reminder_msg,
 				include_in_memory=True,
-				long_term_memory=f"Input '{params.text}' into element {params.index}.",
+				long_term_memory=f"Input '{params.text}' into element {params.index}. Reminder: Follow up with enter/submit action.",
 			)
 
 		@self.registry.action('Upload file to interactive element with file path', param_model=UploadFileAction)
