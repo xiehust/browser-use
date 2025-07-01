@@ -614,11 +614,11 @@ class BrowserProfile(BrowserConnectArgs, BrowserLaunchPersistentContextArgs, Bro
 		"""Copy old config window_width & window_height to window_size."""
 		if self.window_width or self.window_height:
 			logger.warning(
-				f'⚠️ BrowserProfile(window_width=..., window_height=...) are deprecated, use BrowserProfile(window_size={"width": 1280, "height": 1100}) instead.'
+				f'⚠️ BrowserProfile(window_width=..., window_height=...) are deprecated, use BrowserProfile(window_size={"width": 1280, "height": 1400}) instead.'
 			)
 			window_size = self.window_size or ViewportSize(width=0, height=0)
 			window_size['width'] = window_size['width'] or self.window_width or 1280
-			window_size['height'] = window_size['height'] or self.window_height or 1100
+			window_size['height'] = window_size['height'] or self.window_height or 1400
 			self.window_size = window_size
 		return self
 
@@ -745,7 +745,7 @@ class BrowserProfile(BrowserConnectArgs, BrowserLaunchPersistentContextArgs, Bro
 
 		display_size = get_display_size()
 		has_screen_available = bool(display_size)
-		self.screen = self.screen or display_size or ViewportSize(width=1280, height=1100)
+		self.screen = self.screen or display_size or ViewportSize(width=1280, height=1400)
 
 		# if no headless preference specified, prefer headful if there is a display available
 		if self.headless is None:
