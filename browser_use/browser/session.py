@@ -720,6 +720,18 @@ class BrowserSession(BaseModel):
 		assert await page.evaluate('() => true'), 'Page is not usable before screenshot!'
 		await page.bring_to_front()
 
+		# Validate clip area if provided
+		if clip is not None:
+			clip_width = clip.get('width', 0)
+			clip_height = clip.get('height', 0)
+			clip_x = clip.get('x', 0)
+			clip_y = clip.get('y', 0)
+			
+			# Check for invalid clip dimensions
+			if clip_width <= 0 or clip_height <= 0 or clip_x < 0 or clip_y < 0:
+				self.logger.warning(f'Invalid clip area detected: {clip}. Taking screenshot without clipping.')
+				clip = None
+
 		try:
 			screenshot = await page.screenshot(
 				full_page=False,
@@ -734,7 +746,18 @@ class BrowserSession(BaseModel):
 				self.logger.warning('🚨 Screenshot timed out, resetting connection state and restarting browser...')
 				self._reset_connection_state()
 				await self.start()
-			raise err
+			elif 'clipped area' in str(err).lower() and clip is not None:
+				# If clipping fails, retry without clipping as a fallback
+				self.logger.warning(f'Screenshot clipping failed ({err}), retrying without clip area')
+				screenshot = await page.screenshot(
+					full_page=False,
+					timeout=self.browser_profile.default_timeout or 30000,
+					clip=None,
+					animations='allow',
+					caret='initial',
+				)
+			else:
+				raise err
 		assert await page.evaluate('() => true'), 'Page is not usable after screenshot!'
 		screenshot_b64 = base64.b64encode(screenshot).decode('utf-8')
 		assert screenshot_b64, 'Playwright page.screenshot() returned empty base64'
@@ -2719,25 +2742,56 @@ class BrowserSession(BaseModel):
 					width: window.innerWidth,
 					height: window.innerHeight,
 					pageHeight: document.documentElement.scrollHeight,
+					pageWidth: document.documentElement.scrollWidth,
 					devicePixelRatio: window.devicePixelRatio || 1,
 					scrollX: window.pageXOffset || document.documentElement.scrollLeft || 0,
 					scrollY: window.pageYOffset || document.documentElement.scrollTop || 0
 				};
 			}""")
 
+			# 2. Validate and sanitize clipping dimensions
+			viewport_width = max(1, int(dimensions.get('width', 800)))
+			viewport_height = max(1, int(dimensions.get('height', 600)))
+			page_width = max(viewport_width, int(dimensions.get('pageWidth', viewport_width)))
+			page_height = max(viewport_height, int(dimensions.get('pageHeight', viewport_height)))
+			scroll_x = max(0, int(dimensions.get('scrollX', 0)))
+			scroll_y = max(0, int(dimensions.get('scrollY', 0)))
+
+			# 3. Calculate safe clipping area that stays within page bounds
+			clip_width = min(viewport_width, MAX_SCREENSHOT_WIDTH, page_width - scroll_x)
+			clip_height = min(viewport_height, MAX_SCREENSHOT_HEIGHT, page_height - scroll_y)
+			
+			# 4. Ensure clip dimensions are positive
+			if clip_width <= 0 or clip_height <= 0:
+				self.logger.warning(f'Invalid clip dimensions calculated: width={clip_width}, height={clip_height}. Using fallback viewport screenshot.')
+				# Fallback: take screenshot without clipping
+				return await self._take_screenshot_hybrid(page, clip=None)
+
+			# 5. Ensure scroll position doesn't put us outside the page
+			safe_scroll_x = min(scroll_x, max(0, page_width - clip_width))
+			safe_scroll_y = min(scroll_y, max(0, page_height - clip_height))
+
+			clip = {
+				'x': safe_scroll_x,
+				'y': safe_scroll_y,
+				'width': clip_width,
+				'height': clip_height,
+			}
+
+			self.logger.debug(f'Screenshot clip area: {clip} (page: {page_width}x{page_height}, viewport: {viewport_width}x{viewport_height}, scroll: {scroll_x},{scroll_y})')
+
 			# Take screenshot using our retry-decorated method
-			return await self._take_screenshot_hybrid(
-				page,
-				clip={
-					'x': dimensions['scrollX'],
-					'y': dimensions['scrollY'],
-					'width': min(dimensions['width'], MAX_SCREENSHOT_WIDTH),
-					'height': min(dimensions['height'], MAX_SCREENSHOT_HEIGHT),
-				},
-			)
+			return await self._take_screenshot_hybrid(page, clip=clip)
+
 		except Exception as e:
 			self.logger.error(f'❌ Failed to take screenshot after retries: {type(e).__name__}: {e}')
-			raise
+			# Final fallback: try taking a screenshot without any clipping
+			try:
+				self.logger.warning('Attempting fallback screenshot without clipping')
+				return await self._take_screenshot_hybrid(page, clip=None)
+			except Exception as fallback_error:
+				self.logger.error(f'❌ Fallback screenshot also failed: {type(fallback_error).__name__}: {fallback_error}')
+				raise e
 
 	# region - User Actions
 
