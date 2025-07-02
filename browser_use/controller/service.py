@@ -140,8 +140,8 @@ class Controller(Generic[Context]):
 						'net::',
 					]
 				):
-					site_unavailable_msg = f'Site unavailable: {params.url} - {error_msg}'
-					logger.warning(site_unavailable_msg)
+					site_unavailable_msg = f'The website {params.url} is unavailable - navigation failed.'
+					logger.warning(site_unavailable_msg + '\n' + error_msg)
 					return ActionResult(
 						success=False, error=site_unavailable_msg, include_in_memory=True, long_term_memory=site_unavailable_msg
 					)
@@ -493,7 +493,9 @@ Explain the content of the page and that the requested information is not availa
 			msg = f'🔍 Scrolled {direction} the page by 50% of viewport height'
 			logger.info(msg)
 			return ActionResult(
-				extracted_content=msg, include_in_memory=True, long_term_memory=f'Scrolled {direction} the page by 50% of viewport height'
+				extracted_content=msg,
+				include_in_memory=True,
+				long_term_memory=f'Scrolled {direction} the page by 50% of viewport height',
 			)
 
 		# send keys
