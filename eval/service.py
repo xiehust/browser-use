@@ -78,6 +78,51 @@ _resource_monitor_stop_event = None
 _graceful_shutdown_initiated = False
 
 
+class TaskLogHandler(logging.Handler):
+	"""Custom logging handler that captures logs for a specific task"""
+	
+	def __init__(self, task_result: 'TaskResult'):
+		super().__init__()
+		self.task_result = task_result
+		self.task_id = task_result.task_id
+		
+	def emit(self, record):
+		try:
+			# Only capture logs related to this task
+			log_message = self.format(record)
+			if self.task_id in log_message or f'Task {self.task_id}' in log_message:
+				self.task_result.add_log_entry(log_message)
+		except Exception:
+			# Ignore errors in logging handler to avoid recursive issues
+			pass
+
+# Global storage for task-specific handlers  
+_task_handlers: dict[str, TaskLogHandler] = {}
+
+def setup_task_logging(task_result: 'TaskResult', enable_log_capture: bool = False):
+	"""Set up task-specific logging if enabled"""
+	if not enable_log_capture:
+		return
+		
+	handler = TaskLogHandler(task_result)
+	handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(name)s: %(message)s'))
+	
+	# Add handler to root logger to capture all logs
+	root_logger = logging.getLogger()
+	root_logger.addHandler(handler)
+	
+	# Store handler for cleanup
+	_task_handlers[task_result.task_id] = handler
+	
+def cleanup_task_logging(task_id: str):
+	"""Clean up task-specific logging handler"""
+	if task_id in _task_handlers:
+		handler = _task_handlers[task_id]
+		root_logger = logging.getLogger()
+		root_logger.removeHandler(handler)
+		del _task_handlers[task_id]
+
+
 def get_system_resources():
 	"""Get current system resource usage"""
 	try:
@@ -541,6 +586,7 @@ class TaskResult:
 	cancelled: bool = False
 	critical_error: str | None = None
 	server_save_failed: bool = False
+	captured_logs: list[str] = field(default_factory=list)  # Add log capture
 
 	def stage_completed(self, stage: Stage, data: Any = None):
 		self.completed_stages.add(stage)
@@ -560,6 +606,10 @@ class TaskResult:
 		self.server_save_failed = True
 		self.errors.append(StageError(Stage.SAVE_SERVER, 'server_save', error))
 
+	def add_log_entry(self, log_entry: str):
+		"""Add a log entry for this task"""
+		self.captured_logs.append(log_entry)
+
 	def has_execution_data(self) -> bool:
 		return Stage.RUN_AGENT in self.completed_stages or Stage.FORMAT_HISTORY in self.completed_stages
 
@@ -576,6 +626,7 @@ class TaskResult:
 			'critical_error': self.critical_error,
 			'server_save_failed': self.server_save_failed,
 			'laminarTaskLink': self.laminar_link,
+			'runnerLogs': self.captured_logs[-1000:] if self.captured_logs else [],  # Include last 1000 log entries
 		}
 
 		# Add task execution data if available
@@ -1593,6 +1644,7 @@ async def run_task_with_semaphore(
 	highlight_elements: bool = True,
 	use_mind2web_judge: bool = False,
 	use_thinking: bool = True,
+	capture_logs: bool = False,
 ) -> dict:
 	"""Clean pipeline approach for running tasks"""
 	task_start_time = time.time()
@@ -1652,8 +1704,11 @@ async def run_task_with_semaphore(
 			else:
 				logger.debug(f'Task {task.task_id}: No Laminar run ID available, skipping datapoint creation')
 
-				# Initialize task result and basic setup
+			# Initialize task result and basic setup
 			task_result = TaskResult(task.task_id, run_id, task.confirmed_task, task, max_steps_per_task, laminar_task_link)
+			
+			# Set up log capture if enabled
+			setup_task_logging(task_result, capture_logs)
 
 			task_folder = Path(f'saved_trajectories/{task.task_id}')
 
@@ -1876,6 +1931,9 @@ async def run_task_with_semaphore(
 				logger.info(f'Task {task.task_id}: Browser cleanup completed')
 			else:
 				logger.info(f'Task {task.task_id}: No browser to cleanup')
+			
+			# Cleanup log capture
+			cleanup_task_logging(task.task_id)
 
 		task_end_time = time.time()
 		total_task_time = task_end_time - task_start_time
@@ -1925,6 +1983,7 @@ async def run_multiple_tasks(
 	highlight_elements: bool = True,
 	use_mind2web_judge: bool = False,
 	use_thinking: bool = True,
+	capture_logs: bool = False,
 ) -> dict:
 	"""
 	Run multiple tasks in parallel and evaluate results.
@@ -2003,6 +2062,7 @@ async def run_multiple_tasks(
 					highlight_elements=highlight_elements,
 					use_mind2web_judge=use_mind2web_judge,
 					use_thinking=use_thinking,
+					capture_logs=capture_logs,
 				)
 				for task in tasks_to_run
 			),
@@ -2272,6 +2332,7 @@ async def run_evaluation_pipeline(
 	highlight_elements: bool = True,
 	use_mind2web_judge: bool = False,
 	use_thinking: bool = True,
+	capture_logs: bool = False,
 ) -> dict:
 	"""
 	Complete evaluation pipeline that handles Laminar setup and task execution in the same event loop
@@ -2323,6 +2384,7 @@ async def run_evaluation_pipeline(
 		highlight_elements=highlight_elements,
 		use_mind2web_judge=use_mind2web_judge,
 		use_thinking=use_thinking,
+		capture_logs=capture_logs,
 	)
 
 
@@ -2388,6 +2450,7 @@ if __name__ == '__main__':
 	parser.add_argument('--use-mind2web-judge', action='store_true', help='Use original judge')
 	parser.add_argument('--no-thinking', action='store_true', help='Disable thinking in agent system prompt')
 	parser.add_argument('--use-anchor', action='store_true', help='Use anchor to navigate to the page')
+	parser.add_argument('--capture-logs', action='store_true', help='Capture and send task-specific logs to Convex')
 
 	# Single task mode arguments
 	parser.add_argument('--task-text', type=str, default=None, help='Task description for single task mode')
@@ -2633,6 +2696,7 @@ if __name__ == '__main__':
 				highlight_elements=args.highlight_elements,
 				use_mind2web_judge=args.use_mind2web_judge,
 				use_thinking=not args.no_thinking,
+				capture_logs=args.capture_logs,
 			)
 		)
 
