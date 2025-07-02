@@ -461,7 +461,7 @@ Explain the content of the page and that the requested information is not availa
 		# 	)
 
 		@self.registry.action(
-			'Scroll the page by one page (set down=True to scroll down, down=False to scroll up)',
+			'Scroll the page by 50% of the viewport height (set down=True to scroll down, down=False to scroll up)',
 			param_model=ScrollAction,
 		)
 		async def scroll(params: ScrollAction, browser_session: BrowserSession):
@@ -478,8 +478,9 @@ Explain the content of the page and that the requested information is not availa
 			if action_result:
 				return action_result
 
-			# Set direction based on down parameter
-			dy = dy_result if params.down else -(dy_result or 0)
+			# Set direction based on down parameter - use 50% of window height
+			half_viewport = (dy_result or 0) * 0.5
+			dy = half_viewport if params.down else -half_viewport
 
 			try:
 				await browser_session._scroll_container(cast(int, dy))
@@ -489,10 +490,10 @@ Explain the content of the page and that the requested information is not availa
 				logger.debug('Smart scroll failed; used window.scrollBy fallback', exc_info=e)
 
 			direction = 'down' if params.down else 'up'
-			msg = f'🔍 Scrolled {direction} the page by one page'
+			msg = f'🔍 Scrolled {direction} the page by 50% of viewport height'
 			logger.info(msg)
 			return ActionResult(
-				extracted_content=msg, include_in_memory=True, long_term_memory=f'Scrolled {direction} the page by one page'
+				extracted_content=msg, include_in_memory=True, long_term_memory=f'Scrolled {direction} the page by 50% of viewport height'
 			)
 
 		# send keys
