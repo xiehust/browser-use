@@ -78,6 +78,163 @@ _resource_monitor_stop_event = None
 _graceful_shutdown_initiated = False
 
 
+class LogCollector:
+    """Collects all logs and output during task execution"""
+    
+    def __init__(self, task_id: str):
+        self.task_id = task_id
+        self.logs = []
+        self.console_output = []
+        self.error_output = []
+        self.start_time = time.time()
+        
+        # Store original handlers
+        self.original_stdout = sys.stdout
+        self.original_stderr = sys.stderr
+        
+        # Create string buffers
+        self.stdout_buffer = io.StringIO()
+        self.stderr_buffer = io.StringIO()
+        
+        # Custom log handler to capture all log messages
+        self.captured_logs = []
+        self.log_handler = logging.StreamHandler()
+        self.log_handler.setLevel(logging.DEBUG)
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        self.log_handler.setFormatter(formatter)
+        
+        # Override emit to capture log messages
+        original_emit = self.log_handler.emit
+        def capture_emit(record):
+            self.captured_logs.append({
+                'timestamp': time.time(),
+                'level': record.levelname,
+                'logger': record.name,
+                'message': record.getMessage(),
+                'elapsed_time': time.time() - self.start_time
+            })
+            return original_emit(record)
+        
+        self.log_handler.emit = capture_emit
+        
+        # Add handler to root logger to capture all logs
+        self.root_logger = logging.getLogger()
+        self.original_level = self.root_logger.level
+        self.root_logger.addHandler(self.log_handler)
+        self.root_logger.setLevel(logging.DEBUG)
+    
+    def add_log_entry(self, level: str, message: str, timestamp: float | None = None):
+        """Add a log entry manually"""
+        if timestamp is None:
+            timestamp = time.time()
+        
+        log_entry = {
+            'timestamp': timestamp,
+            'level': level,
+            'message': message,
+            'elapsed_time': timestamp - self.start_time
+        }
+        self.logs.append(log_entry)
+    
+    def start_capture(self):
+        """Start capturing stdout/stderr"""
+        # Create tee-like objects that capture but still output to original streams
+        class TeeCapture:
+            def __init__(self, original_stream, buffer):
+                self.original_stream = original_stream
+                self.buffer = buffer
+                
+            def write(self, data):
+                self.original_stream.write(data)
+                self.buffer.write(data)
+                return len(data)
+                
+            def flush(self):
+                self.original_stream.flush()
+                self.buffer.flush()
+                
+            def __getattr__(self, name):
+                return getattr(self.original_stream, name)
+        
+        # Replace stdout and stderr with tee objects
+        sys.stdout = TeeCapture(self.original_stdout, self.stdout_buffer)
+        sys.stderr = TeeCapture(self.original_stderr, self.stderr_buffer)
+        
+        logger.info(f'LogCollector: Started capturing logs for task {self.task_id}')
+    
+    def stop_capture(self):
+        """Stop capturing and restore original streams"""
+        logger.info(f'LogCollector: Stopping log capture for task {self.task_id}')
+        
+        # Get captured output
+        stdout_content = self.stdout_buffer.getvalue()
+        stderr_content = self.stderr_buffer.getvalue()
+        
+        # Restore original streams
+        sys.stdout = self.original_stdout
+        sys.stderr = self.original_stderr
+        
+        # Store captured output
+        if stdout_content:
+            self.console_output.append({
+                'type': 'stdout',
+                'content': stdout_content,
+                'timestamp': time.time(),
+                'size_bytes': len(stdout_content.encode('utf-8'))
+            })
+        
+        if stderr_content:
+            self.error_output.append({
+                'type': 'stderr', 
+                'content': stderr_content,
+                'timestamp': time.time(),
+                'size_bytes': len(stderr_content.encode('utf-8'))
+            })
+        
+        # Combine captured logs with manual logs
+        self.logs.extend(self.captured_logs)
+        
+        # Remove our log handler
+        self.root_logger.removeHandler(self.log_handler)
+        self.root_logger.setLevel(self.original_level)
+    
+    def get_all_logs(self) -> dict:
+        """Get all collected logs as a dictionary"""
+        return {
+            'task_id': self.task_id,
+            'start_time': self.start_time,
+            'end_time': time.time(),
+            'duration': time.time() - self.start_time,
+            'log_entries': self.logs,
+            'console_output': self.console_output,
+            'error_output': self.error_output,
+            'total_log_entries': len(self.logs),
+            'total_console_lines': len(self.console_output),
+            'total_error_lines': len(self.error_output),
+            'log_stats': {
+                'debug_logs': len([l for l in self.logs if l.get('level') == 'DEBUG']),
+                'info_logs': len([l for l in self.logs if l.get('level') == 'INFO']),
+                'warning_logs': len([l for l in self.logs if l.get('level') == 'WARNING']),
+                'error_logs': len([l for l in self.logs if l.get('level') == 'ERROR']),
+                'critical_logs': len([l for l in self.logs if l.get('level') == 'CRITICAL'])
+            }
+        }
+    
+    def save_logs_to_file(self, base_path: str = 'saved_trajectories'):
+        """Save all logs to a local file"""
+        task_dir = Path(base_path) / self.task_id
+        task_dir.mkdir(parents=True, exist_ok=True)
+        
+        logs_file = task_dir / 'complete_logs.json'
+        all_logs = self.get_all_logs()
+        
+        with open(logs_file, 'w') as f:
+            json.dump(all_logs, f, indent=2, default=str)
+        
+        logger.info(f'Task {self.task_id}: Saved complete logs to {logs_file}')
+        return logs_file
+
+
 def get_system_resources():
 	"""Get current system resource usage"""
 	try:
@@ -541,6 +698,7 @@ class TaskResult:
 	cancelled: bool = False
 	critical_error: str | None = None
 	server_save_failed: bool = False
+	complete_logs: dict | None = None  # Store complete logs from LogCollector
 
 	def stage_completed(self, stage: Stage, data: Any = None):
 		self.completed_stages.add(stage)
@@ -559,6 +717,10 @@ class TaskResult:
 	def mark_server_save_failed(self, error: str):
 		self.server_save_failed = True
 		self.errors.append(StageError(Stage.SAVE_SERVER, 'server_save', error))
+
+	def set_complete_logs(self, logs: dict):
+		"""Store complete logs from LogCollector"""
+		self.complete_logs = logs
 
 	def has_execution_data(self) -> bool:
 		return Stage.RUN_AGENT in self.completed_stages or Stage.FORMAT_HISTORY in self.completed_stages
@@ -646,6 +808,19 @@ class TaskResult:
 					'onlineMind2WebEvaluationScore': eval_data.get('score', 0.0),
 				}
 			)
+
+		# Add complete logs if available
+		if self.complete_logs:
+			payload.update({
+				'completeLogs': self.complete_logs,
+				'logSummary': {
+					'total_log_entries': self.complete_logs.get('total_log_entries', 0),
+					'duration': self.complete_logs.get('duration', 0),
+					'log_stats': self.complete_logs.get('log_stats', {}),
+					'has_errors': self.complete_logs.get('log_stats', {}).get('error_logs', 0) > 0,
+					'has_warnings': self.complete_logs.get('log_stats', {}).get('warning_logs', 0) > 0
+				}
+			})
 
 		# Ensure all data in payload is JSON serializable
 		serialized_payload = make_json_serializable(payload)
@@ -1593,12 +1768,20 @@ async def run_task_with_semaphore(
 	highlight_elements: bool = True,
 	use_mind2web_judge: bool = False,
 	use_thinking: bool = True,
+	collect_complete_logs: bool = False,
 ) -> dict:
 	"""Clean pipeline approach for running tasks"""
 	task_start_time = time.time()
 	logger.info(f'🚀 Task {task.task_id}: Starting execution pipeline')
 	logger.info(f'📊 Task {task.task_id}: Waiting to acquire semaphore (current available: ~{semaphore_runs._value})')
 	log_system_resources(f'TASK_START_{task.task_id}')
+	
+	# Initialize log collector for this task if enabled
+	log_collector = None
+	if collect_complete_logs:
+		log_collector = LogCollector(task.task_id)
+		log_collector.start_capture()
+		logger.info(f'Task {task.task_id}: Complete log collection enabled')
 
 	semaphore_acquired_time = None
 	async with semaphore_runs:
@@ -1869,6 +2052,23 @@ async def run_task_with_semaphore(
 				logger.error(f'Task {task.task_id}: Emergency server save after initialization error failed: {str(save_e)}')
 
 		finally:
+			# Stop log collection and save logs if enabled
+			if log_collector:
+				try:
+					log_collector.stop_capture()
+					complete_logs = log_collector.get_all_logs()
+					
+					# Save logs to local file
+					log_collector.save_logs_to_file()
+					
+					# Store logs in task result for Convex upload
+					if task_result:
+						task_result.set_complete_logs(complete_logs)
+						logger.info(f'Task {task.task_id}: Captured {complete_logs["total_log_entries"]} log entries')
+					
+				except Exception as log_error:
+					logger.error(f'Task {task.task_id}: Failed to save complete logs: {str(log_error)}')
+			
 			# Always cleanup browser if it was created
 			if browser_session:
 				logger.info(f'Task {task.task_id}: Starting browser cleanup')
@@ -1925,6 +2125,7 @@ async def run_multiple_tasks(
 	highlight_elements: bool = True,
 	use_mind2web_judge: bool = False,
 	use_thinking: bool = True,
+	collect_complete_logs: bool = False,
 ) -> dict:
 	"""
 	Run multiple tasks in parallel and evaluate results.
@@ -2003,6 +2204,7 @@ async def run_multiple_tasks(
 					highlight_elements=highlight_elements,
 					use_mind2web_judge=use_mind2web_judge,
 					use_thinking=use_thinking,
+					collect_complete_logs=collect_complete_logs,
 				)
 				for task in tasks_to_run
 			),
@@ -2272,6 +2474,7 @@ async def run_evaluation_pipeline(
 	highlight_elements: bool = True,
 	use_mind2web_judge: bool = False,
 	use_thinking: bool = True,
+	collect_complete_logs: bool = False,
 ) -> dict:
 	"""
 	Complete evaluation pipeline that handles Laminar setup and task execution in the same event loop
@@ -2323,6 +2526,7 @@ async def run_evaluation_pipeline(
 		highlight_elements=highlight_elements,
 		use_mind2web_judge=use_mind2web_judge,
 		use_thinking=use_thinking,
+		collect_complete_logs=collect_complete_logs,
 	)
 
 
@@ -2388,6 +2592,7 @@ if __name__ == '__main__':
 	parser.add_argument('--use-mind2web-judge', action='store_true', help='Use original judge')
 	parser.add_argument('--no-thinking', action='store_true', help='Disable thinking in agent system prompt')
 	parser.add_argument('--use-anchor', action='store_true', help='Use anchor to navigate to the page')
+	parser.add_argument('--collect-complete-logs', action='store_true', help='Collect and save complete logs (including console output)')
 
 	# Single task mode arguments
 	parser.add_argument('--task-text', type=str, default=None, help='Task description for single task mode')
@@ -2633,6 +2838,7 @@ if __name__ == '__main__':
 				highlight_elements=args.highlight_elements,
 				use_mind2web_judge=args.use_mind2web_judge,
 				use_thinking=not args.no_thinking,
+				collect_complete_logs=args.collect_complete_logs,
 			)
 		)
 

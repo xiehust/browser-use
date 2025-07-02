@@ -205,6 +205,7 @@ jobs:
           [[ "${{ github.event.client_payload.script_args.highlight_elements }}" == "false" ]] && CMD_ARGS+=("--no-highlight-elements")
           [[ "${{ github.event.client_payload.script_args.use_mind2web_judge }}" == "true" ]] && CMD_ARGS+=("--use-mind2web-judge")
           [[ "$THINKING" == "false" ]] && CMD_ARGS+=("--no-thinking")
+          [[ "${{ github.event.client_payload.script_args.collect_complete_logs }}" == "true" ]] && CMD_ARGS+=("--collect-complete-logs")
 
           # Add optional string parameters
           [[ -n "$USER_MESSAGE" ]] && CMD_ARGS+=("--user-message" "$USER_MESSAGE")
