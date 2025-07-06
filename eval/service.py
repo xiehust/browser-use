@@ -91,9 +91,27 @@ if BRIGHTDATA_CDP_URL:
 else:
 	logger.warning('BRIGHTDATA_CDP_URL is not set. Brightdata browser will not be available.')
 
+# Check for Browserbase API key
+BROWSERBASE_API_KEY = os.getenv('BROWSERBASE_API_KEY')
+BROWSERBASE_PROJECT_ID = os.getenv('BROWSERBASE_PROJECT_ID')
+if BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID:
+	logger.info('BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID are set. Tasks can use Browserbase.')
+else:
+	logger.warning('BROWSERBASE_API_KEY or BROWSERBASE_PROJECT_ID are not set. Browserbase will not be available.')
+
+# Check for Hyperbrowser API key
+HYPERBROWSER_API_KEY = os.getenv('HYPERBROWSER_API_KEY')
+if HYPERBROWSER_API_KEY:
+	logger.info('HYPERBROWSER_API_KEY is set. Tasks can use Hyperbrowser.')
+else:
+	logger.warning('HYPERBROWSER_API_KEY is not set. Hyperbrowser will not be available.')
+
 
 def create_anchor_browser_session(headless: bool = False) -> str:
 	"""Create an Anchor Browser session and return CDP URL"""
+	if not ANCHOR_BROWSER_API_KEY:
+		raise ValueError('ANCHOR_BROWSER_API_KEY must be set')
+
 	browser_configuration = {
 		'session': {'proxy': {'type': 'anchor_mobile', 'active': True, 'country_code': 'us'}},
 		'browser': {
@@ -117,7 +135,6 @@ def create_anchor_browser_session(headless: bool = False) -> str:
 		session_data = response.json()['data']
 		session_id = session_data['id']
 
-		# Return only the CDP URL
 		return f'wss://connect.anchorbrowser.io?apiKey={ANCHOR_BROWSER_API_KEY}&sessionId={session_id}'
 
 	except requests.RequestException as e:
@@ -125,6 +142,63 @@ def create_anchor_browser_session(headless: bool = False) -> str:
 		raise
 	except KeyError as e:
 		logger.error(f'Unexpected response format from Anchor Browser API: {e}')
+		raise
+
+
+def create_browserbase_session() -> str:
+	"""Create a Browserbase session and return CDP URL"""
+	if not BROWSERBASE_API_KEY or not BROWSERBASE_PROJECT_ID:
+		raise ValueError('BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID must be set')
+
+	try:
+		from browserbase import Browserbase
+	except ImportError:
+		raise ImportError(
+			'browserbase package is required for Browserbase functionality. Install it with: pip install browserbase'
+		)
+
+	try:
+		bb = Browserbase(api_key=BROWSERBASE_API_KEY)
+		session = bb.sessions.create(
+			project_id=BROWSERBASE_PROJECT_ID,
+			proxies=True,
+		)
+
+		return session.connect_url
+
+	except Exception as e:
+		logger.error(f'Failed to create Browserbase session: {type(e).__name__}: {e}')
+		raise
+
+
+async def create_hyperbrowser_session() -> str:
+	"""Create a Hyperbrowser session and return WebSocket endpoint"""
+	if not HYPERBROWSER_API_KEY:
+		raise ValueError('HYPERBROWSER_API_KEY must be set')
+
+	try:
+		from hyperbrowser import AsyncHyperbrowser
+		from hyperbrowser.models import CreateSessionParams
+	except ImportError:
+		raise ImportError(
+			'hyperbrowser package is required for Hyperbrowser functionality. Install it with: pip install hyperbrowser'
+		)
+
+	try:
+		client = AsyncHyperbrowser(api_key=HYPERBROWSER_API_KEY)
+
+		session = await client.sessions.create(
+			params=CreateSessionParams(
+				use_stealth=True,
+			)
+		)
+
+		await client.close()
+
+		return session.ws_endpoint or ''
+
+	except Exception as e:
+		logger.error(f'Failed to create Hyperbrowser session: {type(e).__name__}: {e}')
 		raise
 
 
@@ -943,8 +1017,8 @@ def create_controller(
 	else:
 		controller = Controller(output_model=output_model)
 
-	# Add Gmail 2FA support if tokens dict is available and task contains email
-	if gmail_tokens_dict and task:
+	# Add Gmail 2FA support if tokens dict is available and task has login_type OTP
+	if gmail_tokens_dict and task and hasattr(task, 'login_type') and task.login_type == 'OTP':
 		try:
 			# Extract username from task - check multiple possible sources
 			username = None
@@ -973,17 +1047,23 @@ def create_controller(
 					from browser_use.integrations.gmail import register_gmail_actions
 
 					# Register Gmail actions using the access token
-					register_gmail_actions(controller, access_token=access_token)
-					logger.info(f'Gmail 2FA integration registered successfully for user {user_id}')
+					controller = register_gmail_actions(controller, access_token=access_token)
+					logger.info(f'Gmail 2FA integration registered successfully for user {user_id} (OTP task)')
 				else:
 					logger.info(f'No Gmail 2FA token found for user {user_id}, running without Gmail integration')
 			else:
-				logger.info('No email found in task, running without Gmail integration')
+				logger.info('No email found in OTP task, running without Gmail integration')
 
 		except Exception as e:
 			logger.error(f'Failed to setup Gmail integration: {e}')
 	else:
-		logger.info(f'No Gmail 2FA tokens provided, running without Gmail integration: {gmail_tokens_dict}, {task}')
+		if gmail_tokens_dict and task:
+			if not hasattr(task, 'login_type') or task.login_type != 'OTP':
+				logger.info(f'Task login_type is "{getattr(task, "login_type", "None")}", not OTP - skipping Gmail integration')
+			else:
+				logger.info('Gmail 2FA tokens provided but no task or task missing login_type')
+		else:
+			logger.info('No Gmail 2FA tokens provided or no task, running without Gmail integration')
 
 	return controller
 
@@ -1454,7 +1534,7 @@ async def setup_browser_session(
 	"""Setup browser session for the task"""
 
 	# Validate browser option
-	valid_browsers = ['local', 'anchor-browser', 'brightdata', 'browser-use']
+	valid_browsers = ['local', 'anchor-browser', 'brightdata', 'browserbase', 'hyperbrowser', 'browser-use']
 	if browser not in valid_browsers:
 		logger.warning(f'Browser setup: Invalid browser option "{browser}". Falling back to local browser.')
 		browser = 'local'
@@ -1483,6 +1563,36 @@ async def setup_browser_session(
 		else:
 			logger.warning(
 				f'Browser setup: Brightdata requested but BRIGHTDATA_CDP_URL not set. Using local browser for task {task.task_id}'
+			)
+	elif browser == 'browserbase':
+		if BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID:
+			try:
+				logger.debug(f'Browser setup: Creating Browserbase session for task {task.task_id}')
+				cdp_url = await asyncio.to_thread(create_browserbase_session)
+			except Exception as e:
+				logger.error(
+					f'Browser setup: Failed to create Browserbase session for task {task.task_id}: {type(e).__name__}: {e}'
+				)
+				logger.info(f'Browser setup: Falling back to local browser for task {task.task_id}')
+				cdp_url = None
+		else:
+			logger.warning(
+				f'Browser setup: Browserbase requested but BROWSERBASE_API_KEY or BROWSERBASE_PROJECT_ID not set. Using local browser for task {task.task_id}'
+			)
+	elif browser == 'hyperbrowser':
+		if HYPERBROWSER_API_KEY:
+			try:
+				logger.debug(f'Browser setup: Creating Hyperbrowser session for task {task.task_id}')
+				cdp_url = await create_hyperbrowser_session()
+			except Exception as e:
+				logger.error(
+					f'Browser setup: Failed to create Hyperbrowser session for task {task.task_id}: {type(e).__name__}: {e}'
+				)
+				logger.info(f'Browser setup: Falling back to local browser for task {task.task_id}')
+				cdp_url = None
+		else:
+			logger.warning(
+				f'Browser setup: Hyperbrowser requested but HYPERBROWSER_API_KEY not set. Using local browser for task {task.task_id}'
 			)
 	elif browser == 'browser-use':
 		logger.warning(f'Browser setup: Browser-use not implemented yet. Falling back to local browser for task {task.task_id}')
@@ -2431,6 +2541,7 @@ async def run_multiple_tasks(
 				heartbeat_task.cancel()
 
 		await stop_resource_monitoring()
+
 		log_system_resources('BATCH_CLEANUP')
 
 	# Process task results and handle any exceptions returned by gather
@@ -3033,7 +3144,7 @@ if __name__ == '__main__':
 		'--model', type=str, default='gpt-4o', choices=list(SUPPORTED_MODELS.keys()), help='Model to use for the agent'
 	)
 	parser.add_argument(
-		'--eval-model', type=str, default='gpt-4o', choices=list(SUPPORTED_MODELS.keys()), help='Model to use for evaluation'
+		'--eval-model', type=str, default='gpt-4.1', choices=list(SUPPORTED_MODELS.keys()), help='Model to use for evaluation'
 	)
 	parser.add_argument('--no-vision', action='store_true', help='Disable vision capabilities in the agent')
 
@@ -3045,7 +3156,7 @@ if __name__ == '__main__':
 		'--browser',
 		type=str,
 		default='local',
-		help='Browser to use: local, anchor-browser, brightdata, browser-use (default: local)',
+		help='Browser to use: local, anchor-browser, brightdata, browserbase, hyperbrowser, browser-use (default: local)',
 	)
 	parser.add_argument('--enable-memory', action='store_true', help='Enable mem0 memory system for agents')
 	parser.add_argument('--memory-interval', type=int, default=10, help='Memory creation interval (default: 10 steps)')
@@ -3328,6 +3439,18 @@ if __name__ == '__main__':
 			logger.info('🌐 Using Brightdata browser (remote browser service)')
 		else:
 			logger.warning('⚠️ --browser brightdata provided but BRIGHTDATA_CDP_URL not set. Will use local browser!')
+	elif args.browser == 'browserbase':
+		if BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID:
+			logger.info('🌐 Using Browserbase (remote browser service)')
+		else:
+			logger.warning(
+				'⚠️ --browser browserbase provided but BROWSERBASE_API_KEY or BROWSERBASE_PROJECT_ID not set. Will use local browser!'
+			)
+	elif args.browser == 'hyperbrowser':
+		if HYPERBROWSER_API_KEY:
+			logger.info('🌐 Using Hyperbrowser (remote browser service)')
+		else:
+			logger.warning('⚠️ --browser hyperbrowser provided but HYPERBROWSER_API_KEY not set. Will use local browser!')
 	elif args.browser == 'browser-use':
 		logger.warning('🌐 Browser-use not implemented yet. Will use local browser!')
 	else:
