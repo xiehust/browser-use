@@ -145,34 +145,46 @@ async def setup_resource_blocking(browser_session: BrowserSession, block_images:
 	if not browser_session.browser_context:
 		return
 
+	# Clear any existing routes to avoid conflicts
+	await browser_session.browser_context.unroute('**/*')
+
 	async def block_resources(route, request):
 		"""Block specified resource types."""
-		resource_type = request.resource_type
-		url = request.url
-		should_block = False
+		try:
+			resource_type = request.resource_type
+			url = request.url
+			should_block = False
 
-		# Block images - more selective approach
-		if block_images and (
-			resource_type in ['image', 'imageset']
-			or any(
-				url.lower().endswith(ext)
-				for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.ico', '.bmp', '.tiff', '.avif']
-			)
-		):
-			should_block = True
+			# Block images - more selective approach
+			if block_images and (
+				resource_type in ['image', 'imageset']
+				or any(
+					url.lower().endswith(ext)
+					for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.ico', '.bmp', '.tiff', '.avif']
+				)
+			):
+				should_block = True
 
-		# Block CSS
-		elif block_css and (resource_type == 'stylesheet' or url.lower().endswith('.css') or 'css' in url.lower()):
-			should_block = True
+			# Block CSS
+			elif block_css and (resource_type == 'stylesheet' or url.lower().endswith('.css') or 'css' in url.lower()):
+				should_block = True
 
-		# Block other unnecessary resources for speed
-		elif resource_type in ['media', 'font', 'texttrack']:
-			should_block = True
+			# Block other unnecessary resources for speed
+			elif resource_type in ['media', 'font', 'texttrack']:
+				should_block = True
 
-		if should_block:
-			await route.abort()
-		else:
-			await route.continue_()
+			if should_block:
+				await route.abort()
+			else:
+				await route.continue_()
+		
+		except Exception as e:
+			# Always continue on error to avoid breaking the route handler
+			logger.warning(f'Error in resource blocking handler: {e}')
+			try:
+				await route.continue_()
+			except:
+				pass  # Route might already be handled
 
 	# Intercept all requests and apply blocking rules
 	await browser_session.browser_context.route('**/*', block_resources)
