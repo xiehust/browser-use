@@ -127,6 +127,13 @@ class Controller(Generic[Context]):
 					memory = f'Opened new tab with URL {params.url}'
 					msg = f'🔗  Opened new tab #{tab_idx} with url {params.url}'
 					logger.info(msg)
+					
+					# Check if we navigated to a PDF and auto-download it
+					download_result = await _auto_download_pdf_if_detected(browser_session)
+					if download_result:
+						msg += f' - {download_result}'
+						memory += f' - {download_result}'
+					
 					return ActionResult(extracted_content=msg, include_in_memory=True, long_term_memory=memory)
 				else:
 					# Navigate in current tab (original logic)
@@ -136,6 +143,13 @@ class Controller(Generic[Context]):
 					memory = f'Navigated to {params.url}'
 					msg = f'🔗 {memory}'
 					logger.info(msg)
+					
+					# Check if we navigated to a PDF and auto-download it
+					download_result = await _auto_download_pdf_if_detected(browser_session)
+					if download_result:
+						msg += f' - {download_result}'
+						memory += f' - {download_result}'
+					
 					return ActionResult(extracted_content=msg, include_in_memory=True, long_term_memory=memory)
 			except Exception as e:
 				error_msg = str(e)
@@ -156,6 +170,105 @@ class Controller(Generic[Context]):
 				else:
 					# Re-raise non-network errors (including URLNotAllowedError for unauthorized domains)
 					raise
+
+		# Helper function for PDF auto-download
+		async def _auto_download_pdf_if_detected(browser_session: BrowserSession) -> str | None:
+			"""
+			Detects if the current page is a PDF viewer and automatically downloads the PDF.
+			Returns a status message if a download occurred, None otherwise.
+			"""
+			try:
+				page = await browser_session.get_current_page()
+				await asyncio.sleep(1)  # Give page time to load
+				
+				# Check if we're in a PDF viewer
+				is_pdf_viewer = await page.evaluate("""() => {
+					// Check multiple ways to detect PDF viewer
+					return !!(
+						// Chrome's built-in PDF viewer
+						(document.body && document.body.querySelector('embed[type="application/pdf"]')) ||
+						// PDF.js viewer
+						document.querySelector('#viewer') ||
+						// General PDF detection
+						window.isPdfViewer ||
+						// Check if page title suggests PDF
+						(document.title && document.title.toLowerCase().includes('.pdf')) ||
+						// Check URL ends with .pdf
+						(window.location.href && window.location.href.toLowerCase().includes('.pdf'))
+					);
+				}""")
+				
+				if is_pdf_viewer and browser_session.browser_profile.downloads_path:
+					# Generate filename from URL
+					import re
+					from urllib.parse import urlparse, unquote
+					
+					parsed_url = urlparse(page.url)
+					filename = unquote(parsed_url.path.split('/')[-1])
+					if not filename.endswith('.pdf'):
+						filename = filename + '.pdf' if filename else 'document.pdf'
+					
+					# Sanitize filename
+					filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
+					
+					# Use CDP to save the PDF
+					try:
+						cdp_session = await page.context.new_cdp_session(page)
+						pdf_data = await cdp_session.send('Page.printToPDF', {
+							'printBackground': True,
+							'format': 'A4',
+							'preferCSSPageSize': True
+						})
+						await cdp_session.detach()
+						
+						# Save the PDF
+						import base64
+						import os
+						pdf_bytes = base64.b64decode(pdf_data['data'])
+						
+						# Get unique filename
+						unique_filename = await browser_session._get_unique_filename(
+							browser_session.browser_profile.downloads_path, filename
+						)
+						download_path = os.path.join(browser_session.browser_profile.downloads_path, unique_filename)
+						
+						with open(download_path, 'wb') as f:
+							f.write(pdf_bytes)
+						
+						# Track the downloaded file
+						browser_session._downloaded_files.append(download_path)
+						
+						return f'📄 Automatically downloaded PDF to {download_path}'
+						
+					except Exception as e:
+						logger.debug(f'Failed to auto-download PDF via CDP: {e}')
+						# Fallback: try to trigger download via JavaScript
+						try:
+							await page.evaluate("""() => {
+								// Try to find and click a download link/button
+								const downloadLinks = document.querySelectorAll('a[download], button[title*="download" i], a[href*=".pdf"]');
+								for (const link of downloadLinks) {
+									if (link.offsetParent !== null) { // Check if visible
+										link.click();
+										return true;
+									}
+								}
+								return false;
+							}""")
+							
+							# Wait a bit to see if download was triggered
+							await asyncio.sleep(2)
+							return '📄 Triggered PDF download via page interaction'
+							
+						except Exception as e2:
+							logger.debug(f'Failed to trigger PDF download via JavaScript: {e2}')
+							return '📄 PDF detected but could not auto-download'
+				
+				return None
+				
+			except Exception as e:
+				logger.debug(f'Error in PDF auto-download detection: {e}')
+				return None
 
 		@self.registry.action('Go back', param_model=NoParamsAction)
 		async def go_back(_: NoParamsAction, browser_session: BrowserSession):
@@ -499,8 +612,10 @@ Explain the content of the page and that the requested information is not availa
 		)
 		async def scroll(params: ScrollAction, browser_session: BrowserSession):
 			"""
-			(a) Use browser._scroll_container for container-aware scrolling.
-			(b) If that JavaScript throws, fall back to window.scrollBy().
+			Enhanced scroll function that handles PDF viewers and regular pages.
+			(a) Detect if we're in a PDF viewer and use PDF-specific scrolling
+			(b) Use browser._scroll_container for container-aware scrolling on regular pages
+			(c) If that JavaScript throws, fall back to window.scrollBy().
 			"""
 			page = await browser_session.get_current_page()
 
@@ -517,12 +632,101 @@ Explain the content of the page and that the requested information is not availa
 			# Set direction based on down parameter
 			dy = scroll_amount if params.down else -scroll_amount
 
+			# Check if we're in a PDF viewer and handle it specially
 			try:
-				await browser_session._scroll_container(cast(int, dy))
+				is_pdf_viewer = await page.evaluate("""() => {
+					return !!(
+						// Chrome's built-in PDF viewer
+						(document.body && document.body.querySelector('embed[type="application/pdf"]')) ||
+						// PDF.js viewer
+						document.querySelector('#viewer') ||
+						// General PDF detection
+						window.isPdfViewer ||
+						// Check if page title suggests PDF
+						(document.title && document.title.toLowerCase().includes('.pdf'))
+					);
+				}""")
+				
+				if is_pdf_viewer:
+					# Use PDF-specific scrolling
+					await page.evaluate("""(dy) => {
+						// Try multiple PDF viewer scrolling methods
+						
+						// Method 1: Chrome's built-in PDF viewer
+						const pdfEmbed = document.querySelector('embed[type="application/pdf"]');
+						if (pdfEmbed) {
+							// For Chrome PDF viewer, we can try to focus the embed and send keyboard events
+							try {
+								pdfEmbed.focus();
+								// Simulate Page Down/Up key presses for more reliable PDF scrolling
+								const keyEvent = dy > 0 ? 'PageDown' : 'PageUp';
+								const times = Math.max(1, Math.round(Math.abs(dy) / (window.innerHeight * 0.8)));
+								for (let i = 0; i < times; i++) {
+									pdfEmbed.dispatchEvent(new KeyboardEvent('keydown', {
+										key: keyEvent,
+										code: keyEvent,
+										bubbles: true
+									}));
+								}
+								return true;
+							} catch (e) {
+								console.log('PDF embed keyboard scrolling failed:', e);
+							}
+						}
+						
+						// Method 2: PDF.js viewer
+						const pdfViewer = document.querySelector('#viewer');
+						if (pdfViewer) {
+							try {
+								pdfViewer.scrollBy({ top: dy, behavior: 'auto' });
+								return true;
+							} catch (e) {
+								console.log('PDF.js viewer scrolling failed:', e);
+							}
+						}
+						
+						// Method 3: Try to find any scrollable container in the PDF viewer
+						const possibleContainers = [
+							document.querySelector('[id*="pdf" i]'),
+							document.querySelector('[class*="pdf" i]'),
+							document.querySelector('iframe'),
+							document.querySelector('object'),
+							document.documentElement
+						].filter(el => el);
+						
+						for (const container of possibleContainers) {
+							try {
+								if (container.scrollHeight > container.clientHeight) {
+									container.scrollBy({ top: dy, behavior: 'auto' });
+									return true;
+								}
+							} catch (e) {
+								console.log('Container scroll failed:', e);
+							}
+						}
+						
+						// Method 4: Fallback to window scrolling
+						window.scrollBy(0, dy);
+						return true;
+					}""", dy)
+					
+					logger.debug('Used PDF-specific scrolling')
+				else:
+					# Use normal scrolling for non-PDF pages
+					try:
+						await browser_session._scroll_container(cast(int, dy))
+					except Exception as e:
+						# Hard fallback: always works on root scroller
+						await page.evaluate('(y) => window.scrollBy(0, y)', dy)
+						logger.debug('Smart scroll failed; used window.scrollBy fallback', exc_info=e)
+				
 			except Exception as e:
-				# Hard fallback: always works on root scroller
-				await page.evaluate('(y) => window.scrollBy(0, y)', dy)
-				logger.debug('Smart scroll failed; used window.scrollBy fallback', exc_info=e)
+				# Final fallback if PDF detection fails
+				try:
+					await browser_session._scroll_container(cast(int, dy))
+				except Exception as e2:
+					await page.evaluate('(y) => window.scrollBy(0, y)', dy)
+					logger.debug('All scroll methods failed; used basic window.scrollBy', exc_info=e2)
 
 			direction = 'down' if params.down else 'up'
 			if pages_scrolled == 1.0:
@@ -604,6 +808,130 @@ Explain the content of the page and that the requested information is not availa
 				msg = f"Failed to scroll to text '{text}': {str(e)}"
 				logger.error(msg)
 				raise BrowserError(msg)
+
+		# PDF Action
+		@self.registry.action('Download the current PDF page to the downloads folder')
+		async def download_pdf(browser_session: BrowserSession):
+			"""
+			Manually download the current PDF page.
+			"""
+			try:
+				page = await browser_session.get_current_page()
+				
+				# Check if we're in a PDF viewer
+				is_pdf_viewer = await page.evaluate("""() => {
+					return !!(
+						// Chrome's built-in PDF viewer
+						(document.body && document.body.querySelector('embed[type="application/pdf"]')) ||
+						// PDF.js viewer
+						document.querySelector('#viewer') ||
+						// General PDF detection
+						window.isPdfViewer ||
+						// Check if page title suggests PDF
+						(document.title && document.title.toLowerCase().includes('.pdf')) ||
+						// Check URL ends with .pdf
+						(window.location.href && window.location.href.toLowerCase().includes('.pdf'))
+					);
+				}""")
+				
+				if not is_pdf_viewer:
+					msg = '❌ Current page is not a PDF viewer'
+					logger.info(msg)
+					return ActionResult(extracted_content=msg, include_in_memory=True, long_term_memory=msg)
+				
+				if not browser_session.browser_profile.downloads_path:
+					msg = '❌ Downloads path not configured. Set downloads_path in BrowserProfile to enable PDF downloads'
+					logger.info(msg)
+					return ActionResult(extracted_content=msg, include_in_memory=True, long_term_memory=msg)
+				
+				# Generate filename from URL
+				import re
+				from urllib.parse import urlparse, unquote
+				
+				parsed_url = urlparse(page.url)
+				filename = unquote(parsed_url.path.split('/')[-1])
+				if not filename.endswith('.pdf'):
+					filename = filename + '.pdf' if filename else 'document.pdf'
+				
+				# Sanitize filename
+				filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
+				
+				# Use CDP to save the PDF
+				try:
+					cdp_session = await page.context.new_cdp_session(page)
+					pdf_data = await cdp_session.send('Page.printToPDF', {
+						'printBackground': True,
+						'format': 'A4',
+						'preferCSSPageSize': True
+					})
+					await cdp_session.detach()
+					
+					# Save the PDF
+					import base64
+					import os
+					pdf_bytes = base64.b64decode(pdf_data['data'])
+					
+					# Get unique filename
+					unique_filename = await browser_session._get_unique_filename(
+						browser_session.browser_profile.downloads_path, filename
+					)
+					download_path = os.path.join(browser_session.browser_profile.downloads_path, unique_filename)
+					
+					with open(download_path, 'wb') as f:
+						f.write(pdf_bytes)
+					
+					# Track the downloaded file
+					browser_session._downloaded_files.append(download_path)
+					
+					msg = f'📄 Successfully downloaded PDF to {download_path}'
+					logger.info(msg)
+					return ActionResult(extracted_content=msg, include_in_memory=True, long_term_memory=msg)
+					
+				except Exception as e:
+					logger.debug(f'Failed to download PDF via CDP: {e}')
+					# Fallback: try to trigger download via JavaScript
+					try:
+						download_triggered = await page.evaluate("""() => {
+							// Try to find and click a download link/button
+							const downloadLinks = document.querySelectorAll('a[download], button[title*="download" i], a[href*=".pdf"]');
+							for (const link of downloadLinks) {
+								if (link.offsetParent !== null) { // Check if visible
+									link.click();
+									return true;
+								}
+							}
+							
+							// Try keyboard shortcut
+							document.dispatchEvent(new KeyboardEvent('keydown', {
+								key: 's',
+								code: 'KeyS',
+								ctrlKey: true,
+								bubbles: true
+							}));
+							
+							return false;
+						}""")
+						
+						# Wait a bit to see if download was triggered
+						await asyncio.sleep(2)
+						
+						if download_triggered:
+							msg = '📄 Triggered PDF download via page interaction'
+						else:
+							msg = '📄 Attempted to trigger PDF download (check downloads folder)'
+						
+						logger.info(msg)
+						return ActionResult(extracted_content=msg, include_in_memory=True, long_term_memory=msg)
+						
+					except Exception as e2:
+						msg = f'❌ Failed to download PDF: {str(e2)}'
+						logger.error(msg)
+						return ActionResult(extracted_content=msg, include_in_memory=True, long_term_memory=msg)
+				
+			except Exception as e:
+				msg = f'❌ Error downloading PDF: {str(e)}'
+				logger.error(msg)
+				return ActionResult(extracted_content=msg, include_in_memory=True, long_term_memory=msg)
 
 		# File System Actions
 		@self.registry.action('Write content to file_name in file system. Allowed extensions are .md, .txt, .json, .csv.')
