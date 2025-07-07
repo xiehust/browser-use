@@ -579,7 +579,7 @@ async def run_agent_with_browser(
 		planner_llm=planner_llm,
 		planner_interval=planner_interval,
 		use_thinking=use_thinking,
-		images_per_step=images_per_step,
+		# images_per_step=images_per_step,
 		source='eval_platform',
 		calculate_cost=True,
 		register_new_step_callback=new_step_callback,
