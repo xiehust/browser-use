@@ -140,6 +140,54 @@ async def create_hyperbrowser_session() -> str:
 		raise
 
 
+async def setup_resource_blocking(browser_session: BrowserSession, block_images: bool, block_css: bool) -> None:
+	"""Set up resource blocking routes for the browser session."""
+	if not browser_session.browser_context:
+		return
+
+	async def block_resources(route, request):
+		"""Block specified resource types."""
+		resource_type = request.resource_type
+		url = request.url
+		should_block = False
+
+		# Block images - more selective approach
+		if block_images and (
+			resource_type in ['image', 'imageset']
+			or any(
+				url.lower().endswith(ext)
+				for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.ico', '.bmp', '.tiff', '.avif']
+			)
+		):
+			should_block = True
+
+		# Block CSS
+		elif block_css and (resource_type == 'stylesheet' or url.lower().endswith('.css') or 'css' in url.lower()):
+			should_block = True
+
+		# Block other unnecessary resources for speed
+		elif resource_type in ['media', 'font', 'texttrack']:
+			should_block = True
+
+		if should_block:
+			await route.abort()
+		else:
+			await route.continue_()
+
+	# Intercept all requests and apply blocking rules
+	await browser_session.browser_context.route('**/*', block_resources)
+
+	blocked_types = []
+	if block_images:
+		blocked_types.append('images')
+	if block_css:
+		blocked_types.append('CSS')
+
+	blocked_types.extend(['media', 'fonts', 'texttrack'])
+
+	logger.info(f'🚫 Resource blocking enabled for: {", ".join(blocked_types)}')
+
+
 async def setup_browser_session(
 	task: Task,
 	headless: bool,
@@ -152,6 +200,8 @@ async def setup_browser_session(
 	maximum_wait_page_load_time: float | None = None,
 	wait_between_actions: float | None = None,
 	stealth: bool = False,
+	block_images: bool = False,
+	block_css: bool = False,
 ) -> BrowserSession:
 	"""Setup browser session for the task"""
 
@@ -278,6 +328,10 @@ async def setup_browser_session(
 	# Start browser session
 	await browser_session.start()
 	logger.debug(f'Browser setup: Browser session started for task {task.task_id}')
+
+	# Set up resource blocking if enabled
+	if block_images or block_css:
+		await setup_resource_blocking(browser_session, block_images, block_css)
 
 	# Navigate to task starting url if provided
 	# if task.website:
