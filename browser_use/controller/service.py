@@ -494,13 +494,14 @@ Explain the content of the page and that the requested information is not availa
 		# 	)
 
 		@self.registry.action(
-			'Scroll the page by one page (set down=True to scroll down, down=False to scroll up)',
+			'Scroll the page by one page (set down=True to scroll down, down=False to scroll up, index=element_index to scroll within specific element container)',
 			param_model=ScrollAction,
 		)
 		async def scroll(params: ScrollAction, browser_session: BrowserSession):
 			"""
-			(a) Use browser._scroll_container for container-aware scrolling.
-			(b) If that JavaScript throws, fall back to window.scrollBy().
+			(a) If index is provided, find the scroll container for that element and scroll within it.
+			(b) If no index or no container found, use browser._scroll_container for container-aware scrolling.
+			(c) If that JavaScript throws, fall back to window.scrollBy().
 			"""
 			page = await browser_session.get_current_page()
 
@@ -513,17 +514,74 @@ Explain the content of the page and that the requested information is not availa
 			dy = dy_result if params.down else -(dy_result or 0)
 
 			try:
-				await browser_session._scroll_container(cast(int, dy))
+				if params.index is not None:
+					# Get the element and find its scroll container
+					selector_map = await browser_session.get_selector_map()
+					if params.index not in selector_map:
+						msg = f'Element with index {params.index} does not exist. Using page-level scroll instead.'
+						logger.info(msg)
+						await browser_session._scroll_container(cast(int, dy))
+					else:
+						element_node = selector_map[params.index]
+						element_handle = await browser_session.get_locate_element(element_node)
+						
+						if element_handle is None:
+							msg = f'Element with index {params.index} could not be located. Using page-level scroll instead.'
+							logger.info(msg)
+							await browser_session._scroll_container(cast(int, dy))
+						else:
+							# JavaScript to find scroll container starting from specific element
+							ELEMENT_SCROLL_JS = """(elementHandle, dy) => {
+								const bigEnough = el => el.clientHeight >= window.innerHeight * 0.5;
+								const canScroll = el =>
+									el &&
+									/(auto|scroll|overlay)/.test(getComputedStyle(el).overflowY) &&
+									el.scrollHeight > el.clientHeight &&
+									bigEnough(el);
+
+								// Start from the provided element
+								let el = elementHandle;
+								while (el && !canScroll(el) && el !== document.body) {
+									el = el.parentElement;
+								}
+
+								// If no suitable container found, fall back to global search
+								el = canScroll(el)
+										? el
+										: [...document.querySelectorAll('*')].find(canScroll)
+										|| document.scrollingElement
+										|| document.documentElement;
+
+								if (el === document.scrollingElement ||
+									el === document.documentElement ||
+									el === document.body) {
+									window.scrollBy(0, dy);
+								} else {
+									el.scrollBy({ top: dy, behavior: 'auto' });
+								}
+							}"""
+							
+							try:
+								await page.evaluate(ELEMENT_SCROLL_JS, element_handle, dy)
+							except Exception as e:
+								logger.debug(f'Element-specific scroll failed, using page-level scroll: {e}')
+								await browser_session._scroll_container(cast(int, dy))
+				else:
+					# No index provided, use existing container-aware scrolling
+					await browser_session._scroll_container(cast(int, dy))
 			except Exception as e:
 				# Hard fallback: always works on root scroller
 				await page.evaluate('(y) => window.scrollBy(0, y)', dy)
 				logger.debug('Smart scroll failed; used window.scrollBy fallback', exc_info=e)
 
 			direction = 'down' if params.down else 'up'
-			msg = f'🔍 Scrolled {direction} the page by one page'
+			if params.index is not None:
+				msg = f'🔍 Scrolled {direction} within element {params.index} container (or page if no container found)'
+			else:
+				msg = f'🔍 Scrolled {direction} the page by one page'
 			logger.info(msg)
 			return ActionResult(
-				extracted_content=msg, include_in_memory=True, long_term_memory=f'Scrolled {direction} the page by one page'
+				extracted_content=msg, include_in_memory=True, long_term_memory=msg
 			)
 
 		# send keys

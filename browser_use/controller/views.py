@@ -46,6 +46,7 @@ class CloseTabAction(BaseModel):
 
 class ScrollAction(BaseModel):
 	down: bool  # True to scroll down, False to scroll up
+	index: int | None = None  # Optional: element index to find scroll container for
 
 
 class SendKeysAction(BaseModel):
