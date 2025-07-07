@@ -133,7 +133,7 @@ def prepare_agent_steps(complete_history: list[dict]) -> list[str]:
 
 	steps = []
 	for i, step in enumerate(history_to_process):
-		step_text = f'Step {i + 1}:\n'
+		step_text = f'Step {i}:\n'
 
 		# Add model output if available
 		if step.get('model_output'):
@@ -156,15 +156,15 @@ def prepare_agent_steps(complete_history: list[dict]) -> list[str]:
 					if result.get('extracted_content'):
 						content = str(result['extracted_content'])
 						if len(content) > 500:
-							step_text += f'Result {j + 1}: {content[:500]}...[cut for eval system]\n'
+							step_text += f'Result {j}: {content[:500]}...[cut for eval system]\n'
 						else:
-							step_text += f'Result {j + 1}: {content}\n'
+							step_text += f'Result {j}: {content}\n'
 					if result.get('error'):
 						error = str(result['error'])
 						if len(error) > 500:
-							step_text += f'Error {j + 1}: {error[:500]}...[cut for eval system]\n'
+							step_text += f'Error {j}: {error[:500]}...[cut for eval system]\n'
 						else:
-							step_text += f'Error {j + 1}: {error}\n'
+							step_text += f'Error {j}: {error}\n'
 
 		steps.append(step_text)
 
