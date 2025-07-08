@@ -163,7 +163,7 @@ async def create_unikraft_session() -> str:
 	instance_name = os.getenv('APP_NAME', 'cdp') + ''.join(random.choices(string.ascii_letters, k=3))
 	img_name = os.getenv('IMG_NAME', 'cdp')
 	img_tag = os.getenv('IMG_TAG', 'latest')
-	memory = os.getenv('MEMORY', '8Gi')
+	memory = os.getenv('MEMORY', '4Gi')
 
 	# Convert memory to MB
 	memory_mb = 8192  # Default 8GB
