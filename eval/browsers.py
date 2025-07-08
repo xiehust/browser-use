@@ -150,7 +150,7 @@ async def create_hyperbrowser_session() -> str:
 		raise
 
 
-async def create_unikraft_session() -> str:
+async def create_unikraft_session(headless: bool = False) -> str:
 	"""Create a Unikraft Cloud instance and return CDP URL"""
 	if not UKC_TOKEN:
 		raise ValueError('UKC_TOKEN must be set')
@@ -222,7 +222,7 @@ async def create_unikraft_session() -> str:
 		await _wait_for_unikraft_app_ready(instance_url)
 
 		# Return CDP WebSocket URL
-		cdp_url = f'{instance_url}/ws/'
+		cdp_url = f'{instance_url}/ws/?headless={str(headless).lower()}'
 		return cdp_url
 
 	except Exception as e:
@@ -366,7 +366,7 @@ async def setup_browser_session(
 		if UKC_TOKEN and UKC_METRO:
 			try:
 				logger.debug(f'Browser setup: Creating Unikraft session for task {task.task_id}')
-				cdp_url = await create_unikraft_session()
+				cdp_url = await create_unikraft_session(headless)
 			except Exception as e:
 				logger.error(f'Browser setup: Failed to create Unikraft session for task {task.task_id}: {type(e).__name__}: {e}')
 				logger.info(f'Browser setup: Falling back to local browser for task {task.task_id}')
