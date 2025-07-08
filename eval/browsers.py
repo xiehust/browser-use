@@ -276,7 +276,7 @@ async def _wait_for_unikraft_app_ready(instance_url: str, max_wait: int = 60) ->
 				async with session.get(f'{instance_url}/health') as resp:
 					if resp.status == 200:
 						data = await resp.json()
-						if data.get('status') == 'healthy' and data.get('chrome_accessible') is True:
+						if data.get('status') == 'healthy':
 							return True
 			except Exception:
 				pass
