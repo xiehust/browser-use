@@ -158,8 +158,8 @@ class Controller(Generic[Context]):
 					)  # This will refresh the cached state
 					selector_map = await browser_session.get_selector_map()
 				except BrowserError as e:
-					if "Page is not accessible" in str(e):
-						logger.warning(f"Page became inaccessible during state refresh: {e}")
+					if 'Page is not accessible' in str(e):
+						logger.warning(f'Page became inaccessible during state refresh: {e}')
 						# Return error indicating page is no longer accessible
 						msg = f'Element with index {params.index} cannot be found - page is no longer accessible. Browser or page may have been closed.'
 						return ActionResult(error=msg, include_in_memory=True, success=False)
@@ -214,12 +214,12 @@ class Controller(Generic[Context]):
 							error='Page navigated during click. Refreshed state provided.', include_in_memory=True, success=False
 						)
 					except BrowserError as e:
-						if "Page is not accessible" in str(e):
-							logger.warning(f"Page is not accessible after context change: {e}")
+						if 'Page is not accessible' in str(e):
+							logger.warning(f'Page is not accessible after context change: {e}')
 							return ActionResult(
 								error='Page context changed and page is no longer accessible. Browser or page may have been closed.',
 								include_in_memory=True,
-								success=False
+								success=False,
 							)
 						else:
 							raise
