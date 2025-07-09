@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-import base64
 import json
 import logging
 import os
@@ -741,26 +740,43 @@ class BrowserSession(BaseModel):
 		except Exception:
 			pass
 
+		screenshot_b64 = None
+		cdp_session = None
 		try:
 			# Use a shorter timeout for screenshots to prevent semaphore starvation
 			# 10 seconds should be enough for most screenshots
-			screenshot_timeout = min(10000, self.browser_profile.default_timeout or 10000)
-			screenshot = await page.screenshot(
-				full_page=False,
-				# scale='css',
-				timeout=screenshot_timeout,
-				# clip=FloatRect(**clip) if clip else None,
-				animations='allow',
-				caret='initial',
+			# screenshot = await page.screenshot(
+			# 	full_page=False,
+			# 	# scale='css',
+			# 	timeout=screenshot_timeout,
+			# 	# clip=FloatRect(**clip) if clip else None,
+			# 	animations='allow',
+			# 	caret='initial',
+			#
+			cdp_session = await page.context.new_cdp_session(page)  # type: ignore
+			screenshot = await cdp_session.send(
+				'Page.captureScreenshot',
+				{
+					'captureBeyondViewport': False,
+					'fromSurface': True,
+					'format': 'png',
+					# 'clip': clip,
+				},
 			)
+			screenshot_b64 = screenshot['data']
 		except Exception as err:
 			# Don't reset browser on timeout - this can cause semaphore deadlocks
 			# Just re-raise the error and let the retry decorator handle it
 			if 'timeout' in str(err).lower():
 				self.logger.warning(f'⏱️ Screenshot timed out on page {page.url}: {err}')
 			raise err
+		finally:
+			try:
+				assert cdp_session
+				await cdp_session.detach()
+			except Exception:
+				pass
 		assert await page.evaluate('() => true'), 'Page is not usable after screenshot!'
-		screenshot_b64 = base64.b64encode(screenshot).decode('utf-8')
 		assert screenshot_b64, 'Playwright page.screenshot() returned empty base64'
 		return screenshot_b64
 
@@ -2725,13 +2741,6 @@ class BrowserSession(BaseModel):
 			raise BrowserError(f'Navigation to non-allowed URL: {normalized_url}')
 
 		page = await self.get_current_page()
-		try:
-			await asyncio.wait_for(page.evaluate('1'), timeout=1)
-		except Exception as e:
-			# new tab to recover
-			self.logger.warning(f'🚨 Page {_log_pretty_url(normalized_url)} is unresponsive, creating new tab...')
-			page = await self.create_new_tab(normalized_url)
-			return
 
 		try:
 			await asyncio.wait_for(page.goto(normalized_url), timeout=0.1)
@@ -2924,7 +2933,7 @@ class BrowserSession(BaseModel):
 
 		return self._cached_browser_state_summary
 
-	@observe_debug(name='get_minimal_state_summary')
+	@observe_debug(name='get_minimal_state_summary', ignore_output=True)
 	@require_initialization
 	@time_execution_async('--get_minimal_state_summary')
 	async def get_minimal_state_summary(self) -> BrowserStateSummary:
@@ -2972,17 +2981,17 @@ class BrowserSession(BaseModel):
 			browser_errors=[f'Page state retrieval failed, minimal recovery applied for {url}'],
 		)
 
-	@observe_debug(name='get_updated_state')
+	@observe_debug(name='get_updated_state', ignore_output=True)
 	async def _get_updated_state(self, focus_element: int = -1) -> BrowserStateSummary:
 		"""Update and return state."""
 
+		# Check if current page is still valid, if not switch to another available page
 		page = await self.get_current_page()
 
-		# Check if current page is still valid, if not switch to another available page
 		try:
 			# Test if page is still accessible
 			# NOTE: This also happens on invalid urls like www.sadfdsafdssdafd.com
-			await asyncio.wait_for(page.evaluate('1'), timeout=1.0)
+			await asyncio.wait_for(page.evaluate('1'), timeout=2.5)
 		except Exception as e:
 			self.logger.debug(f'👋 Current page is not accessible: {type(e).__name__}: {e}')
 			raise BrowserError('Page is not accessible')
@@ -4101,6 +4110,34 @@ class BrowserSession(BaseModel):
 		}""",
 			str(self.id)[-4:],
 		)
+
+	@observe_debug(name='get_state_summary_with_fallback', ignore_output=True)
+	@require_initialization
+	@time_execution_async('--get_state_summary_with_fallback')
+	async def get_state_summary_with_fallback(self, cache_clickable_elements_hashes: bool = True) -> BrowserStateSummary:
+		"""Get browser state with fallback to minimal state on errors
+
+		This method first tries to get a full state summary. If that fails,
+		it falls back to a minimal state summary to allow basic navigation.
+
+		Parameters:
+		-----------
+		cache_clickable_elements_hashes: bool
+			If True, cache the clickable elements hashes for the current state.
+
+		Returns:
+		--------
+		BrowserStateSummary: Either full state or minimal fallback state
+		"""
+		# Try 1: Full state summary (current implementation)
+		try:
+			return await self.get_state_summary(cache_clickable_elements_hashes)
+		except Exception as e:
+			self.logger.warning(f'Full state retrieval failed: {type(e).__name__}: {e}')
+			self.logger.warning('🔄 Falling back to minimal state summary')
+
+		# Try 2: Minimal state summary as fallback
+		return await self.get_minimal_state_summary()
 
 	async def _is_pdf_viewer(self, page: Page) -> bool:
 		"""
