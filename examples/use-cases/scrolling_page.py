@@ -53,9 +53,9 @@ agent1 = Agent(
 )
 
 # Example 2: Element-specific scrolling (dropdowns and containers)
+	# 1. Scroll down in the left sidebar by 2 pages
 agent2 = Agent(
 	task="""Go to https://semantic-ui.com/modules/dropdown.html#/definition and:
-	1. Scroll down in the left sidebar by 2 pages
 	2. Then scroll down 1 page in the main content area
 	3. Click on the State dropdown and scroll down 1 page INSIDE the dropdown to see more states
 	4. The dropdown should stay open while scrolling inside it""",
