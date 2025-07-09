@@ -157,6 +157,7 @@ class Controller(Generic[Context]):
 				logger.info(msg)
 				return ActionResult(extracted_content=msg)
 
+			initial_pages = len(browser_session.tabs)
 			download_path = await browser_session._click_element_node(element_node)
 			if download_path:
 				msg = f'Downloaded file to {download_path}'
@@ -165,7 +166,7 @@ class Controller(Generic[Context]):
 				emoji = '🖱️'
 				msg = f'Clicked button with index {params.index}: {element_node.get_all_text_till_next_clickable_element(max_depth=2)}'
 
-			if len(browser_session.tabs) > len(browser_session.tabs):
+			if len(browser_session.tabs) > initial_pages:
 				msg += ' - New tab opened - switching to it'
 				await browser_session.switch_to_tab(-1)
 
