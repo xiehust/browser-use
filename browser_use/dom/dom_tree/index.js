@@ -946,7 +946,7 @@
 
     // Fast-path for common interactive elements
     const interactiveElements = new Set([
-      "a", "button", "input", "select", "textarea", "details", "summary", "label"
+      "a", "button", "input", "select", "textarea", "details", "summary", "label", "option", "optgroup"
     ]);
 
     if (interactiveElements.has(tagName)) return true;
