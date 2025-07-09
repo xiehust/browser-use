@@ -1076,7 +1076,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 				task=self.task,
 				model=self.llm.model,
 				model_provider=self.llm.provider,
-				planner_llm=self.settings.planner_llm.model if self.settings.planner_llm else None,
+				planner_llm=None,  # Planner functionality removed
 				max_steps=max_steps,
 				max_actions_per_step=self.settings.max_actions_per_step,
 				use_vision=self.settings.use_vision,
@@ -1123,212 +1123,285 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		on_step_end: AgentHookFunc | None = None,
 	) -> AgentHistoryList[AgentStructuredOutput]:
 		"""Execute the task with maximum number of steps"""
-
+		
 		loop = asyncio.get_event_loop()
-		agent_run_error: str | None = None  # Initialize error tracking variable
-		self._force_exit_telemetry_logged = False  # ADDED: Flag for custom telemetry on force exit
+		agent_run_error: str | None = None
+		
+		try:
+			# Phase 1: Setup and initialization
+			signal_handler = await self._setup_run_environment(loop, max_steps)
+			
+			# Phase 2: Prepare for execution
+			await self._prepare_run_execution()
+			
+			# Phase 3: Execute initial actions if provided
+			await self._execute_initial_actions()
+			
+			# Phase 4: Main execution loop
+			agent_run_error = await self._execute_main_loop(max_steps, on_step_start, on_step_end)
+			
+			# Phase 5: Handle completion and finalization
+			await self._finalize_run_execution()
+			
+			return self.state.history
+			
+		except KeyboardInterrupt:
+			self.logger.info('Got KeyboardInterrupt during execution, returning current history')
+			agent_run_error = 'KeyboardInterrupt'
+			self.state.history.usage = await self.token_cost_service.get_usage_summary()
+			return self.state.history
+			
+		except Exception as e:
+			self.logger.error(f'Agent run failed with exception: {e}', exc_info=True)
+			agent_run_error = str(e)
+			raise e
+			
+		finally:
+			await self._cleanup_run_execution(max_steps, agent_run_error, signal_handler)
 
-		# Set up the  signal handler with callbacks specific to this agent
+	async def _setup_run_environment(self, loop, max_steps: int):
+		"""Setup signal handler and environment for agent run"""
+		self._force_exit_telemetry_logged = False
+		
+		# Set up the signal handler with callbacks specific to this agent
 		from browser_use.utils import SignalHandler
 
 		# Define the custom exit callback function for second CTRL+C
 		def on_force_exit_log_telemetry():
 			self._log_agent_event(max_steps=max_steps, agent_run_error='SIGINT: Cancelled by user')
-			# NEW: Call the flush method on the telemetry instance
 			if hasattr(self, 'telemetry') and self.telemetry:
 				self.telemetry.flush()
-			self._force_exit_telemetry_logged = True  # Set the flag
+			self._force_exit_telemetry_logged = True
 
 		signal_handler = SignalHandler(
 			loop=loop,
 			pause_callback=self.pause,
 			resume_callback=self.resume,
-			custom_exit_callback=on_force_exit_log_telemetry,  # Pass the new telemetrycallback
+			custom_exit_callback=on_force_exit_log_telemetry,
 			exit_on_second_int=True,
 		)
 		signal_handler.register()
+		return signal_handler
+
+	async def _prepare_run_execution(self) -> None:
+		"""Prepare for agent run execution with logging and event dispatching"""
+		self._log_agent_run()
+
+		self.logger.debug(
+			f'🔧 Agent setup: Task ID {self.task_id[-4:]}, Session ID {self.session_id[-4:]}, Browser Session ID {self.browser_session.id[-4:] if self.browser_session else "None"}'
+		)
+
+		# Initialize timing for session and task
+		self._session_start_time = time.time()
+		self._task_start_time = self._session_start_time
+
+		self.logger.debug('📡 Dispatching CreateAgentSessionEvent...')
+		self.eventbus.dispatch(CreateAgentSessionEvent.from_agent(self))
+
+		self.logger.debug('📡 Dispatching CreateAgentTaskEvent...')
+		self.eventbus.dispatch(CreateAgentTaskEvent.from_agent(self))
+
+	async def _execute_initial_actions(self) -> None:
+		"""Execute initial actions if provided"""
+		if self.initial_actions:
+			self.logger.debug(f'⚡ Executing {len(self.initial_actions)} initial actions...')
+			result = await self.multi_act(self.initial_actions, check_for_new_elements=False)
+			self.state.last_result = result
+			self.logger.debug('✅ Initial actions completed')
+
+	async def _execute_main_loop(
+		self,
+		max_steps: int,
+		on_step_start: AgentHookFunc | None,
+		on_step_end: AgentHookFunc | None,
+	) -> str | None:
+		"""Execute the main agent loop with step processing"""
+		agent_run_error: str | None = None
+		
+		self.logger.debug(f'🔄 Starting main execution loop with max {max_steps} steps...')
+		
+		for step in range(max_steps):
+			# Check for pause/resume conditions
+			if self.state.paused:
+				self.logger.debug(f'⏸️ Step {step}: Agent paused, waiting to resume...')
+				await self.wait_until_resumed()
+				
+			# Check stopping conditions
+			agent_run_error = await self._check_stopping_conditions(step)
+			if agent_run_error:
+				break
+				
+			# Execute step with hooks
+			step_completed = await self._execute_single_step(step, max_steps, on_step_start, on_step_end)
+			
+			# Check if task is complete
+			if step_completed:
+				self.logger.debug(f'🎯 Task completed after {step + 1} steps!')
+				await self.log_completion()
+				await self._handle_completion_callback()
+				break
+		else:
+			# Loop completed without breaking - max steps reached
+			agent_run_error = 'Failed to complete task in maximum steps'
+			await self._handle_max_steps_reached(agent_run_error)
+			
+		return agent_run_error
+
+	async def _check_stopping_conditions(self, step: int) -> str | None:
+		"""Check if agent should stop due to failures or explicit stop"""
+		if self.state.consecutive_failures >= self.settings.max_failures:
+			self.logger.error(f'❌ Stopping due to {self.settings.max_failures} consecutive failures')
+			return f'Stopped due to {self.settings.max_failures} consecutive failures'
+			
+		if self.state.stopped:
+			self.logger.info('🛑 Agent stopped')
+			return 'Agent stopped programmatically'
+			
+		# Handle paused state with potential stop
+		while self.state.paused:
+			await asyncio.sleep(0.2)  # Small delay to prevent CPU spinning
+			if self.state.stopped:
+				return 'Agent stopped programmatically while paused'
+				
+		return None
+
+	async def _execute_single_step(
+		self,
+		step: int,
+		max_steps: int,
+		on_step_start: AgentHookFunc | None,
+		on_step_end: AgentHookFunc | None,
+	) -> bool:
+		"""Execute a single step with hooks and timeout handling"""
+		if on_step_start is not None:
+			await on_step_start(self)
+
+		self.logger.debug(f'🚶 Starting step {step + 1}/{max_steps}...')
+		step_info = AgentStepInfo(step_number=step, max_steps=max_steps)
 
 		try:
-			self._log_agent_run()
-
-			self.logger.debug(
-				f'🔧 Agent setup: Task ID {self.task_id[-4:]}, Session ID {self.session_id[-4:]}, Browser Session ID {self.browser_session.id[-4:] if self.browser_session else "None"}'
+			await asyncio.wait_for(
+				self.step(step_info),
+				timeout=300,  # 5 minute step timeout
 			)
+			self.logger.debug(f'✅ Completed step {step + 1}/{max_steps}')
+		except TimeoutError:
+			error_msg = f'Step {step + 1} timed out after 300 seconds'
+			self.logger.error(f'⏰ {error_msg}')
+			self.state.consecutive_failures += 1
+			self.state.last_result = [ActionResult(error=error_msg, include_in_memory=True)]
 
-			# Initialize timing for session and task
-			self._session_start_time = time.time()
-			self._task_start_time = self._session_start_time  # Initialize task start time
+		if on_step_end is not None:
+			await on_step_end(self)
+			
+		return self.state.history.is_done()
 
-			self.logger.debug('📡 Dispatching CreateAgentSessionEvent...')
-			# Emit CreateAgentSessionEvent at the START of run()
-			self.eventbus.dispatch(CreateAgentSessionEvent.from_agent(self))
-
-			self.logger.debug('📡 Dispatching CreateAgentTaskEvent...')
-			# Emit CreateAgentTaskEvent at the START of run()
-			self.eventbus.dispatch(CreateAgentTaskEvent.from_agent(self))
-
-			# Execute initial actions if provided
-			if self.initial_actions:
-				self.logger.debug(f'⚡ Executing {len(self.initial_actions)} initial actions...')
-				result = await self.multi_act(self.initial_actions, check_for_new_elements=False)
-				self.state.last_result = result
-				self.logger.debug('✅ Initial actions completed')
-
-			self.logger.debug(f'🔄 Starting main execution loop with max {max_steps} steps...')
-			for step in range(max_steps):
-				# Replace the polling with clean pause-wait
-				if self.state.paused:
-					self.logger.debug(f'⏸️ Step {step}: Agent paused, waiting to resume...')
-					await self.wait_until_resumed()
-					signal_handler.reset()
-
-				# Check if we should stop due to too many failures
-				if self.state.consecutive_failures >= self.settings.max_failures:
-					self.logger.error(f'❌ Stopping due to {self.settings.max_failures} consecutive failures')
-					agent_run_error = f'Stopped due to {self.settings.max_failures} consecutive failures'
-					break
-
-				# Check control flags before each step
-				if self.state.stopped:
-					self.logger.info('🛑 Agent stopped')
-					agent_run_error = 'Agent stopped programmatically'
-					break
-
-				while self.state.paused:
-					await asyncio.sleep(0.2)  # Small delay to prevent CPU spinning
-					if self.state.stopped:  # Allow stopping while paused
-						agent_run_error = 'Agent stopped programmatically while paused'
-						break
-
-				if on_step_start is not None:
-					await on_step_start(self)
-
-				self.logger.debug(f'🚶 Starting step {step + 1}/{max_steps}...')
-				step_info = AgentStepInfo(step_number=step, max_steps=max_steps)
-
-				try:
-					await asyncio.wait_for(
-						self.step(step_info),
-						timeout=300,  # 5 minute step timeout - more generous for slow LLM calls
-					)
-					self.logger.debug(f'✅ Completed step {step + 1}/{max_steps}')
-				except TimeoutError:
-					# Handle step timeout gracefully
-					error_msg = f'Step {step + 1} timed out after 300 seconds'
-					self.logger.error(f'⏰ {error_msg}')
-					self.state.consecutive_failures += 1
-					self.state.last_result = [ActionResult(error=error_msg, include_in_memory=True)]
-
-				if on_step_end is not None:
-					await on_step_end(self)
-
-				if self.state.history.is_done():
-					self.logger.debug(f'🎯 Task completed after {step + 1} steps!')
-					await self.log_completion()
-
-					if self.register_done_callback:
-						if inspect.iscoroutinefunction(self.register_done_callback):
-							await self.register_done_callback(self.state.history)
-						else:
-							self.register_done_callback(self.state.history)
-
-					# Task completed
-					break
+	async def _handle_completion_callback(self) -> None:
+		"""Handle completion callback if registered"""
+		if self.register_done_callback:
+			if inspect.iscoroutinefunction(self.register_done_callback):
+				await self.register_done_callback(self.state.history)
 			else:
-				agent_run_error = 'Failed to complete task in maximum steps'
+				self.register_done_callback(self.state.history)
 
-				self.state.history.history.append(
-					AgentHistory(
-						model_output=None,
-						result=[ActionResult(error=agent_run_error, include_in_memory=True)],
-						state=BrowserStateHistory(
-							url='',
-							title='',
-							tabs=[],
-							interacted_element=[],
-							screenshot=None,
-						),
-						metadata=None,
-					)
-				)
+	async def _handle_max_steps_reached(self, agent_run_error: str) -> None:
+		"""Handle case where maximum steps were reached without completion"""
+		self.state.history.history.append(
+			AgentHistory(
+				model_output=None,
+				result=[ActionResult(error=agent_run_error, include_in_memory=True)],
+				state=BrowserStateHistory(
+					url='',
+					title='',
+					tabs=[],
+					interacted_element=[],
+					screenshot=None,
+				),
+				metadata=None,
+			)
+		)
+		self.logger.info(f'❌ {agent_run_error}')
 
-				self.logger.info(f'❌ {agent_run_error}')
+	async def _finalize_run_execution(self) -> None:
+		"""Finalize run execution with usage summary and model output schema"""
+		self.logger.debug('📊 Collecting usage summary...')
+		self.state.history.usage = await self.token_cost_service.get_usage_summary()
 
-			self.logger.debug('📊 Collecting usage summary...')
-			self.state.history.usage = await self.token_cost_service.get_usage_summary()
+		# Set the model output schema and call it on the fly
+		if self.state.history._output_model_schema is None and self.output_model_schema is not None:
+			self.state.history._output_model_schema = self.output_model_schema
 
-			# set the model output schema and call it on the fly
-			if self.state.history._output_model_schema is None and self.output_model_schema is not None:
-				self.state.history._output_model_schema = self.output_model_schema
+		self.logger.debug('🏁 Agent.run() completed successfully')
 
-			self.logger.debug('🏁 Agent.run() completed successfully')
-			return self.state.history
-
-		except KeyboardInterrupt:
-			# Already handled by our signal handler, but catch any direct KeyboardInterrupt as well
-			self.logger.info('Got KeyboardInterrupt during execution, returning current history')
-			agent_run_error = 'KeyboardInterrupt'
-
-			self.state.history.usage = await self.token_cost_service.get_usage_summary()
-
-			return self.state.history
-
-		except Exception as e:
-			self.logger.error(f'Agent run failed with exception: {e}', exc_info=True)
-			agent_run_error = str(e)
-			raise e
-
-		finally:
+	async def _cleanup_run_execution(self, max_steps: int, agent_run_error: str | None, signal_handler) -> None:
+		"""Clean up after run execution with telemetry, events, and resource cleanup"""
+		try:
 			# Log token usage summary
 			await self.token_cost_service.log_usage_summary()
 
 			# Unregister signal handlers before cleanup
 			signal_handler.unregister()
 
-			if not self._force_exit_telemetry_logged:  # MODIFIED: Check the flag
+			# Handle telemetry logging
+			await self._handle_telemetry_logging(max_steps, agent_run_error)
+
+			# Handle event dispatching
+			await self._handle_final_event_dispatching()
+
+			# Generate GIF if needed
+			await self._handle_gif_generation()
+
+			# Handle cloud sync
+			await self._handle_cloud_sync()
+
+			# Stop event bus and close resources
+			await self._handle_final_cleanup()
+			
+		except Exception as cleanup_error:
+			self.logger.error(f'Error during cleanup: {cleanup_error}', exc_info=True)
+
+	async def _handle_telemetry_logging(self, max_steps: int, agent_run_error: str | None) -> None:
+		"""Handle telemetry logging with error handling"""
+		if not self._force_exit_telemetry_logged:
+			try:
+				self._log_agent_event(max_steps=max_steps, agent_run_error=agent_run_error)
+			except Exception as log_e:
+				self.logger.error(f'Failed to log telemetry event: {log_e}', exc_info=True)
+		else:
+			self.logger.info('Telemetry for force exit (SIGINT) was logged by custom exit callback.')
+
+	async def _handle_final_event_dispatching(self) -> None:
+		"""Handle final event dispatching"""
+		self.eventbus.dispatch(UpdateAgentTaskEvent.from_agent(self))
+
+	async def _handle_gif_generation(self) -> None:
+		"""Handle GIF generation if enabled"""
+		if self.settings.generate_gif:
+			output_path: str = 'agent_history.gif'
+			if isinstance(self.settings.generate_gif, str):
+				output_path = self.settings.generate_gif
+
+			create_history_gif(task=self.task, history=self.state.history, output_path=output_path)
+
+			# Emit output file generated event for GIF
+			output_event = await CreateAgentOutputFileEvent.from_agent_and_file(self, output_path)
+			self.eventbus.dispatch(output_event)
+
+	async def _handle_cloud_sync(self) -> None:
+		"""Handle cloud sync with timeout"""
+		if self.enable_cloud_sync and hasattr(self, 'cloud_sync'):
+			if self.cloud_sync.auth_task and not self.cloud_sync.auth_task.done():
 				try:
-					self._log_agent_event(max_steps=max_steps, agent_run_error=agent_run_error)
-				except Exception as log_e:  # Catch potential errors during logging itself
-					self.logger.error(f'Failed to log telemetry event: {log_e}', exc_info=True)
-			else:
-				# ADDED: Info message when custom telemetry for SIGINT was already logged
-				self.logger.info('Telemetry for force exit (SIGINT) was logged by custom exit callback.')
+					await asyncio.wait_for(self.cloud_sync.auth_task, timeout=1.0)
+				except TimeoutError:
+					logger.info('Cloud authentication started - continuing in background')
+				except Exception as e:
+					logger.debug(f'Cloud authentication error: {e}')
 
-			# NOTE: CreateAgentSessionEvent and CreateAgentTaskEvent are now emitted at the START of run()
-			# to match backend requirements for CREATE events to be fired when entities are created,
-			# not when they are completed
-
-			# Emit UpdateAgentTaskEvent at the END of run() with final task state
-			self.eventbus.dispatch(UpdateAgentTaskEvent.from_agent(self))
-
-			# Generate GIF if needed before stopping event bus
-			if self.settings.generate_gif:
-				output_path: str = 'agent_history.gif'
-				if isinstance(self.settings.generate_gif, str):
-					output_path = self.settings.generate_gif
-
-				create_history_gif(task=self.task, history=self.state.history, output_path=output_path)
-
-				# Emit output file generated event for GIF
-				output_event = await CreateAgentOutputFileEvent.from_agent_and_file(self, output_path)
-				self.eventbus.dispatch(output_event)
-
-			# Wait briefly for cloud auth to start and print the URL, but don't block for completion
-			if self.enable_cloud_sync and hasattr(self, 'cloud_sync'):
-				if self.cloud_sync.auth_task and not self.cloud_sync.auth_task.done():
-					try:
-						# Wait up to 1 second for auth to start and print URL
-						await asyncio.wait_for(self.cloud_sync.auth_task, timeout=1.0)
-					except TimeoutError:
-						logger.info('Cloud authentication started - continuing in background')
-					except Exception as e:
-						logger.debug(f'Cloud authentication error: {e}')
-
-			# Stop the event bus gracefully, waiting for all events to be processed
-			# Use longer timeout to avoid deadlocks in tests with multiple agents
-			await self.eventbus.stop(timeout=10.0)
-
-			await self.close()
+	async def _handle_final_cleanup(self) -> None:
+		"""Handle final cleanup of event bus and resources"""
+		await self.eventbus.stop(timeout=10.0)
+		await self.close()
 
 	@observe_debug()
 	@time_execution_async('--multi_act')
