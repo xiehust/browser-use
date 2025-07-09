@@ -149,7 +149,7 @@ class Controller(Generic[Context]):
 
 			element_node = await browser_session.get_dom_element_by_index(params.index)
 			if element_node is None:
-				raise BrowserError(f'Element with index {params.index} does not exist - page may have changed')
+				raise BrowserError('Element does not exist - page may have changed')
 
 			# if element has file uploader then dont click
 			if browser_session.is_file_input(element_node):
@@ -181,7 +181,7 @@ class Controller(Generic[Context]):
 		async def input_text(params: InputTextAction, browser_session: BrowserSession, has_sensitive_data: bool = False):
 			element_node = await browser_session.get_dom_element_by_index(params.index)
 			if element_node is None:
-				raise BrowserError(f'Element with index {params.index} does not exist - page may have changed')
+				raise BrowserError('Element does not exist - page may have changed')
 
 			try:
 				await browser_session._input_text_element_node(element_node, params.text)
@@ -457,7 +457,7 @@ Explain the content of the page and that the requested information is not availa
 				try:
 					element_node = await browser_session.get_dom_element_by_index(params.index)
 					if element_node is None:
-						raise BrowserError(f'Element with index {params.index} does not exist - page may have changed')
+						raise BrowserError('Element does not exist - page may have changed')
 
 					# Try direct container scrolling (no events that might close dropdowns)
 					container_scroll_js = """
