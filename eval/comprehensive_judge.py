@@ -23,6 +23,7 @@ from browser_use.llm.messages import (
 	SystemMessage,
 	UserMessage,
 )
+from browser_use.observability import observe_debug
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,9 @@ logger = logging.getLogger(__name__)
 class ErrorCategory(Enum):
 	# Access & Authentication
 	CAPTCHA = 'captcha'
+	CLOUDFLARE_BLOCKED = 'cloudflare_blocked'
+	NEED_2FA = 'need_2fa'
+	INVALID_CREDENTIALS = 'invalid_credentials'
 	LOGIN_FAILED = 'login_failed'
 
 	# LLM
@@ -113,6 +117,7 @@ def truncate_text(text: str, max_length: int, from_beginning: bool = False) -> s
 		return text[: max_length - 23] + '...[cut for eval]...'
 
 
+@observe_debug()
 def prepare_agent_steps(complete_history: list[dict]) -> list[str]:
 	"""Extract and format agent steps, limiting each to 2000 characters.
 
@@ -179,6 +184,7 @@ def prepare_agent_steps(complete_history: list[dict]) -> list[str]:
 	return last_part[::-1]
 
 
+@observe_debug()
 def are_images_identical(img_path1: str, img_path2: str) -> bool:
 	"""Check if two images are identical by comparing their content."""
 	try:
@@ -199,6 +205,7 @@ def are_images_identical(img_path1: str, img_path2: str) -> bool:
 		return False
 
 
+@observe_debug()
 def filter_images(screenshot_paths: list[str], max_images: int) -> list[str]:
 	"""
 	Filter screenshot paths to:
@@ -230,6 +237,7 @@ def filter_images(screenshot_paths: list[str], max_images: int) -> list[str]:
 	return deduplicated_paths[-max_images:] if len(deduplicated_paths) > max_images else deduplicated_paths
 
 
+@observe_debug()
 async def comprehensive_judge(
 	task: str,
 	complete_history: list[dict],
@@ -355,8 +363,10 @@ The browser-use agent operates in iterative loops receiving structured input:
 - Notes for the error categories:
 - Use the main error - e.g. if we cant login and thats why we dont have an output we should use the login_failed error category
 - The error category list is sequential - so check if an error before is matching better and use that instead
-- captcha includes traditional captchas, Cloudflare challenges, CloudFront and any other anti-bot protection systems that block task completion like challenges or 403 errors
-- partial_output means we collected some part of the output but some is missing
+- captcha includes traditional captchas and any other anti-bot protection systems that block task completion
+- cloudflare_blocked means the agent was blocked by Cloudflare challenge or notice
+- need_2fa means the agent needs to complete a 2FA step to login and was unable to do so
+- invalid_credentials means the agent used the provided credentials to login but they were invalid- partial_output means we collected some part of the output but some is missing
 - tool_failed means a tool like scrolling or file interaction failed or can be improved because functionality which would be helpful was missing - mention that in the improvement tips
 - infinite_loop means the agent is stuck in a loop and not making progress
 - wrong_output_format means the output is not in the requested format
@@ -373,6 +383,7 @@ Examples:
 - "Element not found: Improve the DOM extraction layer to correctly include buttons in the navigation bar of the website check24.de"
 - "Load timeout: Implement better wait strategies for dynamic content to wait until the page is fully loaded"
 - "File system misuse: The agent used the read and write file tools for short tasks even it could have outputted the information directly. Adapt the system prompt to not use the file system for short tasks."
+- "Captcha: The agent was blocked by a press and hold captcha and was unable to complete the task."
 
 **IMPORTANT EVALUATION NOTES:**
 - **DO NOT evaluate for hallucination** - Agent has access to browser_state with the DOM and the screenshot at every step, so trust all factual claims. When ever the agent states clear output information trust it and do not include that in your evaluation. The agent is not hallucinating. It know that information.
@@ -437,6 +448,7 @@ Evaluate this agent execution given the criteria and respond with the exact JSON
 		return create_fallback_result(task, str(e))
 
 
+@observe_debug()
 def parse_judge_response(result_dict: dict, task: str) -> JudgeResult:
 	"""Parse the LLM response into a structured JudgeResult."""
 	try:
@@ -464,6 +476,7 @@ def parse_judge_response(result_dict: dict, task: str) -> JudgeResult:
 		return create_fallback_result(task, 'Failed to parse structured response')
 
 
+@observe_debug()
 def create_fallback_result(task: str, error_msg: str) -> JudgeResult:
 	"""Create a fallback result when evaluation fails."""
 	return JudgeResult(
@@ -475,6 +488,7 @@ def create_fallback_result(task: str, error_msg: str) -> JudgeResult:
 	)
 
 
+@observe_debug()
 async def judge_with_retry(
 	task: str,
 	complete_history: list[dict],
@@ -631,6 +645,7 @@ def _write_result_file(result_file: Path, result_data: dict[str, Any]) -> None:
 
 
 # Integration helper function
+@observe_debug()
 async def evaluate_task_with_comprehensive_judge(
 	task_folder: Path, model: BaseChatModel, max_images: int = 10, judge_repeat_count: int = 1
 ) -> dict[str, Any]:
