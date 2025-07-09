@@ -160,7 +160,7 @@ async def create_unikraft_session(headless: bool = False) -> str:
 
 	# Load configuration from environment or defaults
 	registry_user = os.getenv('REGISTRY_USER', 'browseruse')
-	instance_name = os.getenv('APP_NAME', 'cdp') + ''.join(random.choices(string.ascii_letters, k=3))
+	instance_name = os.getenv('APP_NAME', 'cdp') + '-' + ''.join(random.choices(string.ascii_letters + string.digits, k=5))
 	img_name = os.getenv('IMG_NAME', 'cdp')
 	img_tag = os.getenv('IMG_TAG', 'latest')
 	memory = os.getenv('MEMORY', '4Gi')
@@ -286,6 +286,25 @@ async def _wait_for_unikraft_app_ready(instance_url: str, max_wait: int = 60) ->
 	raise ValueError('Application failed to become ready within timeout')
 
 
+async def _retry_browser_creation(browser_func, max_retries: int = 3, *args, **kwargs) -> str:
+	"""Retry browser creation function with exponential backoff"""
+	for attempt in range(max_retries):
+		try:
+			if asyncio.iscoroutinefunction(browser_func):
+				return await browser_func(*args, **kwargs)
+			else:
+				return await asyncio.to_thread(browser_func, *args, **kwargs)
+		except Exception as e:
+			if attempt == max_retries - 1:  # Last attempt
+				raise RuntimeError(f'Failed to create browser session after {max_retries} attempts: {type(e).__name__}: {e}')
+			
+			wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+			logger.warning(f'Browser creation attempt {attempt + 1} failed: {type(e).__name__}: {e}. Retrying in {wait_time}s...')
+			await asyncio.sleep(wait_time)
+	
+	raise RuntimeError(f'Failed to create browser session after {max_retries} attempts')
+
+
 async def setup_browser_session(
 	task: Task,
 	headless: bool,
@@ -304,79 +323,42 @@ async def setup_browser_session(
 	# Validate browser option
 	valid_browsers = ['local', 'anchor-browser', 'brightdata', 'browserbase', 'hyperbrowser', 'unikraft', 'browser-use']
 	if browser not in valid_browsers:
-		logger.warning(f'Browser setup: Invalid browser option "{browser}". Falling back to local browser.')
-		browser = 'local'
+		raise ValueError(f'Browser setup: Invalid browser option "{browser}". Valid options are: {valid_browsers}')
 
 	cdp_url = None
 
 	if browser == 'anchor-browser':
-		if ANCHOR_BROWSER_API_KEY:
-			try:
-				logger.debug(f'Browser setup: Creating Anchor Browser session for task {task.task_id}')
-				cdp_url = await asyncio.to_thread(create_anchor_browser_session, headless)
-			except Exception as e:
-				logger.error(
-					f'Browser setup: Failed to create Anchor Browser session for task {task.task_id}: {type(e).__name__}: {e}'
-				)
-				logger.info(f'Browser setup: Falling back to local browser for task {task.task_id}')
-				cdp_url = None
-		else:
-			logger.warning(
-				f'Browser setup: Anchor Browser requested but ANCHOR_BROWSER_API_KEY not set. Using local browser for task {task.task_id}'
-			)
+		if not ANCHOR_BROWSER_API_KEY:
+			raise ValueError(f'Browser setup: Anchor Browser requested but ANCHOR_BROWSER_API_KEY not set for task {task.task_id}')
+		
+		logger.debug(f'Browser setup: Creating Anchor Browser session for task {task.task_id}')
+		cdp_url = await _retry_browser_creation(create_anchor_browser_session, 3, headless)
 	elif browser == 'brightdata':
-		if BRIGHTDATA_CDP_URL:
-			logger.debug(f'Browser setup: Using Brightdata CDP URL for task {task.task_id}')
-			cdp_url = BRIGHTDATA_CDP_URL
-		else:
-			logger.warning(
-				f'Browser setup: Brightdata requested but BRIGHTDATA_CDP_URL not set. Using local browser for task {task.task_id}'
-			)
+		if not BRIGHTDATA_CDP_URL:
+			raise ValueError(f'Browser setup: Brightdata requested but BRIGHTDATA_CDP_URL not set for task {task.task_id}')
+		
+		logger.debug(f'Browser setup: Using Brightdata CDP URL for task {task.task_id}')
+		cdp_url = BRIGHTDATA_CDP_URL
 	elif browser == 'browserbase':
-		if BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID:
-			try:
-				logger.debug(f'Browser setup: Creating Browserbase session for task {task.task_id}')
-				cdp_url = await asyncio.to_thread(create_browserbase_session)
-			except Exception as e:
-				logger.error(
-					f'Browser setup: Failed to create Browserbase session for task {task.task_id}: {type(e).__name__}: {e}'
-				)
-				logger.info(f'Browser setup: Falling back to local browser for task {task.task_id}')
-				cdp_url = None
-		else:
-			logger.warning(
-				f'Browser setup: Browserbase requested but BROWSERBASE_API_KEY or BROWSERBASE_PROJECT_ID not set. Using local browser for task {task.task_id}'
-			)
+		if not BROWSERBASE_API_KEY or not BROWSERBASE_PROJECT_ID:
+			raise ValueError(f'Browser setup: Browserbase requested but BROWSERBASE_API_KEY or BROWSERBASE_PROJECT_ID not set for task {task.task_id}')
+		
+		logger.debug(f'Browser setup: Creating Browserbase session for task {task.task_id}')
+		cdp_url = await _retry_browser_creation(create_browserbase_session, 3)
 	elif browser == 'hyperbrowser':
-		if HYPERBROWSER_API_KEY:
-			try:
-				logger.debug(f'Browser setup: Creating Hyperbrowser session for task {task.task_id}')
-				cdp_url = await create_hyperbrowser_session()
-			except Exception as e:
-				logger.error(
-					f'Browser setup: Failed to create Hyperbrowser session for task {task.task_id}: {type(e).__name__}: {e}'
-				)
-				logger.info(f'Browser setup: Falling back to local browser for task {task.task_id}')
-				cdp_url = None
-		else:
-			logger.warning(
-				f'Browser setup: Hyperbrowser requested but HYPERBROWSER_API_KEY not set. Using local browser for task {task.task_id}'
-			)
+		if not HYPERBROWSER_API_KEY:
+			raise ValueError(f'Browser setup: Hyperbrowser requested but HYPERBROWSER_API_KEY not set for task {task.task_id}')
+		
+		logger.debug(f'Browser setup: Creating Hyperbrowser session for task {task.task_id}')
+		cdp_url = await _retry_browser_creation(create_hyperbrowser_session, 3)
 	elif browser == 'unikraft':
-		if UKC_TOKEN and UKC_METRO:
-			try:
-				logger.debug(f'Browser setup: Creating Unikraft session for task {task.task_id}')
-				cdp_url = await create_unikraft_session(headless)
-			except Exception as e:
-				logger.error(f'Browser setup: Failed to create Unikraft session for task {task.task_id}: {type(e).__name__}: {e}')
-				logger.info(f'Browser setup: Falling back to local browser for task {task.task_id}')
-				cdp_url = None
-		else:
-			logger.warning(
-				f'Browser setup: Unikraft requested but UKC_TOKEN or UKC_METRO not set. Using local browser for task {task.task_id}'
-			)
+		if not UKC_TOKEN or not UKC_METRO:
+			raise ValueError(f'Browser setup: Unikraft requested but UKC_TOKEN or UKC_METRO not set for task {task.task_id}')
+		
+		logger.debug(f'Browser setup: Creating Unikraft session for task {task.task_id}')
+		cdp_url = await _retry_browser_creation(create_unikraft_session, 3, headless)
 	elif browser == 'browser-use':
-		logger.warning(f'Browser setup: Browser-use not implemented yet. Falling back to local browser for task {task.task_id}')
+		raise NotImplementedError(f'Browser setup: Browser-use not implemented yet for task {task.task_id}')
 
 	profile_kwargs = {
 		'user_data_dir': None,  # Incognito mode - no persistent state
@@ -426,13 +408,17 @@ async def setup_browser_session(
 
 	profile = BrowserProfile(**profile_kwargs)
 
-	if cdp_url:
-		logger.debug(f'Browser setup: Using CDP Browser for task {task.task_id}')
-		browser_session = BrowserSession(browser_profile=profile, cdp_url=cdp_url)
-	else:
+	if browser == 'local':
 		# Use local browser
-		logger.debug(f'Browser setup: Initializing BrowserSession for task {task.task_id}')
+		logger.debug(f'Browser setup: Initializing local BrowserSession for task {task.task_id}')
 		browser_session = BrowserSession(browser_profile=profile)
+	else:
+		# All remote browsers should have provided a CDP URL or raised an exception
+		if not cdp_url:
+			raise RuntimeError(f'Browser setup: No CDP URL obtained for {browser} browser for task {task.task_id}')
+		
+		logger.debug(f'Browser setup: Using {browser} CDP Browser for task {task.task_id}')
+		browser_session = BrowserSession(browser_profile=profile, cdp_url=cdp_url)
 
 	# Start browser session
 	await browser_session.start()
