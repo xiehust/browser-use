@@ -1420,8 +1420,6 @@ async def run_evaluation_pipeline(
 		memory_interval=memory_interval,
 		max_actions_per_step=max_actions_per_step,
 		validate_output=validate_output,
-		planner_llm=planner_llm,
-		planner_interval=planner_interval,
 		include_result=include_result,
 		highlight_elements=highlight_elements,
 		use_mind2web_judge=use_mind2web_judge,
@@ -1474,14 +1472,7 @@ if __name__ == '__main__':
 	parser.add_argument('--memory-interval', type=int, default=10, help='Memory creation interval (default: 10 steps)')
 	parser.add_argument('--max-actions-per-step', type=int, default=10, help='Maximum number of actions per step (default: 10)')
 	parser.add_argument('--validate-output', action='store_true', help='Enable output validation using LLM')
-	parser.add_argument(
-		'--planner-model',
-		type=str,
-		default=None,
-		choices=list(SUPPORTED_MODELS.keys()),
-		help='Model to use for planning (separate from main agent model)',
-	)
-	parser.add_argument('--planner-interval', type=int, default=1, help='Run planner every N steps (default: 1)')
+
 	parser.add_argument(
 		'--judge-repeat-count',
 		type=int,
@@ -1717,8 +1708,7 @@ if __name__ == '__main__':
 		'memory_interval': args.memory_interval,
 		'max_actions_per_step': args.max_actions_per_step,
 		'validate_output': args.validate_output,
-		'planner_model': args.planner_model,
-		'planner_interval': args.planner_interval,
+
 		'include_result': args.include_result,
 		'judge_repeat_count': args.judge_repeat_count,
 		'images_per_step': args.images_per_step,
@@ -1818,10 +1808,7 @@ if __name__ == '__main__':
 	else:
 		logger.info('✅ Output validation disabled')
 
-	if args.planner_model:
-		logger.info(f'🗺️ Planner enabled: {args.planner_model} (interval={args.planner_interval} steps)')
-	else:
-		logger.info('🗺️ Planner disabled')
+	logger.info('🗺️ Planner disabled (planner functionality removed)')
 	# -------------------------
 
 	# --- Get LLMs ---
@@ -1845,19 +1832,8 @@ if __name__ == '__main__':
 		)
 		exit(1)
 
-	# Get planner LLM if specified
+	# Planner functionality has been removed
 	planner_llm = None
-	if args.planner_model:
-		logger.info(f'Instantiating planner LLM: {args.planner_model}')
-		try:
-			planner_llm = get_llm(args.planner_model)
-			logger.info(f'Planner LLM ({args.planner_model}) instantiated successfully.')
-		except Exception as e:
-			logger.error(
-				f'Failed to instantiate planner LLM ({args.planner_model}): {type(e).__name__}: {e}. Make sure required API keys are set.',
-				exc_info=True,
-			)
-			exit(1)
 	# -----------------
 
 	# Log initial system state
@@ -1907,8 +1883,6 @@ if __name__ == '__main__':
 				memory_interval=args.memory_interval,
 				max_actions_per_step=args.max_actions_per_step,
 				validate_output=args.validate_output,
-				planner_llm=planner_llm,
-				planner_interval=args.planner_interval,
 				include_result=args.include_result,
 				laminar_eval_id=args.laminar_eval_id,
 				highlight_elements=args.highlight_elements,
