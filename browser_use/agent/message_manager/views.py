@@ -4,9 +4,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from browser_use.llm.messages import (
-	BaseMessage,
-)
+from browser_use.llm.messages import BaseMessage
 
 if TYPE_CHECKING:
 	pass
@@ -32,31 +30,30 @@ class HistoryItem(BaseModel):
 
 	def to_string(self) -> str:
 		"""Get string representation of the history item"""
-		step_str = f'step_{self.step_number}' if self.step_number is not None else 'step_unknown'
-
+		# Handle error case
 		if self.error:
-			return f"""<{step_str}>
-{self.error}
-</{step_str}>"""
-		elif self.system_message:
-			return f"""<sys>
-{self.system_message}
-</sys>"""
-		else:
-			content_parts = [
-				f'Evaluation of Previous Step: {self.evaluation_previous_goal}',
-				f'Memory: {self.memory}',
-				f'Next Goal: {self.next_goal}',
-			]
-
-			if self.action_results:
-				content_parts.append(self.action_results)
-
-			content = '\n'.join(content_parts)
-
-			return f"""<{step_str}>
-{content}
-</{step_str}>"""
+			step_str = f'step_{self.step_number}' if self.step_number is not None else 'step_unknown'
+			return f'<{step_str}>\n{self.error}\n</{step_str}>'
+		
+		# Handle system message case
+		if self.system_message:
+			return f'<sys>\n{self.system_message}\n</sys>'
+		
+		# Handle regular step case
+		step_str = f'step_{self.step_number}' if self.step_number is not None else 'step_unknown'
+		
+		content_parts = []
+		if self.evaluation_previous_goal:
+			content_parts.append(f'Evaluation of Previous Step: {self.evaluation_previous_goal}')
+		if self.memory:
+			content_parts.append(f'Memory: {self.memory}')
+		if self.next_goal:
+			content_parts.append(f'Next Goal: {self.next_goal}')
+		if self.action_results:
+			content_parts.append(self.action_results)
+		
+		content = '\n'.join(content_parts)
+		return f'<{step_str}>\n{content}\n</{step_str}>'
 
 
 class MessageHistory(BaseModel):
@@ -68,15 +65,22 @@ class MessageHistory(BaseModel):
 	model_config = ConfigDict(arbitrary_types_allowed=True)
 
 	def get_messages(self) -> list[BaseMessage]:
-		"""Get all messages"""
+		"""Get all messages in order"""
 		messages = []
 		if self.system_message:
 			messages.append(self.system_message)
 		if self.state_message:
 			messages.append(self.state_message)
 		messages.extend(self.consistent_messages)
-
 		return messages
+
+	def clear_state_message(self) -> None:
+		"""Clear the state message"""
+		self.state_message = None
+
+	def add_consistent_message(self, message: BaseMessage) -> None:
+		"""Add a message to consistent messages"""
+		self.consistent_messages.append(message)
 
 
 class MessageManagerState(BaseModel):
