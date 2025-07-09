@@ -231,6 +231,8 @@ class BrowserSession(BaseModel):
 	_owns_browser_resources: bool = PrivateAttr(default=True)  # True if this instance owns and should clean up browser resources
 	_auto_download_pdfs: bool = PrivateAttr(default=True)  # Auto-download PDFs when detected
 	_subprocess: Any = PrivateAttr(default=None)  # Chrome subprocess reference for error handling
+	_print_dialog_listeners_setup: bool = PrivateAttr(default=False)  # Track if print dialog listeners are set up
+	_print_dialog_detected: bool = PrivateAttr(default=False)  # Track if a print dialog was detected
 
 	@model_validator(mode='after')
 	def apply_session_overrides_to_profile(self) -> Self:
@@ -319,6 +321,7 @@ class BrowserSession(BaseModel):
 			# Configure browser
 			await self._setup_viewports()
 			await self._setup_current_page_change_listeners()
+			await self._setup_print_dialog_listeners()
 			await self._start_context_tracing()
 
 			self.initialized = True
@@ -4272,4 +4275,258 @@ class BrowserSession(BaseModel):
 
 		except Exception as e:
 			self.logger.warning(f'⚠️ Error in PDF auto-download check: {type(e).__name__}: {e}')
+			return None
+
+	@observe_debug(name='setup_print_dialog_listeners')
+	async def _setup_print_dialog_listeners(self) -> None:
+		"""
+		Set up print dialog detection listeners on all pages.
+		
+		This method monitors for:
+		- Print keyboard shortcuts (Ctrl+P, Cmd+P)
+		- beforeprint and afterprint events
+		- Print-related button clicks
+		- Print preview page detection
+		
+		When a print dialog is detected, it automatically downloads the current page as PDF.
+		"""
+		if self._print_dialog_listeners_setup or not self.browser_context:
+			return
+			
+		self.logger.debug('🖨️ Setting up print dialog detection listeners')
+		
+		try:
+			for page in self.browser_context.pages:
+				await self._setup_print_listeners_on_page(page)
+			
+			# Set up listeners for future pages
+			async def on_page_created(page: Page):
+				try:
+					await self._setup_print_listeners_on_page(page)
+				except Exception as e:
+					self.logger.debug(f'⚠️ Failed to setup print listeners on new page: {type(e).__name__}: {e}')
+			
+			self.browser_context.on('page', on_page_created)
+			self._print_dialog_listeners_setup = True
+			self.logger.info('🖨️ Print dialog detection enabled - PDFs will be auto-downloaded when print dialogs appear')
+			
+		except Exception as e:
+			self.logger.warning(f'⚠️ Failed to setup print dialog listeners: {type(e).__name__}: {e}')
+	
+	async def _setup_print_listeners_on_page(self, page: Page) -> None:
+		"""Set up print detection listeners on a specific page."""
+		try:
+			# Inject JavaScript to monitor for print events and shortcuts
+			await page.evaluate("""
+				(function() {
+					if (window._browserUsePrintListenersSetup) {
+						return; // Already set up on this page
+					}
+					window._browserUsePrintListenersSetup = true;
+					
+					// Track if we've already detected a print dialog
+					let printDialogDetected = false;
+					
+					// Function to notify browser-use of print dialog detection
+					function notifyPrintDialog(source) {
+						if (printDialogDetected) return;
+						printDialogDetected = true;
+						console.log('[BROWSER-USE] Print dialog detected via:', source);
+						
+						// Set a flag that can be checked from Python
+						window._browserUsePrintDialogDetected = true;
+						window._browserUsePrintDialogSource = source;
+						
+						// Dispatch a custom event that Python can listen for
+						window.dispatchEvent(new CustomEvent('browserUsePrintDialog', {
+							detail: { source: source }
+						}));
+					}
+					
+					// Monitor beforeprint event (most reliable)
+					window.addEventListener('beforeprint', function() {
+						notifyPrintDialog('beforeprint_event');
+					});
+					
+					// Monitor afterprint event (backup)
+					window.addEventListener('afterprint', function() {
+						notifyPrintDialog('afterprint_event');
+					});
+					
+					// Monitor print keyboard shortcuts
+					document.addEventListener('keydown', function(e) {
+						// Ctrl+P or Cmd+P
+						if ((e.ctrlKey || e.metaKey) && e.key === 'p') {
+							notifyPrintDialog('keyboard_shortcut');
+						}
+					});
+					
+					// Monitor for print-related button clicks and links
+					document.addEventListener('click', function(e) {
+						const target = e.target;
+						if (!target) return;
+						
+						const text = target.textContent || target.innerText || '';
+						const className = target.className || '';
+						const id = target.id || '';
+						const onclick = target.getAttribute && target.getAttribute('onclick') || '';
+						
+						// Check for print-related text/attributes
+						const printIndicators = [
+							/print/i,
+							/🖨️/,
+							/printer/i
+						];
+						
+						const isPrintElement = printIndicators.some(pattern => 
+							pattern.test(text) || 
+							pattern.test(className) || 
+							pattern.test(id) ||
+							pattern.test(onclick)
+						);
+						
+						if (isPrintElement) {
+							// Small delay to allow the print dialog to appear
+							setTimeout(() => {
+								notifyPrintDialog('print_button_click');
+							}, 100);
+						}
+					});
+					
+					// Monitor for print preview pages
+					function checkForPrintPreview() {
+						const url = window.location.href;
+						const title = document.title;
+						
+						if (url.includes('print') || title.includes('Print') || title.includes('print')) {
+							notifyPrintDialog('print_preview_page');
+						}
+					}
+					
+					// Check initially and on navigation
+					checkForPrintPreview();
+					window.addEventListener('popstate', checkForPrintPreview);
+					
+					console.log('[BROWSER-USE] Print dialog detection listeners initialized');
+				})();
+			""")
+			
+			# Set up a periodic check for print dialog detection
+			async def check_print_dialog():
+				try:
+					result = await page.evaluate("""
+						() => {
+							const detected = window._browserUsePrintDialogDetected;
+							const source = window._browserUsePrintDialogSource;
+							
+							// Reset the flag
+							window._browserUsePrintDialogDetected = false;
+							
+							return detected ? { detected: true, source: source } : { detected: false };
+						}
+					""")
+					
+					if result.get('detected'):
+						source = result.get('source', 'unknown')
+						await self._handle_print_dialog_detected(page, source)
+						
+				except Exception as e:
+					self.logger.debug(f'⚠️ Error checking for print dialog: {type(e).__name__}: {e}')
+			
+			# Check every 500ms for print dialog detection
+			page.on('close', lambda: setattr(page, '_print_check_stopped', True))
+			
+			async def periodic_check():
+				while not getattr(page, '_print_check_stopped', False) and not page.is_closed():
+					await check_print_dialog()
+					await asyncio.sleep(0.5)
+			
+			# Start the periodic check in the background
+			asyncio.create_task(periodic_check())
+			
+		except Exception as e:
+			self.logger.debug(f'⚠️ Failed to setup print listeners on page {page.url}: {type(e).__name__}: {e}')
+	
+	async def _handle_print_dialog_detected(self, page: Page, source: str) -> None:
+		"""Handle when a print dialog is detected."""
+		if self._print_dialog_detected:
+			return  # Already handling a print dialog
+			
+		self._print_dialog_detected = True
+		
+		try:
+			self.logger.info(f'🖨️ Print dialog detected (via {source}) on {page.url}')
+			
+			# Check if this is a PDF viewer and auto-download if needed
+			if await self._is_pdf_viewer(page):
+				pdf_path = await self._auto_download_pdf_if_needed(page)
+				if pdf_path:
+					self.logger.info(f'📄 Auto-downloaded PDF due to print dialog: {pdf_path}')
+				else:
+					self.logger.debug('📄 PDF already downloaded or download failed')
+			else:
+				# For non-PDF pages, save as PDF using the existing save_pdf functionality
+				if self.browser_profile.downloads_path and self._auto_download_pdfs:
+					await self._save_page_as_pdf(page)
+				else:
+					self.logger.debug('🖨️ Print dialog detected but PDF auto-download is disabled or no downloads path configured')
+			
+		except Exception as e:
+			self.logger.warning(f'⚠️ Error handling print dialog detection: {type(e).__name__}: {e}')
+		finally:
+			# Reset the flag after a short delay to allow for multiple rapid print attempts
+			await asyncio.sleep(2.0)
+			self._print_dialog_detected = False
+	
+	async def _save_page_as_pdf(self, page: Page) -> str | None:
+		"""Save the current page as a PDF file."""
+		if not self.browser_profile.downloads_path:
+			return None
+			
+		try:
+			import re
+			from urllib.parse import urlparse
+			
+			# Generate a filename based on the page URL and title
+			parsed_url = urlparse(page.url)
+			domain = parsed_url.netloc or 'unknown'
+			path = parsed_url.path or ''
+			
+			# Clean the domain and path for filename
+			clean_domain = re.sub(r'[^a-zA-Z0-9\-]', '_', domain)
+			clean_path = re.sub(r'[^a-zA-Z0-9\-_]', '_', path.strip('/'))
+			
+			# Try to get page title for a better filename
+			try:
+				title = await page.title()
+				clean_title = re.sub(r'[^a-zA-Z0-9\-_\s]', '_', title)[:50]  # Limit length
+				base_filename = f"{clean_title}_{clean_domain}" if clean_title else f"{clean_domain}_{clean_path}"
+			except Exception:
+				base_filename = f"{clean_domain}_{clean_path}"
+			
+			# Ensure we have a valid filename
+			if not base_filename or base_filename == '_':
+				base_filename = 'page'
+			
+			pdf_filename = f"{base_filename}.pdf"
+			unique_filename = await self._get_unique_filename(self.browser_profile.downloads_path, pdf_filename)
+			download_path = os.path.join(self.browser_profile.downloads_path, unique_filename)
+			
+			# Save as PDF
+			await page.emulate_media(media='screen')
+			await page.pdf(
+				path=download_path,
+				format='A4',
+				print_background=True,
+				margin={'top': '0.5in', 'right': '0.5in', 'bottom': '0.5in', 'left': '0.5in'}
+			)
+			
+			# Track the downloaded file
+			self._downloaded_files.append(download_path)
+			
+			self.logger.info(f'🖨️ Saved page as PDF due to print dialog: {download_path}')
+			return download_path
+			
+		except Exception as e:
+			self.logger.warning(f'⚠️ Failed to save page as PDF: {type(e).__name__}: {e}')
 			return None
