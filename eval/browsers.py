@@ -176,10 +176,17 @@ async def create_unikraft_session(headless: bool = False) -> str:
 	api_url = f'{UKC_METRO}/instances'
 	headers = {'Authorization': f'Bearer {UKC_TOKEN}', 'Content-Type': 'application/json'}
 
+	env_vars = {
+		'UKC_METRO': UKC_METRO,
+		'UKC_TOKEN': UKC_TOKEN,
+		'UKC_INSTANCE_NAME': instance_name,
+	}
+
 	body = {
 		'name': instance_name,
 		'image': f'{registry_user}/{img_name}:{img_tag}',
 		'memory_mb': memory_mb,
+		'env': env_vars,
 		'service_group': {
 			'services': [{'port': 443, 'destination_port': 8080, 'handlers': ['tls', 'http']}],
 			'domains': [{'name': instance_name}],
@@ -222,7 +229,7 @@ async def create_unikraft_session(headless: bool = False) -> str:
 		await _wait_for_unikraft_app_ready(instance_url)
 
 		# Return CDP WebSocket URL
-		cdp_url = f'{instance_url}/ws/?headless={str(headless).lower()}'
+		cdp_url = f'{instance_url}/ws/?headless={str(headless).lower()}&ephemeral=true'
 		return cdp_url
 
 	except Exception as e:
