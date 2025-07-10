@@ -34,7 +34,7 @@ from eval.browsers import (
 )
 from eval.comprehensive_judge import evaluate_task_with_comprehensive_judge
 from eval.cookie_judge import check_login_cookie_at_step, evaluate_task_with_login_cookie, save_login_cookie_tracking
-from eval.models import SUPPORTED_MODELS, get_llm
+from eval.models import get_llm
 from eval.resource_monitoring import (
 	get_system_resources,
 	log_system_resources,
@@ -1460,6 +1460,38 @@ async def run_evaluation_pipeline(
 # ================================================
 
 
+def validate_model_name(model_name: str) -> str:
+	"""Validate model name, supporting both exact matches and wildcard patterns."""
+	from eval.models import get_model_config
+
+	config, _ = get_model_config(model_name)
+	if config is None:
+		from eval.models import SUPPORTED_MODELS
+
+		supported_models = []
+		wildcard_patterns = []
+		for k in SUPPORTED_MODELS.keys():
+			if '*' in k:
+				wildcard_patterns.append(k)
+			else:
+				supported_models.append(k)
+
+		raise argparse.ArgumentTypeError(
+			f'Unsupported model: {model_name}. '
+			f'Supported models are: {supported_models}. '
+			f'Supported wildcard patterns: {wildcard_patterns}'
+		)
+
+	return model_name
+
+
+def validate_optional_model_name(model_name: str) -> str | None:
+	"""Validate optional model name, supporting both exact matches and wildcard patterns."""
+	if model_name is None or model_name.lower() == 'none':
+		return None
+	return validate_model_name(model_name)
+
+
 if __name__ == '__main__':
 	parser = argparse.ArgumentParser(description='Run and evaluate browser automation tasks')
 	parser.add_argument('--parallel-runs', type=int, default=3, help='Number of parallel tasks to run')
@@ -1468,12 +1500,8 @@ if __name__ == '__main__':
 	parser.add_argument('--end', type=int, default=None, help='End index (exclusive)')
 	parser.add_argument('--headless', action='store_true', help='Run in headless mode')
 
-	parser.add_argument(
-		'--model', type=str, default='gpt-4o', choices=list(SUPPORTED_MODELS.keys()), help='Model to use for the agent'
-	)
-	parser.add_argument(
-		'--eval-model', type=str, default='gpt-4.1', choices=list(SUPPORTED_MODELS.keys()), help='Model to use for evaluation'
-	)
+	parser.add_argument('--model', type=validate_model_name, default='gpt-4o', help='Model to use for the agent')
+	parser.add_argument('--eval-model', type=validate_model_name, default='gpt-4.1', help='Model to use for evaluation')
 	parser.add_argument('--no-vision', action='store_true', help='Disable vision capabilities in the agent')
 
 	parser.add_argument('--user-message', type=str, default='', help='User message to include in the run')
@@ -1494,7 +1522,6 @@ if __name__ == '__main__':
 		'--planner-model',
 		type=str,
 		default=None,
-		choices=list(SUPPORTED_MODELS.keys()),
 		help='Model to use for planning (separate from main agent model)',
 	)
 	parser.add_argument('--planner-interval', type=int, default=1, help='Run planner every N steps (default: 1)')
