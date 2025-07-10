@@ -92,7 +92,7 @@ def _is_element_visible(
 
 
 def build_snapshot_lookup(
-	snapshot: CaptureSnapshotReturns, viewport_width: float, viewport_height: float
+	snapshot: CaptureSnapshotReturns, viewport_width: float, viewport_height: float, device_pixel_ratio: float = 1.0
 ) -> dict[int, EnhancedSnapshotNode]:
 	"""Build a lookup table of backend node ID to enhanced snapshot data with everything calculated upfront."""
 	snapshot_lookup: dict[int, EnhancedSnapshotNode] = {}
@@ -129,7 +129,17 @@ def build_snapshot_lookup(
 				# Parse bounding box
 				bounds = layout['bounds'][layout_idx]
 				if len(bounds) >= 4:
-					bounding_box = {'x': bounds[0], 'y': bounds[1], 'width': bounds[2], 'height': bounds[3]}
+					# IMPORTANT: CDP coordinates are in device pixels, convert to CSS pixels
+					# by dividing by the device pixel ratio
+					raw_x, raw_y, raw_width, raw_height = bounds[0], bounds[1], bounds[2], bounds[3]
+
+					# Apply device pixel ratio scaling to convert device pixels to CSS pixels
+					bounding_box = {
+						'x': raw_x / device_pixel_ratio,
+						'y': raw_y / device_pixel_ratio,
+						'width': raw_width / device_pixel_ratio,
+						'height': raw_height / device_pixel_ratio,
+					}
 
 				# Parse computed styles for this layout node
 				if layout_idx < len(layout.get('styles', [])):
