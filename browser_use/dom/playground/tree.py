@@ -83,7 +83,10 @@ async def inject_highlighting_script(browser: Browser, interactive_elements: lis
 	print('🖥️  **VIEWPORT DEBUG INFO**:')
 	print(f'  JS Viewport: {viewport_debug["js_innerWidth"]}x{viewport_debug["js_innerHeight"]}')
 	print(f'  Device Pixel Ratio: {viewport_debug["devicePixelRatio"]}')
-	print(f'  Scroll Position: {viewport_debug["scrollX"]}, {viewport_debug["scrollY"]}')
+	print(f'  📜 Scroll Position: ({viewport_debug["scrollX"]}, {viewport_debug["scrollY"]})')
+	print(
+		f'  🎯 Current viewport covers: ({viewport_debug["scrollX"]}, {viewport_debug["scrollY"]}) to ({viewport_debug["scrollX"] + viewport_debug["js_innerWidth"]}, {viewport_debug["scrollY"] + viewport_debug["js_innerHeight"]})'
+	)
 
 	# Create the highlighting script with properly scaled coordinates
 	script = f"""

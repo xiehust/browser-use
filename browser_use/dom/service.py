@@ -165,8 +165,8 @@ class DOMService:
 		)
 		return enhanced_ax_node
 
-	async def _get_viewport_size(self) -> tuple[float, float, float]:
-		"""Get viewport dimensions and device pixel ratio using CDP."""
+	async def _get_viewport_size(self) -> tuple[float, float, float, float, float]:
+		"""Get viewport dimensions, device pixel ratio, and scroll position using CDP."""
 		try:
 			cdp_client = await self._get_cdp_client()
 			session_id = await self._get_current_page_session_id()
@@ -196,18 +196,23 @@ class DOMService:
 			css_width = css_visual_viewport.get('clientWidth', width)
 			device_pixel_ratio = device_width / css_width if css_width > 0 else 1.0
 
+			# Get current scroll position from the visual viewport
+			scroll_x = css_visual_viewport.get('pageX', 0)
+			scroll_y = css_visual_viewport.get('pageY', 0)
+
 			print(f'  Visual Viewport (device pixels): {visual_viewport}')
 			print(f'  CSS Visual Viewport (CSS pixels): {css_visual_viewport}')
 			print(f'  Layout Viewport: {layout_viewport}')
 			print(f'  Content Size: {content_size}')
 			print(f'  🎯 Using CSS dimensions: {width}x{height}')
 			print(f'  📱 Device Pixel Ratio: {device_pixel_ratio}')
+			print(f'  📜 Scroll Position: ({scroll_x}, {scroll_y})')
 
-			return float(width), float(height), float(device_pixel_ratio)
+			return float(width), float(height), float(device_pixel_ratio), float(scroll_x), float(scroll_y)
 		except Exception as e:
 			print(f'⚠️  Viewport size detection failed: {e}')
 			# Fallback to default viewport size
-			return 1920.0, 1080.0, 1.0
+			return 1920.0, 1080.0, 1.0, 0.0, 0.0
 
 	async def _build_enhanced_dom_tree(
 		self, dom_tree: GetDocumentReturns, ax_tree: GetFullAXTreeReturns, snapshot: CaptureSnapshotReturns
@@ -220,21 +225,32 @@ class DOMService:
 		""" NodeId (NOT backend node id) -> enhanced dom tree node"""  # way to get the parent/content node
 
 		# Get viewport dimensions first for visibility calculation
-		viewport_width, viewport_height, device_pixel_ratio = await self._get_viewport_size()
+		viewport_width, viewport_height, device_pixel_ratio, scroll_x, scroll_y = await self._get_viewport_size()
 
 		print('📐 **DOM TREE BUILD DEBUG**:')
 		print(f'  Viewport dimensions used: {viewport_width}x{viewport_height}')
+		print(f'  Scroll position: ({scroll_x}, {scroll_y})')
+		print(
+			f'  Current viewport rectangle: ({scroll_x}, {scroll_y}) to ({scroll_x + viewport_width}, {scroll_y + viewport_height})'
+		)
 		print(f'  Snapshot documents count: {len(snapshot.get("documents", []))}')
 		print(f'  DOM tree nodes count: {len(dom_tree.get("root", {}).get("children", []))}')
 
 		# Parse snapshot data with everything calculated upfront
-		snapshot_lookup = build_snapshot_lookup(snapshot, viewport_width, viewport_height, device_pixel_ratio)
+		snapshot_lookup = build_snapshot_lookup(snapshot, viewport_width, viewport_height, device_pixel_ratio, scroll_x, scroll_y)
 
 		# Debug: check some sample coordinates from snapshot_lookup
 		sample_coords = []
 		for backend_id, snapshot_node in list(snapshot_lookup.items())[:5]:
 			if snapshot_node.bounding_box:
 				bbox = snapshot_node.bounding_box
+				# Check if element is in current viewport
+				in_viewport = (
+					bbox['x'] + bbox['width'] > scroll_x
+					and bbox['x'] < scroll_x + viewport_width
+					and bbox['y'] + bbox['height'] > scroll_y
+					and bbox['y'] < scroll_y + viewport_height
+				)
 				sample_coords.append(
 					{
 						'backend_id': backend_id,
@@ -244,14 +260,16 @@ class DOMService:
 						'height': bbox['height'],
 						'is_visible': snapshot_node.is_visible,
 						'is_clickable': snapshot_node.is_clickable,
+						'in_current_viewport': in_viewport,
 					}
 				)
 
 		if sample_coords:
-			print('  Sample coordinates from snapshot_lookup:')
+			print('  Sample coordinates from snapshot_lookup (scroll-aware):')
 			for coord in sample_coords:
+				status = '✅ IN VIEWPORT' if coord['in_current_viewport'] else '❌ OUT OF VIEWPORT'
 				print(
-					f'    Backend {coord["backend_id"]}: ({coord["x"]}, {coord["y"]}) {coord["width"]}x{coord["height"]} visible={coord["is_visible"]} clickable={coord["is_clickable"]}'
+					f'    Backend {coord["backend_id"]}: ({coord["x"]:.1f}, {coord["y"]:.1f}) {coord["width"]:.1f}x{coord["height"]:.1f} visible={coord["is_visible"]} clickable={coord["is_clickable"]} {status}'
 				)
 
 		def _construct_enhanced_node(node: Node) -> EnhancedDOMTreeNode:

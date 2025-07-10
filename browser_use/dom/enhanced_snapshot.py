@@ -60,9 +60,14 @@ def _parse_computed_styles(strings: list[str], style_indices: list[int]) -> dict
 
 
 def _is_element_visible(
-	bounding_box: dict[str, float], computed_styles: dict[str, str], viewport_width: float, viewport_height: float
+	bounding_box: dict[str, float],
+	computed_styles: dict[str, str],
+	viewport_width: float,
+	viewport_height: float,
+	scroll_x: float = 0.0,
+	scroll_y: float = 0.0,
 ) -> bool:
-	"""Determine if an element is visible. More permissive - considers elements visible if they start anywhere on the page."""
+	"""Determine if an element is visible in the current scrolled viewport."""
 	# Check if element has zero dimensions
 	if bounding_box['width'] <= 0 or bounding_box['height'] <= 0:
 		return False
@@ -81,18 +86,34 @@ def _is_element_visible(
 	except (ValueError, TypeError):
 		pass
 
-	# More permissive visibility - element is visible if it has any presence on the page
-	# and intersects with the viewport area (including elements that start at the beginning)
+	# SCROLL-AWARE VISIBILITY: Check if element intersects with current scrolled viewport
+	# Current viewport rectangle in document coordinates
+	viewport_left = scroll_x
+	viewport_top = scroll_y
+	viewport_right = scroll_x + viewport_width
+	viewport_bottom = scroll_y + viewport_height
+
+	# Element rectangle in document coordinates
+	elem_left = bounding_box['x']
+	elem_top = bounding_box['y']
 	elem_right = bounding_box['x'] + bounding_box['width']
 	elem_bottom = bounding_box['y'] + bounding_box['height']
 
-	# Element is visible if it has any intersection with the page area
-	# This includes elements that start at x=0, y=0 (beginning of page)
-	return elem_right > 0 and elem_bottom > 0 and bounding_box['x'] < viewport_width and bounding_box['y'] < viewport_height
+	# Check if rectangles intersect (element is visible in current viewport)
+	intersects = (
+		elem_right > viewport_left and elem_left < viewport_right and elem_bottom > viewport_top and elem_top < viewport_bottom
+	)
+
+	return intersects
 
 
 def build_snapshot_lookup(
-	snapshot: CaptureSnapshotReturns, viewport_width: float, viewport_height: float, device_pixel_ratio: float = 1.0
+	snapshot: CaptureSnapshotReturns,
+	viewport_width: float,
+	viewport_height: float,
+	device_pixel_ratio: float = 1.0,
+	scroll_x: float = 0.0,
+	scroll_y: float = 0.0,
 ) -> dict[int, EnhancedSnapshotNode]:
 	"""Build a lookup table of backend node ID to enhanced snapshot data with everything calculated upfront."""
 	snapshot_lookup: dict[int, EnhancedSnapshotNode] = {}
@@ -147,9 +168,11 @@ def build_snapshot_lookup(
 					computed_styles = _parse_computed_styles(strings, style_indices)
 					cursor_style = computed_styles.get('cursor')
 
-				# Calculate visibility immediately if we have bounding box
+				# Calculate scroll-aware visibility if we have bounding box
 				if bounding_box and computed_styles:
-					is_visible = _is_element_visible(bounding_box, computed_styles, viewport_width, viewport_height)
+					is_visible = _is_element_visible(
+						bounding_box, computed_styles, viewport_width, viewport_height, scroll_x, scroll_y
+					)
 
 				break
 
