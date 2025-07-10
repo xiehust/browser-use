@@ -15,33 +15,18 @@ from cdp_use.cdp.domsnapshot.types import (
 
 from browser_use.dom.views import EnhancedSnapshotNode
 
-# Only the essential computed styles we actually need
+# Only the ESSENTIAL computed styles for interactivity and visibility detection
 REQUIRED_COMPUTED_STYLES = [
+	# Essential for visibility
 	'display',
 	'visibility',
 	'opacity',
-	'position',
-	'z-index',
-	'pointer-events',
+	# Essential for interactivity detection
 	'cursor',
+	'pointer-events',
+	# Essential for layout/positioning (minimal set)
+	'position',
 	'overflow',
-	'overflow-x',
-	'overflow-y',
-	'width',
-	'height',
-	'top',
-	'left',
-	'right',
-	'bottom',
-	'transform',
-	'clip',
-	'clip-path',
-	'user-select',
-	'background-color',
-	'color',
-	'border',
-	'margin',
-	'padding',
 ]
 
 

@@ -382,10 +382,10 @@ class DOMService:
 		snapshot_request = cdp_client.send.DOMSnapshot.captureSnapshot(
 			params={
 				'computedStyles': REQUIRED_COMPUTED_STYLES,
-				'includePaintOrder': True,
-				'includeDOMRects': True,
-				'includeBlendedBackgroundColors': False,
-				'includeTextColorOpacities': False,
+				'includePaintOrder': False,  # Not needed for interactivity
+				'includeDOMRects': True,  # Essential for bounding boxes
+				'includeBlendedBackgroundColors': False,  # Not needed
+				'includeTextColorOpacities': False,  # Not needed
 			},
 			session_id=session_id,
 		)
@@ -407,12 +407,12 @@ class DOMService:
 		return snapshot, dom_tree, ax_tree
 
 	async def _ensure_iframe_content_loaded(self, cdp_client: CDPClient, session_id: str) -> None:
-		"""Ensure all iframe content is fully loaded before capturing DOM tree."""
+		"""Ensure all iframe content is fully loaded before capturing DOM tree - OPTIMIZED."""
 		try:
-			print('🔄 Ensuring iframe content is fully loaded...')
+			print('🔄 Ensuring iframe content is loaded (optimized)...')
 
-			# Step 1: Get full DOM to find iframes (use deeper traversal)
-			initial_dom = await cdp_client.send.DOM.getDocument(params={'depth': -1, 'pierce': False}, session_id=session_id)
+			# Step 1: Get DOM to find iframes (use limited depth for performance)
+			initial_dom = await cdp_client.send.DOM.getDocument(params={'depth': 2, 'pierce': False}, session_id=session_id)
 
 			# Step 2: Find all iframe elements
 			iframe_nodes = []
@@ -421,12 +421,12 @@ class DOMService:
 			if iframe_nodes:
 				print(f'📋 Found {len(iframe_nodes)} iframe(s) to load...')
 
-				# Step 3: Wait for each iframe to load content
+				# Step 3: Load iframes with optimized approach
 				for iframe_node in iframe_nodes:
-					await self._wait_for_iframe_content(cdp_client, session_id, iframe_node)
+					await self._wait_for_iframe_content_optimized(cdp_client, session_id, iframe_node)
 
-				# Step 4: Additional wait for dynamic content to settle
-				await asyncio.sleep(1.5)
+				# Step 4: Shorter wait for dynamic content
+				await asyncio.sleep(0.5)  # Reduced from 1.5s
 				print('✅ All iframe content loaded')
 			else:
 				print('📋 No iframes found on page')
@@ -478,8 +478,8 @@ class DOMService:
 		except Exception as e:
 			print(f'⚠️ Error finding iframes: {e}')
 
-	async def _wait_for_iframe_content(self, cdp_client: CDPClient, session_id: str, iframe_node: Node) -> None:
-		"""Wait for a specific iframe's content to be fully loaded."""
+	async def _wait_for_iframe_content_optimized(self, cdp_client: CDPClient, session_id: str, iframe_node: Node) -> None:
+		"""Wait for a specific iframe's content to be fully loaded - OPTIMIZED."""
 		try:
 			iframe_src = ''
 			if 'attributes' in iframe_node:
@@ -492,23 +492,22 @@ class DOMService:
 
 			print(f'  🔄 Loading iframe: {iframe_src[:50]}{"..." if len(iframe_src) > 50 else ""}')
 
-			# Step 1: Force request child nodes to ensure content is loaded
 			node_id = iframe_node.get('nodeId')
 			if not node_id:
 				print('    ⚠️ No nodeId for iframe')
 				return
 
-			# Step 2: Multiple attempts to get iframe content
-			max_retries = 8
+			# Optimized: Only 3 attempts instead of 8, shorter waits
+			max_retries = 3
 			for attempt in range(max_retries):
 				try:
-					# Request child nodes first to trigger content loading
+					# Request child nodes with limited depth for performance
 					await cdp_client.send.DOM.requestChildNodes(
-						params={'nodeId': node_id, 'depth': -1, 'pierce': True}, session_id=session_id
+						params={'nodeId': node_id, 'depth': 2, 'pierce': True}, session_id=session_id
 					)
 
-					# Small wait for content to load
-					await asyncio.sleep(0.3)
+					# Shorter wait
+					await asyncio.sleep(0.15)  # Reduced from 0.3s
 
 					# Get the updated node with content document
 					updated_node = await cdp_client.send.DOM.describeNode(params={'nodeId': node_id}, session_id=session_id)
@@ -518,23 +517,23 @@ class DOMService:
 					if content_doc:
 						print(f'    ✅ Iframe content loaded (attempt {attempt + 1})')
 
-						# Also request children of the content document to ensure full loading
+						# Also request children with limited depth
 						content_doc_id = content_doc.get('nodeId')
 						if content_doc_id:
 							await cdp_client.send.DOM.requestChildNodes(
-								params={'nodeId': content_doc_id, 'depth': -1, 'pierce': True}, session_id=session_id
+								params={'nodeId': content_doc_id, 'depth': 2, 'pierce': True}, session_id=session_id
 							)
-							await asyncio.sleep(0.2)
+							await asyncio.sleep(0.1)  # Reduced from 0.2s
 						break
 
-					# If no content document yet, wait and retry
-					await asyncio.sleep(0.4)
+					# Shorter retry wait
+					await asyncio.sleep(0.2)  # Reduced from 0.4s
 
 				except Exception as retry_error:
 					if attempt == max_retries - 1:
 						print(f'    ⚠️ Failed to load iframe content after {max_retries} attempts: {retry_error}')
 					else:
-						await asyncio.sleep(0.4)
+						await asyncio.sleep(0.2)  # Reduced from 0.4s
 
 		except Exception as e:
 			print(f'⚠️ Error waiting for iframe content: {e}')
