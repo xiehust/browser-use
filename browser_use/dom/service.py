@@ -8,7 +8,7 @@ from cdp_use.cdp.dom.commands import GetDocumentReturns
 from cdp_use.cdp.dom.types import Node, ShadowRootType
 from cdp_use.cdp.domsnapshot.commands import CaptureSnapshotReturns
 
-from browser_use.browser import Browser
+from browser_use.browser.session import BrowserSession
 from browser_use.dom.enhanced_snapshot import (
 	REQUIRED_COMPUTED_STYLES,
 	build_snapshot_lookup,
@@ -18,60 +18,90 @@ from browser_use.dom.views import EnhancedAXNode, EnhancedAXProperty, EnhancedDO
 
 
 class DOMService:
-	def __init__(self, browser: Browser):
-		self.browser = browser
-
+	def __init__(self, browser_session: BrowserSession):
+		self.browser_session = browser_session
 		self.cdp_client: CDPClient | None = None
-		self.playwright_page_to_session_id_store: dict[str, str] = {}
+		# Track CDP sessions per page GUID to handle multi-tab scenarios
+		self.page_session_store: dict[str, str] = {}  # page_guid -> session_id
+		# Track which page GUID we last processed to detect tab switches
+		self._last_processed_page_guid: str | None = None
 
 	async def _get_cdp_client(self) -> CDPClient:
 		if self.cdp_client is None:
-			if not self.browser.cdp_url:
-				raise ValueError('CDP URL is not set')
+			# Get CDP URL from browser session
+			cdp_url = self.browser_session.cdp_url
+			if not cdp_url:
+				raise ValueError('CDP URL is not set in browser session')
 
-			self.cdp_client = CDPClient(self.browser.cdp_url)
+			# Get WebSocket URL from CDP version endpoint
+			import httpx
+
+			# Ensure HTTP URL has proper format
+			if not cdp_url.endswith('/'):
+				cdp_url += '/'
+
+			print(f'🔗 Querying CDP version info from: {cdp_url}json/version')
+
+			async with httpx.AsyncClient() as client:
+				try:
+					response = await client.get(f'{cdp_url}json/version')
+					version_info = response.json()
+					ws_url = version_info['webSocketDebuggerUrl']
+					print(f'🔗 Got WebSocket URL: {ws_url}')
+				except Exception as e:
+					print(f'⚠️ Failed to get WebSocket URL from CDP: {e}')
+					# Fallback: try to construct WebSocket URL manually
+					if cdp_url.startswith('http://'):
+						ws_url = cdp_url.replace('http://', 'ws://') + 'json'
+					elif cdp_url.startswith('https://'):
+						ws_url = cdp_url.replace('https://', 'wss://') + 'json'
+					else:
+						ws_url = cdp_url
+					print(f'🔗 Using fallback WebSocket URL: {ws_url}')
+
+			self.cdp_client = CDPClient(ws_url)
 			await self.cdp_client.start()
 		return self.cdp_client
 
-	# on self destroy -> stop the cdp client
 	async def __del__(self):
 		if self.cdp_client:
 			await self.cdp_client.stop()
 			self.cdp_client = None
 
 	async def _get_current_page_session_id(self) -> str:
-		"""Get the target ID for a playwright page."""
-		page = await self.browser.get_current_page()
+		"""Get or create a CDP session for the current active tab."""
+		# Always get the current page from browser session to handle tab switches
+		page = await self.browser_session.get_current_page()
 		page_guid = page._impl_obj._guid
 
+		# Clear cache if we've switched to a different tab
+		if self._last_processed_page_guid != page_guid:
+			print(f'🔄 Tab switch detected: {self._last_processed_page_guid} -> {page_guid}')
+			self._last_processed_page_guid = page_guid
+
 		# Check if we already have a cached session for this page
-		if page_guid in self.playwright_page_to_session_id_store:
-			cached_target_id = self.playwright_page_to_session_id_store[page_guid]
-			print(f'🔄 Using cached target ID for page: {cached_target_id}')
+		if page_guid in self.page_session_store:
+			cached_session_id = self.page_session_store[page_guid]
+			print(f'🔄 Using cached session for tab {page_guid[:8]}...: {cached_session_id[:8]}...')
 
 			# Verify the cached session is still valid
 			try:
 				cdp_client = await self._get_cdp_client()
-				targets = await cdp_client.send.Target.getTargets()
-
-				# Check if our cached target still exists
-				for target in targets['targetInfos']:
-					if target['targetId'] == cached_target_id and target['type'] == 'page':
-						session = await cdp_client.send.Target.attachToTarget(
-							params={'targetId': cached_target_id, 'flatten': True}
-						)
-						return session['sessionId']
+				# Quick test to see if session is still alive
+				await cdp_client.send.Runtime.evaluate(params={'expression': '1'}, session_id=cached_session_id)
+				return cached_session_id
 			except Exception as e:
-				print(f'⚠️ Cached session invalid, will find new one: {e}')
+				print(f'⚠️ Cached session invalid, will create new one: {e}')
 				# Remove invalid cache entry
-				del self.playwright_page_to_session_id_store[page_guid]
+				del self.page_session_store[page_guid]
 
+		# Create new CDP session for this tab
 		cdp_client = await self._get_cdp_client()
 		targets = await cdp_client.send.Target.getTargets()
 
 		current_url = page.url
-		print(f'🔍 Looking for CDP target matching page URL: {current_url}')
-		print('📋 Available targets:')
+		print(f'🔍 Creating CDP session for tab: {current_url}')
+		print(f'📋 Available CDP targets: {len([t for t in targets["targetInfos"] if t["type"] == "page"])} pages')
 
 		target_candidates = []
 		for target in targets['targetInfos']:
@@ -104,20 +134,21 @@ class DOMService:
 		best_target, match_type, _ = target_candidates[0]
 		target_id = best_target['targetId']
 
-		print(f'✅ Selected target {target_id[:8]}... (match type: {match_type}) for page {current_url}')
-
-		# Cache the session id for this playwright page
-		self.playwright_page_to_session_id_store[page_guid] = target_id
+		print(f'✅ Selected target {target_id[:8]}... (match type: {match_type}) for tab {page_guid[:8]}...')
 
 		session = await cdp_client.send.Target.attachToTarget(params={'targetId': target_id, 'flatten': True})
 		session_id = session['sessionId']
 
+		# Enable domains for this session
 		await cdp_client.send.Target.setAutoAttach(params={'autoAttach': True, 'waitForDebuggerOnStart': False, 'flatten': True})
-
 		await cdp_client.send.DOM.enable(session_id=session_id)
 		await cdp_client.send.Accessibility.enable(session_id=session_id)
 		await cdp_client.send.DOMSnapshot.enable(session_id=session_id)
 		await cdp_client.send.Page.enable(session_id=session_id)
+
+		# Cache the session for this page
+		self.page_session_store[page_guid] = session_id
+		print(f'💾 Cached session {session_id[:8]}... for tab {page_guid[:8]}...')
 
 		return session_id
 
@@ -342,11 +373,11 @@ class DOMService:
 		return enhanced_dom_tree_node
 
 	async def _get_all_trees(self) -> tuple[CaptureSnapshotReturns, GetDocumentReturns, GetFullAXTreeReturns]:
-		if not self.browser.cdp_url:
-			raise ValueError('CDP URL is not set')
-
 		session_id = await self._get_current_page_session_id()
 		cdp_client = await self._get_cdp_client()
+
+		# Enhanced iframe content loading - wait for all iframes to be fully loaded
+		await self._ensure_iframe_content_loaded(cdp_client, session_id)
 
 		snapshot_request = cdp_client.send.DOMSnapshot.captureSnapshot(
 			params={
@@ -366,9 +397,147 @@ class DOMService:
 		start = time.time()
 		snapshot, dom_tree, ax_tree = await asyncio.gather(snapshot_request, dom_tree_request, ax_tree_request)
 		end = time.time()
-		print(f'Time taken to get dom tree: {end - start} seconds')
+
+		# Get current page info for better debugging
+		current_page = await self.browser_session.get_current_page()
+		page_info = f"tab '{current_page.url}'"
+
+		print(f'Time taken to get DOM tree for {page_info}: {end - start:.2f} seconds')
 
 		return snapshot, dom_tree, ax_tree
+
+	async def _ensure_iframe_content_loaded(self, cdp_client: CDPClient, session_id: str) -> None:
+		"""Ensure all iframe content is fully loaded before capturing DOM tree."""
+		try:
+			print('🔄 Ensuring iframe content is fully loaded...')
+
+			# Step 1: Get full DOM to find iframes (use deeper traversal)
+			initial_dom = await cdp_client.send.DOM.getDocument(params={'depth': -1, 'pierce': False}, session_id=session_id)
+
+			# Step 2: Find all iframe elements
+			iframe_nodes = []
+			self._find_iframes_recursive_sync(initial_dom['root'], iframe_nodes)
+
+			if iframe_nodes:
+				print(f'📋 Found {len(iframe_nodes)} iframe(s) to load...')
+
+				# Step 3: Wait for each iframe to load content
+				for iframe_node in iframe_nodes:
+					await self._wait_for_iframe_content(cdp_client, session_id, iframe_node)
+
+				# Step 4: Additional wait for dynamic content to settle
+				await asyncio.sleep(1.5)
+				print('✅ All iframe content loaded')
+			else:
+				print('📋 No iframes found on page')
+
+		except Exception as e:
+			print(f'⚠️ Error ensuring iframe content loaded: {e}')
+			# Continue anyway - don't fail the entire DOM capture
+
+	def _find_iframes_recursive_sync(self, node: Node, iframe_nodes: list) -> None:
+		"""Synchronously find all iframe elements in the DOM tree."""
+		try:
+			if node.get('nodeName', '').upper() == 'IFRAME':
+				iframe_nodes.append(node)
+				print(f'  🎯 Found iframe: {node.get("nodeName")} (nodeId: {node.get("nodeId")})')
+
+			# Recursively check children
+			if 'children' in node:
+				for child in node['children']:
+					self._find_iframes_recursive_sync(child, iframe_nodes)
+
+		except Exception as e:
+			print(f'⚠️ Error in iframe recursive search: {e}')
+
+	async def _find_iframes_recursive(self, cdp_client: CDPClient, session_id: str, node: Node, iframe_nodes: list) -> None:
+		"""Recursively find all iframe elements in the DOM."""
+		try:
+			if node.get('nodeName', '').upper() == 'IFRAME':
+				iframe_nodes.append(node)
+
+			# Get children of this node
+			if 'children' in node:
+				for child in node['children']:
+					await self._find_iframes_recursive(cdp_client, session_id, child, iframe_nodes)
+			else:
+				# If no children in the current node, request them
+				try:
+					node_id = node.get('nodeId')
+					if node_id:
+						children_result = await cdp_client.send.DOM.requestChildNodes(
+							params={'nodeId': node_id, 'depth': 1}, session_id=session_id
+						)
+						# Children are added to the node via events, so re-check
+						if 'children' in node:
+							for child in node['children']:
+								await self._find_iframes_recursive(cdp_client, session_id, child, iframe_nodes)
+				except Exception:
+					pass  # Continue if we can't get children for this node
+
+		except Exception as e:
+			print(f'⚠️ Error finding iframes: {e}')
+
+	async def _wait_for_iframe_content(self, cdp_client: CDPClient, session_id: str, iframe_node: Node) -> None:
+		"""Wait for a specific iframe's content to be fully loaded."""
+		try:
+			iframe_src = ''
+			if 'attributes' in iframe_node:
+				# Extract src attribute
+				attrs = iframe_node['attributes']
+				for i in range(0, len(attrs), 2):
+					if i + 1 < len(attrs) and attrs[i] == 'src':
+						iframe_src = attrs[i + 1]
+						break
+
+			print(f'  🔄 Loading iframe: {iframe_src[:50]}{"..." if len(iframe_src) > 50 else ""}')
+
+			# Step 1: Force request child nodes to ensure content is loaded
+			node_id = iframe_node.get('nodeId')
+			if not node_id:
+				print('    ⚠️ No nodeId for iframe')
+				return
+
+			# Step 2: Multiple attempts to get iframe content
+			max_retries = 8
+			for attempt in range(max_retries):
+				try:
+					# Request child nodes first to trigger content loading
+					await cdp_client.send.DOM.requestChildNodes(
+						params={'nodeId': node_id, 'depth': -1, 'pierce': True}, session_id=session_id
+					)
+
+					# Small wait for content to load
+					await asyncio.sleep(0.3)
+
+					# Get the updated node with content document
+					updated_node = await cdp_client.send.DOM.describeNode(params={'nodeId': node_id}, session_id=session_id)
+
+					# Check if we now have content document
+					content_doc = updated_node.get('node', {}).get('contentDocument')
+					if content_doc:
+						print(f'    ✅ Iframe content loaded (attempt {attempt + 1})')
+
+						# Also request children of the content document to ensure full loading
+						content_doc_id = content_doc.get('nodeId')
+						if content_doc_id:
+							await cdp_client.send.DOM.requestChildNodes(
+								params={'nodeId': content_doc_id, 'depth': -1, 'pierce': True}, session_id=session_id
+							)
+							await asyncio.sleep(0.2)
+						break
+
+					# If no content document yet, wait and retry
+					await asyncio.sleep(0.4)
+
+				except Exception as retry_error:
+					if attempt == max_retries - 1:
+						print(f'    ⚠️ Failed to load iframe content after {max_retries} attempts: {retry_error}')
+					else:
+						await asyncio.sleep(0.4)
+
+		except Exception as e:
+			print(f'⚠️ Error waiting for iframe content: {e}')
 
 	async def get_dom_tree(self) -> EnhancedDOMTreeNode:
 		snapshot, dom_tree, ax_tree = await self._get_all_trees()
@@ -376,24 +545,70 @@ class DOMService:
 		start = time.time()
 		enhanced_dom_tree = await self._build_enhanced_dom_tree(dom_tree, ax_tree, snapshot)
 		end = time.time()
-		print(f'Time taken to build enhanced dom tree: {end - start} seconds')
+
+		# Get current page info for better debugging
+		current_page = await self.browser_session.get_current_page()
+		page_info = f"tab '{current_page.url}'"
+
+		print(f'Time taken to build enhanced DOM tree for {page_info}: {end - start:.2f} seconds')
 
 		return enhanced_dom_tree
 
 	async def get_serialized_dom_tree(
-		self, include_attributes: list[str] | None = None
+		self,
+		include_attributes: list[str] | None = None,
 	) -> tuple[str, dict[int, EnhancedDOMTreeNode]]:
 		"""Get the serialized DOM tree representation for LLM consumption.
 
+		This method now automatically handles multi-tab scenarios by:
+		- Always using the current active tab from the browser session
+		- Caching CDP sessions per tab for efficiency
+		- Detecting tab switches and updating accordingly
+
+		Args:
+			include_attributes: List of attributes to include
+
 		Returns:
-			- Serialized string representation
-			- Selector map mapping interactive indices to DOM nodes
+			- Serialized string representation including iframe and shadow content
+			- Selector map mapping interactive indices to DOM nodes with context
 		"""
 		enhanced_dom_tree = await self.get_dom_tree()
 
 		start = time.time()
 		serialized, selector_map = DOMTreeSerializer(enhanced_dom_tree).serialize_accessible_elements(include_attributes)
 		end = time.time()
-		print(f'Time taken to serialize dom tree: {end - start} seconds')
+
+		# Get current page info for better debugging
+		current_page = await self.browser_session.get_current_page()
+		page_info = f"tab '{current_page.url}'"
+
+		print(f'Time taken to serialize DOM tree for {page_info}: {end - start:.2f} seconds')
+		print(f'🎯 Detected {len(selector_map)} interactive elements in {page_info} (comprehensive mode)')
 
 		return serialized, selector_map
+
+	async def cleanup_closed_tabs(self) -> None:
+		"""Clean up cached sessions for tabs that have been closed."""
+		if not self.browser_session.browser_context:
+			return
+
+		# Get current active page GUIDs
+		active_page_guids = set()
+		for page in self.browser_session.browser_context.pages:
+			if not page.is_closed():
+				active_page_guids.add(page._impl_obj._guid)
+
+		# Remove cached sessions for closed tabs
+		cached_guids = set(self.page_session_store.keys())
+		closed_guids = cached_guids - active_page_guids
+
+		if closed_guids:
+			print(f'🧹 Cleaning up {len(closed_guids)} cached sessions for closed tabs')
+			for guid in closed_guids:
+				del self.page_session_store[guid]
+				print(f'  - Removed session cache for tab {guid[:8]}...')
+
+		# Update last processed page if it was closed
+		if self._last_processed_page_guid and self._last_processed_page_guid not in active_page_guids:
+			self._last_processed_page_guid = None
+			print('🔄 Reset last processed page due to tab closure')

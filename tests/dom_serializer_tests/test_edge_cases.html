@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Edge Cases Test</title>
+    <style>
+        .overlay { position: absolute; background: rgba(255,0,0,0.5); z-index: 100; }
+        .behind { position: absolute; background: rgba(0,255,0,0.5); z-index: 50; }
+        .hidden { display: none; }
+        .invisible { visibility: hidden; }
+        .zero-opacity { opacity: 0; }
+        .off-screen { position: absolute; left: -9999px; }
+        .tiny { width: 1px; height: 1px; overflow: hidden; }
+        .high-z { z-index: 9999; }
+    </style>
+</head>
+<body>
+    <!-- Test 1: Z-index and Overlapping Elements -->
+    <div style="position: relative; width: 300px; height: 200px; border: 1px solid #ccc;">
+        <button class="behind" style="top: 50px; left: 50px; width: 100px; height: 50px;">Behind Button</button>
+        <div class="overlay" style="top: 70px; left: 70px; width: 100px; height: 50px; cursor: pointer;" onclick="alert('Overlay clicked')">Overlay (clickable)</div>
+        <button style="position: absolute; top: 30px; left: 120px; z-index: 200;">Top Button</button>
+    </div>
+
+    <!-- Test 2: Hidden Elements with Different Methods -->
+    <div class="hidden-elements">
+        <button class="hidden">Display None Button</button>
+        <button class="invisible">Visibility Hidden Button</button>
+        <button class="zero-opacity" onclick="alert('Zero opacity clicked')">Zero Opacity Button</button>
+        <button class="off-screen">Off Screen Button</button>
+        <button class="tiny">Tiny Button</button>
+    </div>
+
+    <!-- Test 3: Elements with Pointer Events -->
+    <div style="margin-top: 20px;">
+        <div style="width: 200px; height: 100px; background: #f0f0f0; position: relative;">
+            <div style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; background: rgba(0,0,255,0.3);">
+                Pointer Events None
+            </div>
+            <button style="position: absolute; top: 30px; left: 50px;">Button Under Overlay</button>
+        </div>
+    </div>
+
+    <!-- Test 4: Nested Clickable Elements -->
+    <div onclick="alert('Outer div')" style="padding: 20px; background: #f0f0f0; cursor: pointer; margin-top: 20px;">
+        Outer clickable div
+        <div onclick="alert('Middle div'); event.stopPropagation();" style="padding: 10px; background: #e0e0e0; cursor: pointer; margin: 10px;">
+            Middle clickable div
+            <button onclick="alert('Inner button'); event.stopPropagation();">Inner Button</button>
+        </div>
+        <span onclick="alert('Span clicked'); event.stopPropagation();" style="cursor: pointer; background: yellow;">Clickable Span</span>
+    </div>
+
+    <!-- Test 5: Transform and CSS Effects -->
+    <div style="margin-top: 20px;">
+        <button style="transform: rotate(45deg); margin: 50px;">Rotated Button</button>
+        <button style="transform: scale(0.5); margin: 20px;">Scaled Button</button>
+        <button style="transform: translateX(50px);">Translated Button</button>
+    </div>
+
+    <!-- Test 6: Scrollable Content with Hidden Elements -->
+    <div style="width: 300px; height: 100px; overflow: auto; border: 1px solid #ccc; margin-top: 20px;">
+        <div style="height: 50px;">Visible content</div>
+        <button onclick="alert('Scrolled button 1')">Button in scroll area 1</button>
+        <div style="height: 100px;">More content...</div>
+        <button onclick="alert('Scrolled button 2')">Button in scroll area 2 (hidden initially)</button>
+        <div style="height: 100px;">Even more content...</div>
+        <button onclick="alert('Scrolled button 3')">Button in scroll area 3 (hidden initially)</button>
+    </div>
+
+    <!-- Test 7: Custom Data Attributes and Event Handlers -->
+    <div class="custom-interactions" style="margin-top: 20px;">
+        <div data-action="custom-click" data-value="123" style="padding: 10px; background: #007cba; color: white; cursor: pointer; display: inline-block;">
+            Custom Data Click
+        </div>
+        <span data-toggle="modal" data-target="#test-modal" style="cursor: pointer; text-decoration: underline; color: blue; margin-left: 10px;">
+            Data Toggle
+        </span>
+        <div role="tab" tabindex="0" aria-selected="false" style="padding: 8px; background: #f0f0f0; border: 1px solid #ccc; cursor: pointer; display: inline-block; margin-left: 10px;">
+            ARIA Tab
+        </div>
+    </div>
+
+    <!-- Test 8: Pseudo-element Interactions -->
+    <style>
+        .pseudo-button::after {
+            content: " ▼";
+            cursor: pointer;
+        }
+        .pseudo-button::before {
+            content: "► ";
+            cursor: pointer;
+        }
+    </style>
+    <div class="pseudo-button" style="cursor: pointer; padding: 10px; background: #f0f0f0; margin-top: 20px;" onclick="alert('Pseudo element area clicked')">
+        Pseudo Element Button
+    </div>
+
+    <!-- Test 9: SVG Interactive Elements -->
+    <svg width="200" height="100" style="border: 1px solid #ccc; margin-top: 20px;">
+        <rect x="10" y="10" width="50" height="30" fill="blue" onclick="alert('SVG rect clicked')" style="cursor: pointer;" />
+        <circle cx="100" cy="25" r="20" fill="red" onclick="alert('SVG circle clicked')" style="cursor: pointer;" />
+        <text x="130" y="30" onclick="alert('SVG text clicked')" style="cursor: pointer; fill: green;">Click me</text>
+    </svg>
+
+    <!-- Test 10: Input Elements in Various States -->
+    <div style="margin-top: 20px;">
+        <input type="text" disabled placeholder="Disabled input">
+        <input type="text" readonly value="Readonly input">
+        <input type="hidden" value="Hidden input">
+        <input type="text" style="opacity: 0.5;" placeholder="Semi-transparent input">
+        <input type="text" style="visibility: hidden;">
+        <input type="text" style="position: absolute; left: -9999px;">
+    </div>
+
+    <!-- Test 11: Complex Positioning -->
+    <div style="position: relative; width: 300px; height: 200px; border: 1px solid #ccc; margin-top: 20px;">
+        <button style="position: absolute; top: 10px; left: 10px;">Absolute 1</button>
+        <button style="position: fixed; top: 100px; right: 10px; z-index: 1000;">Fixed Position</button>
+        <button style="position: sticky; top: 0;">Sticky Button</button>
+        <div style="position: relative; top: 50px; left: 50px;">
+            <button style="position: absolute; top: -20px; left: 20px;">Nested Absolute</button>
+        </div>
+    </div>
+
+    <!-- Test 12: Event Delegation and Dynamic Content -->
+    <div id="dynamic-container" style="margin-top: 20px; padding: 20px; border: 1px solid #ccc;">
+        <button onclick="addDynamicButton()">Add Dynamic Button</button>
+        <div id="dynamic-content"></div>
+    </div>
+
+    <script>
+        // Add event delegation for custom data attributes
+        document.addEventListener('click', function(e) {
+            if (e.target.hasAttribute('data-action')) {
+                const action = e.target.getAttribute('data-action');
+                const value = e.target.getAttribute('data-value');
+                alert(`Custom action: ${action}, value: ${value}`);
+            }
+            
+            if (e.target.hasAttribute('data-toggle')) {
+                const target = e.target.getAttribute('data-target');
+                alert(`Toggle target: ${target}`);
+            }
+        });
+
+        // Add keyboard interaction for ARIA elements
+        document.addEventListener('keydown', function(e) {
+            if (e.target.getAttribute('role') === 'tab' && (e.key === 'Enter' || e.key === ' ')) {
+                e.preventDefault();
+                alert('ARIA tab activated via keyboard');
+            }
+        });
+
+        function addDynamicButton() {
+            const container = document.getElementById('dynamic-content');
+            const button = document.createElement('button');
+            button.textContent = `Dynamic Button ${container.children.length + 1}`;
+            button.onclick = function() {
+                alert(`Dynamic button ${container.children.length} clicked`);
+            };
+            button.style.margin = '5px';
+            container.appendChild(button);
+        }
+
+        // Test performance with many elements
+        function createManyElements() {
+            const container = document.createElement('div');
+            container.style.display = 'none';
+            for (let i = 0; i < 1000; i++) {
+                const elem = document.createElement('button');
+                elem.textContent = `Button ${i}`;
+                elem.onclick = () => alert(`Button ${i} clicked`);
+                container.appendChild(elem);
+            }
+            document.body.appendChild(container);
+        }
+
+        // Create hidden elements for testing
+        createManyElements();
+    </script>
+</body>
+</html> 

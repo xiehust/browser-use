@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Elements Test</title>
+    <style>
+        .clickable-div { cursor: pointer; padding: 10px; background: #f0f0f0; }
+        .custom-button { background: blue; color: white; padding: 8px 16px; cursor: pointer; }
+        .dropdown-container { position: relative; }
+        .dropdown-menu { display: none; position: absolute; background: white; border: 1px solid #ccc; }
+        .dropdown-container:hover .dropdown-menu { display: block; }
+        .tab-active { background: #007cba; color: white; }
+        .modal-trigger { cursor: pointer; text-decoration: underline; color: blue; }
+    </style>
+</head>
+<body>
+    <!-- Test 1: Basic Form Elements -->
+    <form id="basic-form">
+        <label for="text-input">Text Input:</label>
+        <input type="text" id="text-input" name="text" placeholder="Enter text">
+        
+        <label for="email-input">Email:</label>
+        <input type="email" id="email-input" name="email" required>
+        
+        <label for="password-input">Password:</label>
+        <input type="password" id="password-input" name="password">
+        
+        <label for="textarea">Textarea:</label>
+        <textarea id="textarea" name="comments" rows="3"></textarea>
+        
+        <button type="submit">Submit Form</button>
+        <button type="reset">Reset Form</button>
+        <input type="submit" value="Submit Input">
+    </form>
+
+    <!-- Test 2: Select Dropdowns -->
+    <div class="form-group">
+        <label for="select-single">Single Select:</label>
+        <select id="select-single" name="country">
+            <option value="">Choose a country</option>
+            <option value="us">United States</option>
+            <option value="uk">United Kingdom</option>
+            <option value="ca">Canada</option>
+            <option value="de">Germany</option>
+        </select>
+        
+        <label for="select-multiple">Multiple Select:</label>
+        <select id="select-multiple" name="languages" multiple>
+            <option value="en">English</option>
+            <option value="es">Spanish</option>
+            <option value="fr">French</option>
+            <option value="de">German</option>
+        </select>
+    </div>
+
+    <!-- Test 3: Radio Buttons and Checkboxes -->
+    <fieldset>
+        <legend>Radio Button Group:</legend>
+        <label><input type="radio" name="size" value="small"> Small</label>
+        <label><input type="radio" name="size" value="medium"> Medium</label>
+        <label><input type="radio" name="size" value="large"> Large</label>
+    </fieldset>
+    
+    <fieldset>
+        <legend>Checkbox Group:</legend>
+        <label><input type="checkbox" name="features" value="wifi"> WiFi</label>
+        <label><input type="checkbox" name="features" value="parking"> Parking</label>
+        <label><input type="checkbox" name="features" value="pool"> Pool</label>
+    </fieldset>
+
+    <!-- Test 4: Links and Navigation -->
+    <nav>
+        <a href="/home">Home</a>
+        <a href="/about">About</a>
+        <a href="/contact">Contact</a>
+        <a href="mailto:test@example.com">Email Us</a>
+        <a href="tel:+1234567890">Call Us</a>
+        <a href="#section1">Jump to Section</a>
+        <a href="https://example.com" target="_blank">External Link</a>
+    </nav>
+
+    <!-- Test 5: Custom Interactive Elements with Event Handlers -->
+    <div class="interactive-elements">
+        <div class="clickable-div" onclick="alert('Clicked!')">Clickable Div</div>
+        <span class="custom-button" role="button" tabindex="0">Custom Button</span>
+        <div role="button" aria-pressed="false" tabindex="0">ARIA Button</div>
+        <div class="modal-trigger" data-modal="#modal1">Open Modal</div>
+    </div>
+
+    <!-- Test 6: Dropdown Menus -->
+    <div class="dropdown-container">
+        <button class="dropdown-trigger">Dropdown Menu ▼</button>
+        <div class="dropdown-menu">
+            <a href="#option1">Option 1</a>
+            <a href="#option2">Option 2</a>
+            <a href="#option3">Option 3</a>
+        </div>
+    </div>
+
+    <!-- Test 7: Tab Navigation -->
+    <div class="tabs">
+        <div class="tab-buttons">
+            <button class="tab-button tab-active" data-tab="tab1">Tab 1</button>
+            <button class="tab-button" data-tab="tab2">Tab 2</button>
+            <button class="tab-button" data-tab="tab3">Tab 3</button>
+        </div>
+        <div class="tab-content">
+            <div id="tab1" class="tab-panel">Content for Tab 1</div>
+            <div id="tab2" class="tab-panel">Content for Tab 2</div>
+            <div id="tab3" class="tab-panel">Content for Tab 3</div>
+        </div>
+    </div>
+
+    <!-- Test 8: Range and File Inputs -->
+    <div class="form-group">
+        <label for="range-input">Range:</label>
+        <input type="range" id="range-input" min="0" max="100" value="50">
+        
+        <label for="file-input">File Upload:</label>
+        <input type="file" id="file-input" accept=".jpg,.png,.pdf">
+        
+        <label for="color-input">Color Picker:</label>
+        <input type="color" id="color-input" value="#ff0000">
+        
+        <label for="date-input">Date:</label>
+        <input type="date" id="date-input">
+    </div>
+
+    <!-- Test 9: Elements with Pointer Cursor -->
+    <div class="cursor-elements">
+        <img src="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTAwIiBoZWlnaHQ9IjEwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwIiBoZWlnaHQ9IjEwMCIgZmlsbD0iIzAwN2NiYSIvPjx0ZXh0IHg9IjUwIiB5PSI1NSIgZm9udC1mYW1pbHk9IkFyaWFsIiBmb250LXNpemU9IjE0IiBmaWxsPSJ3aGl0ZSIgdGV4dC1hbmNob3I9Im1pZGRsZSI+Q2xpY2sgTWU8L3RleHQ+PC9zdmc+" 
+             alt="Clickable Image" style="cursor: pointer;" onclick="alert('Image clicked!')">
+        <p style="cursor: pointer;" onclick="alert('Paragraph clicked!')">Clickable Paragraph</p>
+        <span style="cursor: pointer;" data-action="toggle">Toggle Element</span>
+    </div>
+
+    <!-- Test 10: Advanced UI Components -->
+    <div class="advanced-components">
+        <!-- Accordion -->
+        <div class="accordion">
+            <div class="accordion-item">
+                <h3 class="accordion-header" role="button" aria-expanded="false">Section 1</h3>
+                <div class="accordion-content">Content for section 1</div>
+            </div>
+            <div class="accordion-item">
+                <h3 class="accordion-header" role="button" aria-expanded="false">Section 2</h3>
+                <div class="accordion-content">Content for section 2</div>
+            </div>
+        </div>
+        
+        <!-- Slider/Carousel -->
+        <div class="slider">
+            <button class="slider-prev" aria-label="Previous slide">‹</button>
+            <div class="slider-content">
+                <div class="slide">Slide 1</div>
+                <div class="slide">Slide 2</div>
+                <div class="slide">Slide 3</div>
+            </div>
+            <button class="slider-next" aria-label="Next slide">›</button>
+        </div>
+        
+        <!-- Rating System -->
+        <div class="rating">
+            <span class="star" data-rating="1">★</span>
+            <span class="star" data-rating="2">★</span>
+            <span class="star" data-rating="3">★</span>
+            <span class="star" data-rating="4">★</span>
+            <span class="star" data-rating="5">★</span>
+        </div>
+    </div>
+
+    <!-- Hidden Modal for Testing -->
+    <div id="modal1" class="modal" style="display: none;">
+        <div class="modal-content">
+            <span class="close" onclick="closeModal()">&times;</span>
+            <h2>Modal Title</h2>
+            <p>Modal content goes here</p>
+            <button onclick="closeModal()">Close</button>
+        </div>
+    </div>
+
+    <script>
+        // Add basic interactivity for testing
+        document.querySelectorAll('.tab-button').forEach(button => {
+            button.addEventListener('click', function() {
+                document.querySelectorAll('.tab-button').forEach(b => b.classList.remove('tab-active'));
+                this.classList.add('tab-active');
+            });
+        });
+
+        document.querySelectorAll('.star').forEach(star => {
+            star.style.cursor = 'pointer';
+            star.addEventListener('click', function() {
+                console.log('Rated:', this.dataset.rating);
+            });
+        });
+
+        function closeModal() {
+            document.getElementById('modal1').style.display = 'none';
+        }
+    </script>
+</body>
+</html> 

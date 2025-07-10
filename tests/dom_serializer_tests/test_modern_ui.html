@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Modern UI Patterns Test</title>
+    <style>
+        .tooltip { position: relative; cursor: help; }
+        .tooltip .tooltiptext {
+            visibility: hidden;
+            background-color: black;
+            color: white;
+            text-align: center;
+            padding: 5px;
+            border-radius: 6px;
+            position: absolute;
+            z-index: 1;
+            bottom: 125%;
+            left: 50%;
+            margin-left: -60px;
+        }
+        .tooltip:hover .tooltiptext { visibility: visible; }
+        
+        .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.4); }
+        .modal-content { background-color: white; margin: 15% auto; padding: 20px; border: 1px solid #888; width: 80%; max-width: 500px; }
+        .close { color: #aaa; float: right; font-size: 28px; font-weight: bold; cursor: pointer; }
+        .close:hover { color: black; }
+        
+        .toggle-switch { position: relative; display: inline-block; width: 60px; height: 34px; }
+        .toggle-switch input { opacity: 0; width: 0; height: 0; }
+        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .4s; border-radius: 34px; }
+        .slider:before { position: absolute; content: ""; height: 26px; width: 26px; left: 4px; bottom: 4px; background-color: white; transition: .4s; border-radius: 50%; }
+        input:checked + .slider { background-color: #2196F3; }
+        input:checked + .slider:before { transform: translateX(26px); }
+        
+        .progress-bar { width: 100%; background-color: #f0f0f0; border-radius: 10px; }
+        .progress-fill { height: 20px; background-color: #4CAF50; border-radius: 10px; transition: width 0.3s; }
+        
+        .card { border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .card-actions { margin-top: 10px; }
+        .btn { padding: 8px 16px; margin: 0 5px; border: none; border-radius: 4px; cursor: pointer; }
+        .btn-primary { background: #007cba; color: white; }
+        .btn-secondary { background: #6c757d; color: white; }
+        
+        .context-menu { position: absolute; background: white; border: 1px solid #ccc; box-shadow: 0 2px 10px rgba(0,0,0,0.1); display: none; z-index: 1000; }
+        .context-menu-item { padding: 8px 16px; cursor: pointer; border-bottom: 1px solid #eee; }
+        .context-menu-item:hover { background: #f0f0f0; }
+        .context-menu-item:last-child { border-bottom: none; }
+    </style>
+</head>
+<body>
+    <!-- Test 1: Tooltips -->
+    <div class="tooltip-container">
+        <button class="tooltip">Hover for info
+            <span class="tooltiptext">This is a tooltip</span>
+        </button>
+        <span class="tooltip" style="cursor: help; text-decoration: underline; color: blue;">Help text
+            <span class="tooltiptext">Click for more details</span>
+        </span>
+    </div>
+
+    <!-- Test 2: Modal Dialogs -->
+    <div class="modal-triggers">
+        <button onclick="openModal('modal1')">Open Login Modal</button>
+        <button onclick="openModal('modal2')">Open Confirmation Modal</button>
+        <span style="cursor: pointer; color: blue; text-decoration: underline;" onclick="openModal('modal3')">Terms and Conditions</span>
+    </div>
+
+    <!-- Modal 1: Login -->
+    <div id="modal1" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeModal('modal1')">&times;</span>
+            <h2>Login</h2>
+            <form>
+                <input type="email" placeholder="Email" style="width: 100%; padding: 8px; margin: 5px 0;">
+                <input type="password" placeholder="Password" style="width: 100%; padding: 8px; margin: 5px 0;">
+                <button type="submit" style="background: #007cba; color: white; padding: 10px 20px; border: none; cursor: pointer;">Login</button>
+                <button type="button" onclick="closeModal('modal1')" style="background: #ccc; color: black; padding: 10px 20px; border: none; cursor: pointer;">Cancel</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Modal 2: Confirmation -->
+    <div id="modal2" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeModal('modal2')">&times;</span>
+            <h2>Confirm Action</h2>
+            <p>Are you sure you want to delete this item?</p>
+            <button onclick="confirmAction()" style="background: #dc3545; color: white; padding: 10px 20px; border: none; cursor: pointer;">Delete</button>
+            <button onclick="closeModal('modal2')" style="background: #ccc; color: black; padding: 10px 20px; border: none; cursor: pointer;">Cancel</button>
+        </div>
+    </div>
+
+    <!-- Modal 3: Terms -->
+    <div id="modal3" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeModal('modal3')">&times;</span>
+            <h2>Terms and Conditions</h2>
+            <div style="max-height: 300px; overflow-y: auto;">
+                <p>Lorem ipsum dolor sit amet, consectetur adipiscing elit...</p>
+                <p>Terms content here...</p>
+            </div>
+            <button onclick="acceptTerms()" style="background: #28a745; color: white; padding: 10px 20px; border: none; cursor: pointer;">Accept</button>
+            <button onclick="closeModal('modal3')" style="background: #ccc; color: black; padding: 10px 20px; border: none; cursor: pointer;">Decline</button>
+        </div>
+    </div>
+
+    <!-- Test 3: Toggle Switches -->
+    <div class="toggle-controls">
+        <label>
+            Notifications:
+            <label class="toggle-switch">
+                <input type="checkbox" onchange="toggleNotifications(this)">
+                <span class="slider"></span>
+            </label>
+        </label>
+        <br><br>
+        <label>
+            Dark Mode:
+            <label class="toggle-switch">
+                <input type="checkbox" onchange="toggleDarkMode(this)">
+                <span class="slider"></span>
+            </label>
+        </label>
+    </div>
+
+    <!-- Test 4: Progress Bars and Interactive Elements -->
+    <div class="progress-container">
+        <h3>Upload Progress</h3>
+        <div class="progress-bar">
+            <div class="progress-fill" id="progress" style="width: 30%;"></div>
+        </div>
+        <button onclick="updateProgress()" style="margin-top: 10px; cursor: pointer;">Update Progress</button>
+        <button onclick="resetProgress()" style="margin-top: 10px; cursor: pointer;">Reset</button>
+    </div>
+
+    <!-- Test 5: Card Components with Actions -->
+    <div class="cards-container">
+        <div class="card">
+            <h4>Product 1</h4>
+            <p>Description of product 1</p>
+            <div class="card-actions">
+                <button class="btn btn-primary" onclick="addToCart(1)">Add to Cart</button>
+                <button class="btn btn-secondary" onclick="viewDetails(1)">View Details</button>
+                <span style="cursor: pointer; color: red;" onclick="removeItem(1)">Remove</span>
+            </div>
+        </div>
+        <div class="card">
+            <h4>Product 2</h4>
+            <p>Description of product 2</p>
+            <div class="card-actions">
+                <button class="btn btn-primary" onclick="addToCart(2)">Add to Cart</button>
+                <button class="btn btn-secondary" onclick="viewDetails(2)">View Details</button>
+                <span style="cursor: pointer; color: red;" onclick="removeItem(2)">Remove</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Test 6: Context Menu -->
+    <div id="context-target" style="width: 200px; height: 100px; background: #f0f0f0; border: 1px solid #ccc; display: flex; align-items: center; justify-content: center; cursor: pointer;" oncontextmenu="showContextMenu(event)">
+        Right-click me for context menu
+    </div>
+
+    <div id="context-menu" class="context-menu">
+        <div class="context-menu-item" onclick="contextAction('copy')">Copy</div>
+        <div class="context-menu-item" onclick="contextAction('paste')">Paste</div>
+        <div class="context-menu-item" onclick="contextAction('delete')">Delete</div>
+        <div class="context-menu-item" onclick="contextAction('properties')">Properties</div>
+    </div>
+
+    <!-- Test 7: Drag and Drop Areas -->
+    <div class="drag-drop-container">
+        <div id="drag-source" draggable="true" ondragstart="drag(event)" style="width: 100px; height: 100px; background: #007cba; color: white; display: flex; align-items: center; justify-content: center; cursor: move; margin: 10px;">
+            Drag me
+        </div>
+        <div id="drop-target" ondrop="drop(event)" ondragover="allowDrop(event)" style="width: 200px; height: 200px; border: 2px dashed #ccc; display: flex; align-items: center; justify-content: center; margin: 10px;">
+            Drop zone
+        </div>
+    </div>
+
+    <!-- Test 8: Collapsible/Expandable Content -->
+    <div class="collapsible-container">
+        <div class="collapsible-header" onclick="toggleCollapse('collapse1')" style="background: #f1f1f1; padding: 10px; cursor: pointer; border: 1px solid #ccc;">
+            ▼ Click to expand section 1
+        </div>
+        <div id="collapse1" class="collapsible-content" style="display: none; padding: 10px; border: 1px solid #ccc; border-top: none;">
+            <p>This is the collapsible content for section 1.</p>
+            <button onclick="alert('Action from collapsed content')">Action Button</button>
+        </div>
+        
+        <div class="collapsible-header" onclick="toggleCollapse('collapse2')" style="background: #f1f1f1; padding: 10px; cursor: pointer; border: 1px solid #ccc; margin-top: 10px;">
+            ▼ Click to expand section 2
+        </div>
+        <div id="collapse2" class="collapsible-content" style="display: none; padding: 10px; border: 1px solid #ccc; border-top: none;">
+            <p>This is the collapsible content for section 2.</p>
+            <input type="text" placeholder="Input in collapsed section">
+        </div>
+    </div>
+
+    <script>
+        function openModal(modalId) {
+            document.getElementById(modalId).style.display = 'block';
+        }
+
+        function closeModal(modalId) {
+            document.getElementById(modalId).style.display = 'none';
+        }
+
+        function confirmAction() {
+            alert('Item deleted!');
+            closeModal('modal2');
+        }
+
+        function acceptTerms() {
+            alert('Terms accepted!');
+            closeModal('modal3');
+        }
+
+        function toggleNotifications(checkbox) {
+            console.log('Notifications:', checkbox.checked);
+        }
+
+        function toggleDarkMode(checkbox) {
+            console.log('Dark Mode:', checkbox.checked);
+        }
+
+        function updateProgress() {
+            const progress = document.getElementById('progress');
+            const currentWidth = parseInt(progress.style.width) || 0;
+            const newWidth = Math.min(currentWidth + 10, 100);
+            progress.style.width = newWidth + '%';
+        }
+
+        function resetProgress() {
+            document.getElementById('progress').style.width = '0%';
+        }
+
+        function addToCart(productId) {
+            console.log('Added product', productId, 'to cart');
+        }
+
+        function viewDetails(productId) {
+            console.log('Viewing details for product', productId);
+        }
+
+        function removeItem(productId) {
+            console.log('Removed product', productId);
+        }
+
+        function showContextMenu(event) {
+            event.preventDefault();
+            const menu = document.getElementById('context-menu');
+            menu.style.display = 'block';
+            menu.style.left = event.pageX + 'px';
+            menu.style.top = event.pageY + 'px';
+        }
+
+        function contextAction(action) {
+            console.log('Context action:', action);
+            document.getElementById('context-menu').style.display = 'none';
+        }
+
+        function allowDrop(event) {
+            event.preventDefault();
+        }
+
+        function drag(event) {
+            event.dataTransfer.setData("text", event.target.id);
+        }
+
+        function drop(event) {
+            event.preventDefault();
+            const data = event.dataTransfer.getData("text");
+            event.target.appendChild(document.getElementById(data));
+        }
+
+        function toggleCollapse(elementId) {
+            const element = document.getElementById(elementId);
+            const header = element.previousElementSibling;
+            if (element.style.display === 'none') {
+                element.style.display = 'block';
+                header.textContent = header.textContent.replace('▼', '▲');
+            } else {
+                element.style.display = 'none';
+                header.textContent = header.textContent.replace('▲', '▼');
+            }
+        }
+
+        // Hide context menu when clicking elsewhere
+        document.addEventListener('click', function() {
+            document.getElementById('context-menu').style.display = 'none';
+        });
+    </script>
+</body>
+</html> 

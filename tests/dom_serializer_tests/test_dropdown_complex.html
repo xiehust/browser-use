@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Complex Dropdown Test</title>
+    <style>
+        .custom-select { position: relative; display: inline-block; }
+        .select-trigger { 
+            background: white; 
+            border: 1px solid #ccc; 
+            padding: 8px 16px; 
+            cursor: pointer; 
+            min-width: 200px;
+        }
+        .select-options { 
+            position: absolute; 
+            top: 100%; 
+            left: 0; 
+            right: 0; 
+            background: white; 
+            border: 1px solid #ccc; 
+            display: none; 
+            z-index: 1000;
+        }
+        .select-option { 
+            padding: 8px 16px; 
+            cursor: pointer; 
+            border-bottom: 1px solid #eee; 
+        }
+        .select-option:hover { background: #f0f0f0; }
+        .select-option:last-child { border-bottom: none; }
+        .nested-menu { position: relative; }
+        .submenu { 
+            position: absolute; 
+            left: 100%; 
+            top: 0; 
+            background: white; 
+            border: 1px solid #ccc; 
+            display: none; 
+            min-width: 150px;
+        }
+        .nested-menu:hover .submenu { display: block; }
+    </style>
+</head>
+<body>
+    <!-- Test 1: Custom Dropdown with JavaScript -->
+    <div class="custom-select" id="custom-dropdown">
+        <div class="select-trigger" onclick="toggleDropdown('custom-dropdown')">
+            Select Country ▼
+        </div>
+        <div class="select-options">
+            <div class="select-option" data-value="us" onclick="selectOption('custom-dropdown', 'us', 'United States')">United States</div>
+            <div class="select-option" data-value="uk" onclick="selectOption('custom-dropdown', 'uk', 'United Kingdom')">United Kingdom</div>
+            <div class="select-option" data-value="ca" onclick="selectOption('custom-dropdown', 'ca', 'Canada')">Canada</div>
+            <div class="select-option" data-value="de" onclick="selectOption('custom-dropdown', 'de', 'Germany')">Germany</div>
+            <div class="select-option" data-value="fr" onclick="selectOption('custom-dropdown', 'fr', 'France')">France</div>
+        </div>
+    </div>
+
+    <!-- Test 2: Multi-level Dropdown Menu -->
+    <nav class="main-nav">
+        <ul style="list-style: none; margin: 0; padding: 0; display: flex;">
+            <li class="nav-item" style="position: relative;">
+                <a href="#" class="nav-link">Products</a>
+                <ul class="dropdown-menu" style="position: absolute; top: 100%; left: 0; background: white; border: 1px solid #ccc; display: none; min-width: 200px; list-style: none; padding: 0; margin: 0;">
+                    <li><a href="/software" style="display: block; padding: 8px 16px; text-decoration: none;">Software</a></li>
+                    <li class="nested-menu">
+                        <a href="/hardware" style="display: block; padding: 8px 16px; text-decoration: none;">Hardware ➤</a>
+                        <ul class="submenu" style="list-style: none; padding: 0; margin: 0;">
+                            <li><a href="/laptops" style="display: block; padding: 8px 16px; text-decoration: none;">Laptops</a></li>
+                            <li><a href="/desktops" style="display: block; padding: 8px 16px; text-decoration: none;">Desktops</a></li>
+                            <li><a href="/accessories" style="display: block; padding: 8px 16px; text-decoration: none;">Accessories</a></li>
+                        </ul>
+                    </li>
+                    <li><a href="/services" style="display: block; padding: 8px 16px; text-decoration: none;">Services</a></li>
+                </ul>
+            </li>
+            <li class="nav-item" style="position: relative;">
+                <a href="#" class="nav-link">Support</a>
+                <ul class="dropdown-menu" style="position: absolute; top: 100%; left: 0; background: white; border: 1px solid #ccc; display: none; min-width: 200px; list-style: none; padding: 0; margin: 0;">
+                    <li><a href="/documentation" style="display: block; padding: 8px 16px; text-decoration: none;">Documentation</a></li>
+                    <li><a href="/contact" style="display: block; padding: 8px 16px; text-decoration: none;">Contact Us</a></li>
+                    <li><a href="/faq" style="display: block; padding: 8px 16px; text-decoration: none;">FAQ</a></li>
+                </ul>
+            </li>
+        </ul>
+    </nav>
+
+    <!-- Test 3: Searchable Dropdown -->
+    <div class="searchable-dropdown">
+        <input type="text" id="search-input" placeholder="Search countries..." onkeyup="filterOptions()" style="width: 300px; padding: 8px;">
+        <ul id="country-list" style="border: 1px solid #ccc; max-height: 200px; overflow-y: auto; list-style: none; padding: 0; margin: 0;">
+            <li class="country-option" data-value="argentina" onclick="selectCountry('argentina')" style="padding: 8px; cursor: pointer;">Argentina</li>
+            <li class="country-option" data-value="australia" onclick="selectCountry('australia')" style="padding: 8px; cursor: pointer;">Australia</li>
+            <li class="country-option" data-value="brazil" onclick="selectCountry('brazil')" style="padding: 8px; cursor: pointer;">Brazil</li>
+            <li class="country-option" data-value="canada" onclick="selectCountry('canada')" style="padding: 8px; cursor: pointer;">Canada</li>
+            <li class="country-option" data-value="china" onclick="selectCountry('china')" style="padding: 8px; cursor: pointer;">China</li>
+            <li class="country-option" data-value="france" onclick="selectCountry('france')" style="padding: 8px; cursor: pointer;">France</li>
+            <li class="country-option" data-value="germany" onclick="selectCountry('germany')" style="padding: 8px; cursor: pointer;">Germany</li>
+            <li class="country-option" data-value="india" onclick="selectCountry('india')" style="padding: 8px; cursor: pointer;">India</li>
+            <li class="country-option" data-value="japan" onclick="selectCountry('japan')" style="padding: 8px; cursor: pointer;">Japan</li>
+            <li class="country-option" data-value="united-kingdom" onclick="selectCountry('united-kingdom')" style="padding: 8px; cursor: pointer;">United Kingdom</li>
+            <li class="country-option" data-value="united-states" onclick="selectCountry('united-states')" style="padding: 8px; cursor: pointer;">United States</li>
+        </ul>
+    </div>
+
+    <!-- Test 4: Checkbox Dropdown -->
+    <div class="checkbox-dropdown" style="position: relative; display: inline-block; margin-top: 20px;">
+        <button class="dropdown-toggle" onclick="toggleCheckboxDropdown()" style="padding: 8px 16px; cursor: pointer;">
+            Select Skills ▼
+        </button>
+        <div class="checkbox-options" id="checkbox-dropdown" style="position: absolute; top: 100%; left: 0; background: white; border: 1px solid #ccc; display: none; min-width: 200px; z-index: 1000;">
+            <label style="display: block; padding: 8px 16px; cursor: pointer;">
+                <input type="checkbox" value="javascript" style="margin-right: 8px;"> JavaScript
+            </label>
+            <label style="display: block; padding: 8px 16px; cursor: pointer;">
+                <input type="checkbox" value="python" style="margin-right: 8px;"> Python
+            </label>
+            <label style="display: block; padding: 8px 16px; cursor: pointer;">
+                <input type="checkbox" value="java" style="margin-right: 8px;"> Java
+            </label>
+            <label style="display: block; padding: 8px 16px; cursor: pointer;">
+                <input type="checkbox" value="csharp" style="margin-right: 8px;"> C#
+            </label>
+            <label style="display: block; padding: 8px 16px; cursor: pointer;">
+                <input type="checkbox" value="php" style="margin-right: 8px;"> PHP
+            </label>
+        </div>
+    </div>
+
+    <script>
+        function toggleDropdown(id) {
+            const dropdown = document.getElementById(id);
+            const options = dropdown.querySelector('.select-options');
+            options.style.display = options.style.display === 'block' ? 'none' : 'block';
+        }
+
+        function selectOption(dropdownId, value, text) {
+            const dropdown = document.getElementById(dropdownId);
+            const trigger = dropdown.querySelector('.select-trigger');
+            trigger.textContent = text + ' ▼';
+            dropdown.querySelector('.select-options').style.display = 'none';
+        }
+
+        function filterOptions() {
+            const input = document.getElementById('search-input');
+            const filter = input.value.toLowerCase();
+            const options = document.querySelectorAll('.country-option');
+            
+            options.forEach(option => {
+                const text = option.textContent.toLowerCase();
+                option.style.display = text.includes(filter) ? 'block' : 'none';
+            });
+        }
+
+        function selectCountry(value) {
+            document.getElementById('search-input').value = value;
+            console.log('Selected country:', value);
+        }
+
+        function toggleCheckboxDropdown() {
+            const dropdown = document.getElementById('checkbox-dropdown');
+            dropdown.style.display = dropdown.style.display === 'block' ? 'none' : 'block';
+        }
+
+        // Show dropdown menus on hover
+        document.querySelectorAll('.nav-item').forEach(item => {
+            item.addEventListener('mouseenter', function() {
+                this.querySelector('.dropdown-menu').style.display = 'block';
+            });
+            item.addEventListener('mouseleave', function() {
+                this.querySelector('.dropdown-menu').style.display = 'none';
+            });
+        });
+    </script>
+</body>
+</html> 
