@@ -24,74 +24,92 @@ class SimplifiedNode:
 	is_consolidated: bool = False  # Flag to track if element was consolidated into parent
 
 	def is_clickable(self) -> bool:
-		"""Check if this node is clickable/interactive with comprehensive detection."""
+		"""Check if this node is clickable/interactive with comprehensive but conservative detection."""
 		# If element was consolidated into parent, it's no longer independently clickable
 		if self.is_consolidated:
 			return False
 
 		node = self.original_node
+		node_name = node.node_name.upper()
 
-		# Traditional clickability from snapshot
+		# **EXCLUDE STRUCTURAL CONTAINERS**: Never mark these as interactive
+		if node_name in {'HTML', 'BODY', 'HEAD', 'TITLE', 'META', 'STYLE', 'SCRIPT'}:
+			return False
+
+		# **FORM ELEMENTS**: Always interactive if they're genuine form controls
+		if node_name in {'INPUT', 'BUTTON', 'SELECT', 'TEXTAREA', 'OPTION'}:
+			self.interaction_priority += 10
+			return True
+
+		# **LINKS**: Always interactive if they have href
+		if node_name == 'A' and node.attributes and 'href' in node.attributes:
+			self.interaction_priority += 9
+			return True
+
+		# **TRADITIONAL CLICKABILITY**: From snapshot (high confidence)
 		if node.snapshot_node and getattr(node.snapshot_node, 'is_clickable', False):
 			self.interaction_priority += 10
 			return True
 
-		# ENHANCED: Check cursor style - pointer indicates clickability (HIGHEST PRIORITY)
-		if node.snapshot_node and getattr(node.snapshot_node, 'cursor_style', None) == 'pointer':
-			self.interaction_priority += 15  # Increased priority for cursor pointer
+		# **CURSOR POINTER**: Include ALL elements with cursor pointer (user's request)
+		has_cursor_pointer = False
+		if node.snapshot_node:
+			if getattr(node.snapshot_node, 'cursor_style', None) == 'pointer':
+				has_cursor_pointer = True
+			elif node.snapshot_node.computed_styles and node.snapshot_node.computed_styles.get('cursor') == 'pointer':
+				has_cursor_pointer = True
+
+		if has_cursor_pointer:
+			# Exclude obvious containers/wrappers but include most cursor pointer elements
+			if node_name not in {'HTML', 'BODY', 'MAIN', 'SECTION', 'ARTICLE', 'ASIDE', 'NAV', 'HEADER', 'FOOTER'}:
+				self.interaction_priority += 3
+				return True
+
+		# **INTERACTIVE ARIA ROLES**: From both AX tree and role attribute
+		interactive_roles = {
+			'button',
+			'link',
+			'menuitem',
+			'tab',
+			'option',
+			'checkbox',
+			'radio',
+			'slider',
+			'spinbutton',
+			'switch',
+			'textbox',
+			'combobox',
+			'listbox',
+			'tree',
+			'grid',
+			'gridcell',
+			'searchbox',
+			'menuitemradio',
+			'menuitemcheckbox',
+		}
+
+		# Check AX tree role
+		if node.ax_node and node.ax_node.role and node.ax_node.role.lower() in interactive_roles:
+			self.interaction_priority += 9
 			return True
 
-		# Also check computed styles for cursor pointer
-		if (
-			node.snapshot_node
-			and node.snapshot_node.computed_styles
-			and node.snapshot_node.computed_styles.get('cursor') == 'pointer'
-		):
-			self.interaction_priority += 15
+		# Check role attribute
+		if node.attributes and 'role' in node.attributes and node.attributes['role'].lower() in interactive_roles:
+			self.interaction_priority += 9
 			return True
 
-		# Check for focusable elements from accessibility tree
+		# **ACCESSIBILITY FOCUSABLE**: Elements marked as focusable by accessibility tree
 		if node.ax_node and node.ax_node.properties:
 			for prop in node.ax_node.properties:
 				if prop.name == AXPropertyName.FOCUSABLE and prop.value:
 					self.interaction_priority += 7
 					return True
 
-		# Check for interactive ARIA roles
-		if node.ax_node and node.ax_node.role:
-			interactive_roles = {
-				'button',
-				'link',
-				'menuitem',
-				'tab',
-				'option',
-				'checkbox',
-				'radio',
-				'slider',
-				'spinbutton',
-				'switch',
-				'textbox',
-				'combobox',
-				'listbox',
-				'tree',
-				'grid',
-				'gridcell',
-			}
-			if node.ax_node.role.lower() in interactive_roles:
-				self.interaction_priority += 9
-				return True
+		# **CONSERVATIVE CONTAINER HANDLING**: For remaining DIV/SPAN/LABEL elements
+		if node_name in {'DIV', 'SPAN', 'LABEL'}:
+			return self._is_container_truly_interactive(node)
 
-		# Check for form elements - high priority
-		if node.node_name.upper() in {'INPUT', 'BUTTON', 'SELECT', 'TEXTAREA', 'OPTION'}:
-			self.interaction_priority += 10
-			return True
-
-		# Check for links - high priority
-		if node.node_name.upper() == 'A' and node.attributes and 'href' in node.attributes:
-			self.interaction_priority += 9
-			return True
-
-		# Check for elements with onclick or other event handlers
+		# **EXPLICIT EVENT HANDLERS**: Elements with explicit event handlers
 		if node.attributes:
 			event_attributes = {
 				'onclick',
@@ -109,7 +127,8 @@ class SimplifiedNode:
 				self.interaction_priority += 6
 				return True
 
-			# Check for data attributes that suggest interactivity
+		# **INTERACTIVE DATA ATTRIBUTES**: Elements with explicit interactive data attributes
+		if node.attributes:
 			interactive_data_attrs = {
 				'data-toggle',
 				'data-dismiss',
@@ -120,13 +139,13 @@ class SimplifiedNode:
 				'data-trigger',
 				'data-modal',
 				'data-tab',
-				'data-role',
+				'jsaction',
 			}
 			if any(attr in node.attributes for attr in interactive_data_attrs):
 				self.interaction_priority += 6
 				return True
 
-		# Check for elements with tabindex (except -1 which removes from tab order)
+		# **POSITIVE TABINDEX**: Elements explicitly made focusable (excluding -1)
 		if node.attributes and 'tabindex' in node.attributes:
 			try:
 				tabindex = int(node.attributes['tabindex'])
@@ -136,34 +155,65 @@ class SimplifiedNode:
 			except ValueError:
 				pass
 
-		# Check for role attribute indicating interactivity
-		if node.attributes and 'role' in node.attributes:
-			interactive_roles = {
-				'button',
-				'link',
-				'menuitem',
-				'tab',
-				'option',
-				'checkbox',
-				'radio',
-				'slider',
-				'spinbutton',
-				'switch',
-				'textbox',
-			}
-			if node.attributes['role'].lower() in interactive_roles:
-				self.interaction_priority += 7
+		# **DRAGGABLE/EDITABLE**: Special interactive capabilities
+		if node.attributes:
+			if node.attributes.get('draggable') == 'true':
+				self.interaction_priority += 4
+				return True
+			if node.attributes.get('contenteditable') in {'true', ''}:
+				self.interaction_priority += 4
 				return True
 
-		# Check for draggable elements
-		if node.attributes and node.attributes.get('draggable') == 'true':
-			self.interaction_priority += 4
-			return True
+		return False
 
-		# Check for contenteditable elements
-		if node.attributes and node.attributes.get('contenteditable') in {'true', ''}:
-			self.interaction_priority += 4
-			return True
+	def _is_container_truly_interactive(self, node: EnhancedDOMTreeNode) -> bool:
+		"""Simplified check for whether a container element (DIV/SPAN/LABEL) is truly interactive."""
+		node_name = node.node_name.upper()
+
+		# **LABELS**: Interactive if they're for form controls or have explicit interaction
+		if node_name == 'LABEL':
+			if node.attributes:
+				# Labels with 'for' attribute that click to focus form elements
+				if 'for' in node.attributes:
+					self.interaction_priority += 5
+					return True
+				# Labels with explicit click handlers
+				if any(attr in node.attributes for attr in ['onclick', 'data-action', 'data-toggle']):
+					self.interaction_priority += 5
+					return True
+			return False
+
+		# **DIV/SPAN**: More permissive - check for any interactive indicators
+		if node_name in {'DIV', 'SPAN'}:
+			if not node.attributes:
+				return False
+
+			attrs = node.attributes
+
+			# Has explicit event handlers
+			if any(attr in attrs for attr in ['onclick', 'onmousedown', 'onmouseup', 'onkeydown']):
+				self.interaction_priority += 4
+				return True
+
+			# Has interactive role
+			if attrs.get('role', '').lower() in {'button', 'link', 'menuitem', 'tab', 'option', 'combobox'}:
+				self.interaction_priority += 4
+				return True
+
+			# Has interactive data attributes (Google Material Design, etc.)
+			if any(attr in attrs for attr in ['data-action', 'data-toggle', 'data-href', 'jsaction']):
+				self.interaction_priority += 3
+				return True
+
+			# Has tabindex >= 0 (explicitly focusable)
+			if 'tabindex' in attrs:
+				try:
+					tabindex = int(attrs['tabindex'])
+					if tabindex >= 0:
+						self.interaction_priority += 2
+						return True
+				except ValueError:
+					pass
 
 		return False
 
@@ -281,14 +331,56 @@ class IFrameContextInfo:
 class DOMTreeSerializer:
 	"""Serializes enhanced DOM trees to string format with comprehensive interaction detection."""
 
-	def __init__(self, root_node: EnhancedDOMTreeNode):
+	def __init__(self, root_node: EnhancedDOMTreeNode, viewport_info: dict | None = None):
 		self.root_node = root_node
+		self.viewport_info = viewport_info or {}
 		self._interactive_counter = 1
 		self._selector_map: dict[int, EnhancedDOMTreeNode] = {}
 		self._iframe_contexts: Dict[str, IFrameContextInfo] = {}
 		self._shadow_contexts: Dict[str, str] = {}  # shadow_id -> parent_xpath
 		self._element_groups: Dict[str, List[SimplifiedNode]] = {}
 		self._cross_origin_iframes: List[str] = []
+
+	def _is_element_in_current_viewport(self, node: SimplifiedNode) -> bool:
+		"""Check if element is within the current viewport bounds."""
+		if not self.viewport_info or not node.original_node.snapshot_node:
+			return True  # If no viewport info, assume visible
+
+		snapshot = node.original_node.snapshot_node
+		bounding_box = getattr(snapshot, 'bounding_box', None)
+		if not bounding_box:
+			return True
+
+		# Get viewport dimensions
+		viewport_width = self.viewport_info.get('width', 1920)
+		viewport_height = self.viewport_info.get('height', 1080)
+		scroll_x = self.viewport_info.get('scroll_x', 0)
+		scroll_y = self.viewport_info.get('scroll_y', 0)
+
+		# Calculate viewport bounds
+		viewport_left = scroll_x
+		viewport_top = scroll_y
+		viewport_right = scroll_x + viewport_width
+		viewport_bottom = scroll_y + viewport_height
+
+		# Element bounds
+		elem_left = bounding_box.get('x', 0)
+		elem_top = bounding_box.get('y', 0)
+		elem_right = elem_left + bounding_box.get('width', 0)
+		elem_bottom = elem_top + bounding_box.get('height', 0)
+
+		# Add small buffer for elements just outside viewport (useful for scrolling)
+		buffer = 100  # pixels
+
+		# Check if element intersects with viewport (with buffer)
+		intersects = (
+			elem_right > (viewport_left - buffer)
+			and elem_left < (viewport_right + buffer)
+			and elem_bottom > (viewport_top - buffer)
+			and elem_top < (viewport_bottom + buffer)
+		)
+
+		return intersects
 
 	def serialize_accessible_elements(
 		self,
@@ -371,9 +463,86 @@ class DOMTreeSerializer:
 		for child in node.children:
 			self._aggressive_consolidate_parent_child(child)
 
-		# If this node is interactive, check for aggressive consolidation opportunities
+		# **WRAPPER DETECTION**: Check if this node is just a wrapper around interactive children
+		if self._is_wrapper_container(node):
+			self._consolidate_wrapper_container(node)
+			return
+
+		# **TRADITIONAL CONSOLIDATION**: If this node is interactive, check for redundant children
 		if node.is_clickable():
 			self._consolidate_redundant_children(node)
+
+	def _is_wrapper_container(self, node: SimplifiedNode) -> bool:
+		"""Check if this node is a wrapper container that should be consolidated."""
+		node_name = node.original_node.node_name.upper()
+
+		# Only consider DIV and SPAN as potential wrappers
+		if node_name not in {'DIV', 'SPAN'}:
+			return False
+
+		# If the node itself is interactive, don't treat as wrapper
+		if node.is_clickable():
+			return False
+
+		# Count interactive and non-interactive children
+		interactive_children = [child for child in node.children if child.is_clickable()]
+		total_children = len(node.children)
+
+		# **LARGE CONTAINER DETECTION**: If container has many interactive children, it's likely a calendar/menu container
+		if len(interactive_children) >= 10:  # Calendar with many date buttons
+			# This is likely a calendar, dropdown menu, or similar container
+			# The container itself shouldn't be interactive, only the individual buttons
+			return True
+
+		# **MEDIUM CONTAINER DETECTION**: Container with moderate number of interactive children
+		if len(interactive_children) >= 5 and total_children >= 8:
+			# Check if it looks like a menu or calendar by class names
+			if node.original_node.attributes and 'class' in node.original_node.attributes:
+				classes = node.original_node.attributes['class'].lower()
+				calendar_menu_indicators = [
+					'calendar',
+					'menu',
+					'dropdown',
+					'picker',
+					'grid',
+					'table',
+					'list',
+					'items',
+					'options',
+					'choices',
+					'popup',
+				]
+				if any(indicator in classes for indicator in calendar_menu_indicators):
+					return True
+			return True
+
+		# **TRADITIONAL WRAPPER DETECTION**: Single or few children
+		# Case 1: Exactly one interactive child - likely a wrapper
+		if len(interactive_children) == 1 and total_children <= 3:
+			return True
+
+		# Case 2: Multiple children but mostly non-interactive text/styling
+		if len(interactive_children) >= 1 and total_children <= 5:
+			# Check if non-interactive children are just text/styling
+			non_interactive_children = [child for child in node.children if not child.is_clickable()]
+			mostly_styling = all(
+				child.original_node.node_type == NodeType.TEXT_NODE
+				or child.original_node.node_name.upper() in {'SPAN', 'I', 'B', 'STRONG', 'EM', 'IMG', 'SVG', 'PATH'}
+				for child in non_interactive_children
+			)
+			if mostly_styling:
+				return True
+
+		return False
+
+	def _consolidate_wrapper_container(self, wrapper_node: SimplifiedNode) -> None:
+		"""Consolidate a wrapper container by removing its interactivity and keeping children."""
+		# The wrapper itself should not be interactive
+		wrapper_node.is_consolidated = True
+
+		# But we don't consolidate the children - they keep their interactivity
+		# This effectively "removes" the wrapper from being detected as interactive
+		# while preserving the children's interactive status
 
 	def _consolidate_redundant_children(self, parent_node: SimplifiedNode) -> None:
 		"""Aggressively consolidate children when parent is more meaningful."""
@@ -755,25 +924,25 @@ class DOMTreeSerializer:
 		return None
 
 	def _assign_interactive_indices(self, node: SimplifiedNode | None) -> None:
-		"""Step 5: Assign interactive indices to remaining clickable elements."""
+		"""Step 5: Assign interactive indices to remaining clickable elements that are in the current viewport."""
 		if not node:
 			return
 
 		# Handle grouped elements specially
 		if node.group_type:
 			if node.group_type == 'select_option':
-				if node.is_clickable():
+				if node.is_clickable() and self._is_element_in_current_viewport(node):
 					node.interactive_index = self._interactive_counter
 					self._selector_map[self._interactive_counter] = self._create_contextual_node(node)
 					self._interactive_counter += 1
 			elif node.group_type == 'radio_checkbox':
-				if node.is_clickable():
+				if node.is_clickable() and self._is_element_in_current_viewport(node):
 					node.interactive_index = self._interactive_counter
 					self._selector_map[self._interactive_counter] = self._create_contextual_node(node)
 					self._interactive_counter += 1
 		else:
-			# Regular interactive elements - only assign if still clickable after consolidation
-			if node.is_clickable():
+			# Regular interactive elements - only assign if still clickable after consolidation AND in viewport
+			if node.is_clickable() and self._is_element_in_current_viewport(node):
 				node.interactive_index = self._interactive_counter
 				self._selector_map[self._interactive_counter] = self._create_contextual_node(node)
 				self._interactive_counter += 1

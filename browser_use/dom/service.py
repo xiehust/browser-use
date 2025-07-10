@@ -573,8 +573,20 @@ class DOMService:
 		"""
 		enhanced_dom_tree = await self.get_dom_tree()
 
+		# Get viewport information for filtering
+		viewport_width, viewport_height, device_pixel_ratio, scroll_x, scroll_y = await self._get_viewport_size()
+		viewport_info = {
+			'width': viewport_width,
+			'height': viewport_height,
+			'device_pixel_ratio': device_pixel_ratio,
+			'scroll_x': scroll_x,
+			'scroll_y': scroll_y,
+		}
+
 		start = time.time()
-		serialized, selector_map = DOMTreeSerializer(enhanced_dom_tree).serialize_accessible_elements(include_attributes)
+		serialized, selector_map = DOMTreeSerializer(enhanced_dom_tree, viewport_info).serialize_accessible_elements(
+			include_attributes
+		)
 		end = time.time()
 
 		# Get current page info for better debugging
@@ -582,7 +594,7 @@ class DOMService:
 		page_info = f"tab '{current_page.url}'"
 
 		print(f'Time taken to serialize DOM tree for {page_info}: {end - start:.2f} seconds')
-		print(f'🎯 Detected {len(selector_map)} interactive elements in {page_info} (comprehensive mode)')
+		print(f'🎯 Detected {len(selector_map)} interactive elements in {page_info} (comprehensive mode with viewport filtering)')
 
 		return serialized, selector_map
 
