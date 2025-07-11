@@ -338,7 +338,7 @@ async def main():
 						print(f'  - 🌒 Shadow DOM contexts: {shadow_contexts}')
 						print('  - ✅ Enhanced iframe/shadow DOM processing active')
 
-					# Show viewport info if available
+					# Show viewport info if it is available
 					if interactive_elements:
 						min_x = min(elem['x'] for elem in interactive_elements)
 						max_x = max(elem['x'] + elem['width'] for elem in interactive_elements)
