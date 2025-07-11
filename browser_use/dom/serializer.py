@@ -32,22 +32,64 @@ class SimplifiedNode:
 		node = self.original_node
 		node_name = node.node_name.upper()
 
+		# Debug output for iframe/shadow elements
+		is_iframe_or_shadow = self.iframe_context or self.shadow_context
+		context_debug = ''
+		if self.iframe_context:
+			context_debug = f' (iframe: {self.iframe_context})'
+		elif self.shadow_context:
+			context_debug = f' (shadow: {self.shadow_context})'
+
 		# **EXCLUDE STRUCTURAL CONTAINERS**: Never mark these as interactive
 		if node_name in {'HTML', 'BODY', 'HEAD', 'TITLE', 'META', 'STYLE', 'SCRIPT'}:
+			if is_iframe_or_shadow and node_name not in {'HEAD', 'TITLE', 'META', 'STYLE', 'SCRIPT'}:
+				print(f'    🚫 Excluding structural {node_name}{context_debug}')
 			return False
+
+		# **EXCLUDE COMMON CONTAINER ELEMENTS**: Unless they have explicit interactive attributes
+		if node_name in {'MAIN', 'SECTION', 'ARTICLE', 'ASIDE', 'NAV', 'HEADER', 'FOOTER', 'FIGURE', 'FIGCAPTION'}:
+			# Only allow these if they have explicit interactive attributes
+			if node.attributes:
+				has_explicit_interaction = any(
+					attr in node.attributes
+					for attr in [
+						'onclick',
+						'onmousedown',
+						'onkeydown',
+						'data-action',
+						'data-toggle',
+						'data-href',
+						'jsaction',
+						'tabindex',
+					]
+				)
+				if not has_explicit_interaction:
+					if is_iframe_or_shadow:
+						print(f'    🚫 Excluding container {node_name}{context_debug} (no explicit interaction)')
+					return False
+			else:
+				if is_iframe_or_shadow:
+					print(f'    🚫 Excluding container {node_name}{context_debug} (no attributes)')
+				return False
 
 		# **FORM ELEMENTS**: Always interactive if they're genuine form controls
 		if node_name in {'INPUT', 'BUTTON', 'SELECT', 'TEXTAREA', 'OPTION'}:
+			if is_iframe_or_shadow:
+				print(f'    ✅ Form element {node_name}{context_debug} is clickable')
 			self.interaction_priority += 10
 			return True
 
 		# **LINKS**: Always interactive if they have href
 		if node_name == 'A' and node.attributes and 'href' in node.attributes:
+			if is_iframe_or_shadow:
+				print(f'    ✅ Link {node_name}{context_debug} with href is clickable')
 			self.interaction_priority += 9
 			return True
 
 		# **TRADITIONAL CLICKABILITY**: From snapshot (high confidence)
 		if node.snapshot_node and getattr(node.snapshot_node, 'is_clickable', False):
+			if is_iframe_or_shadow:
+				print(f'    ✅ Snapshot clickable {node_name}{context_debug}')
 			self.interaction_priority += 10
 			return True
 
@@ -62,7 +104,9 @@ class SimplifiedNode:
 		if has_cursor_pointer:
 			# Exclude obvious containers/wrappers but include most cursor pointer elements
 			if node_name not in {'HTML', 'BODY', 'MAIN', 'SECTION', 'ARTICLE', 'ASIDE', 'NAV', 'HEADER', 'FOOTER'}:
-				self.interaction_priority += 3
+				if is_iframe_or_shadow:
+					print(f'    ✅ Cursor pointer {node_name}{context_debug} is clickable')
+				self.interaction_priority += 3  # Fixed: back to positive priority
 				return True
 
 		# **INTERACTIVE ARIA ROLES**: From both AX tree and role attribute
@@ -90,11 +134,15 @@ class SimplifiedNode:
 
 		# Check AX tree role
 		if node.ax_node and node.ax_node.role and node.ax_node.role.lower() in interactive_roles:
+			if is_iframe_or_shadow:
+				print(f'    ✅ AX role {node.ax_node.role} {node_name}{context_debug} is clickable')
 			self.interaction_priority += 9
 			return True
 
 		# Check role attribute
 		if node.attributes and 'role' in node.attributes and node.attributes['role'].lower() in interactive_roles:
+			if is_iframe_or_shadow:
+				print(f'    ✅ Role attribute {node.attributes["role"]} {node_name}{context_debug} is clickable')
 			self.interaction_priority += 9
 			return True
 
@@ -102,12 +150,22 @@ class SimplifiedNode:
 		if node.ax_node and node.ax_node.properties:
 			for prop in node.ax_node.properties:
 				if prop.name == AXPropertyName.FOCUSABLE and prop.value:
+					if is_iframe_or_shadow:
+						print(f'    ✅ AX focusable {node_name}{context_debug} is clickable')
 					self.interaction_priority += 7
 					return True
 
 		# **CONSERVATIVE CONTAINER HANDLING**: For remaining DIV/SPAN/LABEL elements
 		if node_name in {'DIV', 'SPAN', 'LABEL'}:
-			return self._is_container_truly_interactive(node)
+			result = self._is_container_truly_interactive(node)
+			if is_iframe_or_shadow and result:
+				print(f'    ✅ Interactive container {node_name}{context_debug} is clickable')
+			elif is_iframe_or_shadow and not result:
+				print(f'    ❌ Non-interactive container {node_name}{context_debug}')
+			elif not result and node_name == 'DIV':
+				# Extra debug for non-iframe DIVs that are being filtered
+				print(f'    🗑️  Filtered non-interactive DIV{context_debug}')
+			return result
 
 		# **EXPLICIT EVENT HANDLERS**: Elements with explicit event handlers
 		if node.attributes:
@@ -124,6 +182,8 @@ class SimplifiedNode:
 				'ondblclick',
 			}
 			if any(attr in node.attributes for attr in event_attributes):
+				if is_iframe_or_shadow:
+					print(f'    ✅ Event handler {node_name}{context_debug} is clickable')
 				self.interaction_priority += 6
 				return True
 
@@ -142,6 +202,8 @@ class SimplifiedNode:
 				'jsaction',
 			}
 			if any(attr in node.attributes for attr in interactive_data_attrs):
+				if is_iframe_or_shadow:
+					print(f'    ✅ Data attribute {node_name}{context_debug} is clickable')
 				self.interaction_priority += 6
 				return True
 
@@ -150,6 +212,8 @@ class SimplifiedNode:
 			try:
 				tabindex = int(node.attributes['tabindex'])
 				if tabindex >= 0:
+					if is_iframe_or_shadow:
+						print(f'    ✅ Tabindex {tabindex} {node_name}{context_debug} is clickable')
 					self.interaction_priority += 5
 					return True
 			except ValueError:
@@ -158,11 +222,19 @@ class SimplifiedNode:
 		# **DRAGGABLE/EDITABLE**: Special interactive capabilities
 		if node.attributes:
 			if node.attributes.get('draggable') == 'true':
+				if is_iframe_or_shadow:
+					print(f'    ✅ Draggable {node_name}{context_debug} is clickable')
 				self.interaction_priority += 4
 				return True
 			if node.attributes.get('contenteditable') in {'true', ''}:
+				if is_iframe_or_shadow:
+					print(f'    ✅ Editable {node_name}{context_debug} is clickable')
 				self.interaction_priority += 4
 				return True
+
+		# If we got here and it's an iframe/shadow element, show why it wasn't detected
+		if is_iframe_or_shadow and node_name in {'BUTTON', 'A', 'INPUT', 'DIV', 'SPAN'}:
+			print(f'    ❌ Not clickable: {node_name}{context_debug} (no interaction indicators)')
 
 		return False
 
@@ -183,29 +255,52 @@ class SimplifiedNode:
 					return True
 			return False
 
-		# **DIV/SPAN**: More permissive - check for any interactive indicators
+		# **DIV/SPAN**: More conservative - require STRONG evidence of interactivity
 		if node_name in {'DIV', 'SPAN'}:
 			if not node.attributes:
 				return False
 
 			attrs = node.attributes
 
-			# Has explicit event handlers
-			if any(attr in attrs for attr in ['onclick', 'onmousedown', 'onmouseup', 'onkeydown']):
+			# Require explicit event handlers (stronger evidence)
+			explicit_handlers = ['onclick', 'onmousedown', 'onmouseup', 'onkeydown', 'onkeyup']
+			if any(attr in attrs for attr in explicit_handlers):
 				self.interaction_priority += 4
 				return True
 
-			# Has interactive role
-			if attrs.get('role', '').lower() in {'button', 'link', 'menuitem', 'tab', 'option', 'combobox'}:
+			# Require explicit interactive role (stronger evidence)
+			role = attrs.get('role', '').lower()
+			if role in {'button', 'link', 'menuitem', 'tab', 'option', 'combobox', 'textbox', 'searchbox'}:
 				self.interaction_priority += 4
 				return True
 
-			# Has interactive data attributes (Google Material Design, etc.)
-			if any(attr in attrs for attr in ['data-action', 'data-toggle', 'data-href', 'jsaction']):
-				self.interaction_priority += 3
-				return True
+			# Require explicit interactive data attributes AND additional evidence
+			interactive_data_attrs = ['data-action', 'data-toggle', 'data-href', 'jsaction']
+			has_data_attr = any(attr in attrs for attr in interactive_data_attrs)
 
-			# Has tabindex >= 0 (explicitly focusable)
+			if has_data_attr:
+				# Additional requirements for DIV with data attributes
+				if node_name == 'DIV':
+					# Also need cursor pointer, tabindex, or role for DIVs
+					has_cursor = node.snapshot_node and (
+						getattr(node.snapshot_node, 'cursor_style', None) == 'pointer'
+						or (node.snapshot_node.computed_styles and node.snapshot_node.computed_styles.get('cursor') == 'pointer')
+					)
+					has_tabindex = 'tabindex' in attrs and attrs['tabindex'] != '-1'
+					has_role = 'role' in attrs
+
+					if has_cursor or has_tabindex or has_role:
+						self.interaction_priority += 3
+						return True
+					else:
+						# DIV with only data attributes but no other evidence - likely not interactive
+						return False
+				else:
+					# SPAN with data attributes - allow
+					self.interaction_priority += 3
+					return True
+
+			# Require positive tabindex (explicitly focusable)
 			if 'tabindex' in attrs:
 				try:
 					tabindex = int(attrs['tabindex'])
@@ -343,6 +438,11 @@ class DOMTreeSerializer:
 
 	def _is_element_in_current_viewport(self, node: SimplifiedNode) -> bool:
 		"""Check if element is within the current viewport bounds."""
+		# **IFRAME/SHADOW DOM EXEMPTION**: Skip viewport filtering for iframe and shadow DOM elements
+		# These elements have coordinates relative to their own context, not the main page
+		if node.iframe_context or node.shadow_context:
+			return True  # If iframe/shadow content is loaded, consider it visible
+
 		if not self.viewport_info or not node.original_node.snapshot_node:
 			return True  # If no viewport info, assume visible
 
@@ -476,8 +576,8 @@ class DOMTreeSerializer:
 		"""Check if this node is a wrapper container that should be consolidated."""
 		node_name = node.original_node.node_name.upper()
 
-		# Only consider DIV and SPAN as potential wrappers
-		if node_name not in {'DIV', 'SPAN'}:
+		# Only consider common container elements as potential wrappers
+		if node_name not in {'DIV', 'SPAN', 'SECTION', 'ARTICLE', 'HEADER', 'FOOTER', 'MAIN', 'NAV', 'ASIDE'}:
 			return False
 
 		# If the node itself is interactive, don't treat as wrapper
@@ -488,10 +588,16 @@ class DOMTreeSerializer:
 		interactive_children = [child for child in node.children if child.is_clickable()]
 		total_children = len(node.children)
 
+		# **AGGRESSIVE WRAPPER DETECTION**: If ALL children are interactive, this is likely a wrapper
+		if len(interactive_children) > 0 and len(interactive_children) == total_children:
+			print(f'  🗑️  Removing wrapper container {node_name} with {len(interactive_children)} interactive children')
+			return True
+
 		# **LARGE CONTAINER DETECTION**: If container has many interactive children, it's likely a calendar/menu container
 		if len(interactive_children) >= 10:  # Calendar with many date buttons
 			# This is likely a calendar, dropdown menu, or similar container
 			# The container itself shouldn't be interactive, only the individual buttons
+			print(f'  🗑️  Removing large container {node_name} with {len(interactive_children)} interactive children')
 			return True
 
 		# **MEDIUM CONTAINER DETECTION**: Container with moderate number of interactive children
@@ -513,12 +619,15 @@ class DOMTreeSerializer:
 					'popup',
 				]
 				if any(indicator in classes for indicator in calendar_menu_indicators):
+					print(f'  🗑️  Removing {node_name} container with class indicators: {classes[:50]}...')
 					return True
+			print(f'  🗑️  Removing medium container {node_name} with {len(interactive_children)} interactive children')
 			return True
 
 		# **TRADITIONAL WRAPPER DETECTION**: Single or few children
 		# Case 1: Exactly one interactive child - likely a wrapper
 		if len(interactive_children) == 1 and total_children <= 3:
+			print(f'  🗑️  Removing wrapper {node_name} around single interactive child')
 			return True
 
 		# Case 2: Multiple children but mostly non-interactive text/styling
@@ -531,7 +640,13 @@ class DOMTreeSerializer:
 				for child in non_interactive_children
 			)
 			if mostly_styling:
+				print(f'  🗑️  Removing wrapper {node_name} with mostly styling children')
 				return True
+
+		# **HIGH RATIO WRAPPER DETECTION**: If >70% of children are interactive, likely a wrapper
+		if total_children > 1 and (len(interactive_children) / total_children) > 0.7:
+			print(f'  🗑️  Removing wrapper {node_name} with high interactive ratio ({len(interactive_children)}/{total_children})')
+			return True
 
 		return False
 
@@ -694,7 +809,7 @@ class DOMTreeSerializer:
 	def _create_simplified_tree(
 		self, node: EnhancedDOMTreeNode, iframe_context: str | None = None, shadow_context: str | None = None
 	) -> SimplifiedNode | None:
-		"""Step 1: Create a simplified tree with enhanced interactive element detection and iframe/shadow traversal."""
+		"""Step 1: Create a simplified tree with ENHANCED iframe/shadow traversal and recursive DOM extraction."""
 
 		if node.node_type == NodeType.DOCUMENT_NODE:
 			# Document nodes - process children directly and return the first meaningful child
@@ -729,44 +844,39 @@ class DOMTreeSerializer:
 			is_iframe = node.node_name.upper() == 'IFRAME'
 
 			# More inclusive criteria - include if interactive and visible, or scrollable, or structural
-			should_include = (
-				(is_interactive and is_effectively_visible) or is_scrollable or is_iframe or node.children_nodes
-			)  # Include containers that might have interactive children
+			should_include = (is_interactive and is_effectively_visible) or is_scrollable or is_iframe or node.children_nodes
 
 			if should_include:
-				# Process regular children
+				# Process regular children first
 				if node.children_nodes:
 					for child in node.children_nodes:
 						simplified_child = self._create_simplified_tree(child, iframe_context, shadow_context)
 						if simplified_child:
 							simplified.children.append(simplified_child)
 
-				# Process iframe content if present
+				# **ENHANCED IFRAME PROCESSING**: Run full algorithm inside iframe content
 				if node.content_document and is_iframe:
 					iframe_context_id = self._register_iframe_context(node)
-					iframe_child = self._create_simplified_tree(node.content_document, iframe_context_id, shadow_context)
-					if iframe_child:
-						# Wrap iframe content with special marker
-						iframe_wrapper = SimplifiedNode(
-							original_node=node.content_document, iframe_context=iframe_context_id, shadow_context=shadow_context
-						)
-						iframe_wrapper.children = [iframe_child]
-						iframe_wrapper.should_display = False  # Don't show wrapper itself
-						simplified.children.append(iframe_wrapper)
+					print(f'🔍 Processing iframe content: {iframe_context_id}')
 
-				# Process shadow roots if present
+					# Run the FULL DOM extraction algorithm recursively inside the iframe
+					iframe_content = self._extract_iframe_content_recursively(
+						node.content_document, iframe_context_id, shadow_context
+					)
+
+					if iframe_content:
+						simplified.children.extend(iframe_content)
+
+				# **ENHANCED SHADOW DOM PROCESSING**: Process shadow roots
 				if node.shadow_roots:
 					for i, shadow_root in enumerate(node.shadow_roots):
 						shadow_context_id = self._register_shadow_context(node, i)
-						shadow_child = self._create_simplified_tree(shadow_root, iframe_context, shadow_context_id)
-						if shadow_child:
-							# Wrap shadow content with special marker
-							shadow_wrapper = SimplifiedNode(
-								original_node=shadow_root, iframe_context=iframe_context, shadow_context=shadow_context_id
-							)
-							shadow_wrapper.children = [shadow_child]
-							shadow_wrapper.should_display = False  # Don't show wrapper itself
-							simplified.children.append(shadow_wrapper)
+						print(f'🔍 Processing shadow DOM: {shadow_context_id}')
+
+						shadow_content = self._extract_shadow_content_recursively(shadow_root, iframe_context, shadow_context_id)
+
+						if shadow_content:
+							simplified.children.extend(shadow_content)
 
 				# Only return this node if it's meaningful OR has meaningful children
 				if (is_interactive and is_effectively_visible) or is_scrollable or is_iframe or simplified.children:
@@ -781,15 +891,102 @@ class DOMTreeSerializer:
 
 		return None
 
+	def _count_interactive_elements(self, node: SimplifiedNode | None) -> int:
+		"""Recursively count interactive elements in a tree."""
+		if not node:
+			return 0
+
+		count = 1 if node.is_clickable() else 0
+
+		for child in node.children:
+			count += self._count_interactive_elements(child)
+
+		return count
+
+	def _extract_iframe_content_recursively(
+		self, content_document: EnhancedDOMTreeNode, iframe_context_id: str, parent_shadow_context: str | None
+	) -> list[SimplifiedNode]:
+		"""Extract iframe content by running the full DOM extraction algorithm recursively."""
+		try:
+			print(f'  🔄 Running full DOM extraction inside iframe: {iframe_context_id}')
+
+			# Recursively process the entire iframe content document
+			iframe_tree = self._create_simplified_tree(content_document, iframe_context_id, parent_shadow_context)
+
+			if iframe_tree:
+				print(f'    📊 Initial iframe tree created for {iframe_context_id}')
+
+				# Run optimization and consolidation on iframe content
+				optimized_iframe_tree = self._optimize_tree(iframe_tree)
+
+				if optimized_iframe_tree:
+					print(f'    🔧 Iframe tree optimized for {iframe_context_id}')
+
+					# Group elements within the iframe
+					self._group_related_elements(optimized_iframe_tree)
+					print(f'    🔗 Elements grouped in {iframe_context_id}')
+
+					# Apply consolidation within the iframe
+					self._aggressive_consolidate_parent_child(optimized_iframe_tree)
+					print(f'    🗜️  Consolidation applied in {iframe_context_id}')
+
+					# Count interactive elements before returning
+					interactive_count = self._count_interactive_elements(optimized_iframe_tree)
+					print(f'    🎯 Found {interactive_count} interactive elements in {iframe_context_id}')
+
+					# Return as a list of children for integration
+					return [optimized_iframe_tree]
+				else:
+					print(f'    ⚠️ No optimized tree for {iframe_context_id}')
+			else:
+				print(f'    ⚠️ No initial tree created for {iframe_context_id}')
+
+			return []
+
+		except Exception as e:
+			print(f'  ⚠️ Error processing iframe content {iframe_context_id}: {e}')
+			return []
+
+	def _extract_shadow_content_recursively(
+		self, shadow_root: EnhancedDOMTreeNode, parent_iframe_context: str | None, shadow_context_id: str
+	) -> list[SimplifiedNode]:
+		"""Extract shadow DOM content by running the full DOM extraction algorithm recursively."""
+		try:
+			print(f'  🔄 Running full DOM extraction inside shadow DOM: {shadow_context_id}')
+
+			# Recursively process the entire shadow root
+			shadow_tree = self._create_simplified_tree(shadow_root, parent_iframe_context, shadow_context_id)
+
+			if shadow_tree:
+				# Run optimization and consolidation on shadow content
+				optimized_shadow_tree = self._optimize_tree(shadow_tree)
+
+				if optimized_shadow_tree:
+					# Group elements within the shadow DOM
+					self._group_related_elements(optimized_shadow_tree)
+
+					# Apply consolidation within the shadow DOM
+					self._aggressive_consolidate_parent_child(optimized_shadow_tree)
+
+					# Return as a list of children for integration
+					return [optimized_shadow_tree]
+
+			return []
+
+		except Exception as e:
+			print(f'  ⚠️ Error processing shadow DOM content {shadow_context_id}: {e}')
+			return []
+
 	def _register_iframe_context(self, iframe_node: EnhancedDOMTreeNode) -> str:
-		"""Register an iframe context and return its ID."""
+		"""Register an iframe context and return its ID with enhanced cross-origin detection."""
 		iframe_src = iframe_node.attributes.get('src') if iframe_node.attributes else None
 		iframe_xpath = iframe_node.x_path
 
-		# Check if iframe is cross-origin
-		is_cross_origin = self._is_cross_origin_iframe(iframe_node)
+		# Enhanced cross-origin detection
+		is_cross_origin = self._is_cross_origin_iframe_enhanced(iframe_node)
 		if is_cross_origin and iframe_src:
 			self._cross_origin_iframes.append(iframe_src)
+			print(f'  🌐 Detected cross-origin iframe: {iframe_src}')
 
 		context_id = f'iframe_{len(self._iframe_contexts)}'
 		self._iframe_contexts[context_id] = IFrameContextInfo(
@@ -797,21 +994,52 @@ class DOMTreeSerializer:
 		)
 		return context_id
 
+	def _is_cross_origin_iframe_enhanced(self, iframe_node: EnhancedDOMTreeNode) -> bool:
+		"""Enhanced check if an iframe is cross-origin by examining content and src."""
+		# Primary check: If we don't have content_document, it's likely cross-origin
+		if not iframe_node.content_document:
+			return True
+
+		# Secondary check: Analyze the src URL for cross-origin indicators
+		if iframe_node.attributes and 'src' in iframe_node.attributes:
+			src = iframe_node.attributes['src']
+
+			# Check for obvious cross-origin patterns
+			cross_origin_patterns = [
+				'https://',  # Different protocol
+				'http://',  # Different protocol
+				'www.',  # Different subdomain
+				'.com/',
+				'.org/',
+				'.net/',
+				'.io/',  # Different domains
+				'google.com',
+				'facebook.com',
+				'twitter.com',
+				'youtube.com',
+				'mailerlite.com',
+				'typeform.com',
+				'hubspot.com',
+				'stripe.com',
+				'paypal.com',
+				'gravatar.com',
+			]
+
+			src_lower = src.lower()
+			if any(pattern in src_lower for pattern in cross_origin_patterns):
+				# Additional check: if it's a relative URL, it's same-origin
+				if not src.startswith(('http://', 'https://', '//')):
+					return False  # Relative URL = same origin
+				return True
+
+		# If we have content_document and no suspicious src, assume same-origin
+		return False
+
 	def _register_shadow_context(self, parent_node: EnhancedDOMTreeNode, shadow_index: int) -> str:
 		"""Register a shadow DOM context and return its ID."""
 		shadow_id = f'shadow_{len(self._shadow_contexts)}_{shadow_index}'
 		self._shadow_contexts[shadow_id] = parent_node.x_path
 		return shadow_id
-
-	def _is_cross_origin_iframe(self, iframe_node: EnhancedDOMTreeNode) -> bool:
-		"""Check if an iframe is cross-origin by examining its content availability."""
-		# If we have content_document, it's likely same-origin
-		# If we don't have content_document but have an iframe, it might be cross-origin
-		if not iframe_node.content_document:
-			return True
-
-		# Additional heuristics could be added here based on src URL comparison
-		return False
 
 	def _optimize_tree(self, node: SimplifiedNode | None) -> SimplifiedNode | None:
 		"""Step 2: Optimize tree structure while preserving interactive elements."""
@@ -942,10 +1170,36 @@ class DOMTreeSerializer:
 					self._interactive_counter += 1
 		else:
 			# Regular interactive elements - only assign if still clickable after consolidation AND in viewport
-			if node.is_clickable() and self._is_element_in_current_viewport(node):
-				node.interactive_index = self._interactive_counter
-				self._selector_map[self._interactive_counter] = self._create_contextual_node(node)
-				self._interactive_counter += 1
+			if node.is_clickable():
+				is_in_viewport = self._is_element_in_current_viewport(node)
+
+				# Debug output for iframe/shadow elements
+				context_info = ''
+				if node.iframe_context:
+					context_info = f' (iframe: {node.iframe_context})'
+				elif node.shadow_context:
+					context_info = f' (shadow: {node.shadow_context})'
+
+				if is_in_viewport:
+					if context_info:
+						print(f'  🎯 Assigning index {self._interactive_counter} to {node.original_node.node_name}{context_info}')
+
+					node.interactive_index = self._interactive_counter
+					self._selector_map[self._interactive_counter] = self._create_contextual_node(node)
+					self._interactive_counter += 1
+				else:
+					if context_info:
+						print(f'  ❌ Skipping {node.original_node.node_name}{context_info} - outside viewport')
+					elif node.original_node.node_name.upper() in {'BUTTON', 'A', 'INPUT'}:
+						print(f'  ❌ Skipping {node.original_node.node_name} - outside viewport')
+			else:
+				# Debug for non-clickable elements in iframe/shadow
+				if node.iframe_context or node.shadow_context:
+					context_info = (
+						f' (iframe: {node.iframe_context})' if node.iframe_context else f' (shadow: {node.shadow_context})'
+					)
+					if node.original_node.node_name.upper() in {'BUTTON', 'A', 'INPUT', 'DIV'}:
+						print(f'  ⚪ Not clickable: {node.original_node.node_name}{context_info}')
 
 		# Process children
 		for child in node.children:
@@ -965,7 +1219,7 @@ class DOMTreeSerializer:
 		return original_node
 
 	def _serialize_tree(self, node: SimplifiedNode | None, include_attributes: list[str], depth: int = 0) -> str:
-		"""Step 6: Serialize the optimized tree with enhanced grouping and iframe/shadow information."""
+		"""Step 6: Serialize the optimized tree with ENHANCED iframe/shadow display."""
 		if not node:
 			return ''
 
@@ -974,65 +1228,82 @@ class DOMTreeSerializer:
 		next_depth = depth
 
 		if node.original_node.node_type == NodeType.ELEMENT_NODE:
-			# Skip displaying nodes marked as should_display=False (iframe/shadow wrappers)
-			if not node.should_display:
-				# Special handling for iframe and shadow wrappers
-				if node.iframe_context:
-					formatted_text.append(f'{depth_str}>>> IFRAME CONTENT [{node.iframe_context}] <<<')
-					next_depth += 1
-				elif node.shadow_context:
-					formatted_text.append(f'{depth_str}>>> SHADOW DOM [{node.shadow_context}] <<<')
-					next_depth += 1
+			# **ENHANCED IFRAME/SHADOW CONTEXT DISPLAY**
+			context_prefix = ''
+			context_suffix = ''
 
-				for child in node.children:
-					child_text = self._serialize_tree(child, include_attributes, next_depth)
-					if child_text:
-						formatted_text.append(child_text)
+			if node.iframe_context:
+				iframe_info = self._iframe_contexts.get(node.iframe_context)
+				if iframe_info:
+					iframe_src = iframe_info.iframe_src or 'unknown'
+					is_cross_origin = iframe_info.is_cross_origin
+					cross_origin_marker = ' [CROSS-ORIGIN]' if is_cross_origin else ''
 
-				if node.iframe_context or node.shadow_context:
-					formatted_text.append(f'{depth_str}>>> END <<<')
+					context_prefix = f'{depth_str}🖼️  === IFRAME CONTENT [{node.iframe_context}]{cross_origin_marker} ==='
+					if iframe_src and iframe_src != 'unknown':
+						context_prefix += f'\n{depth_str}📍 Source: {iframe_src}'
+					context_suffix = f'{depth_str}🖼️  === END IFRAME [{node.iframe_context}] ==='
+				else:
+					# Fallback if iframe info not found
+					context_prefix = f'{depth_str}🖼️  === IFRAME CONTENT [{node.iframe_context}] ==='
+					context_suffix = f'{depth_str}🖼️  === END IFRAME [{node.iframe_context}] ==='
+				next_depth += 1
 
-				return '\n'.join(formatted_text)
+			elif node.shadow_context:
+				context_prefix = f'{depth_str}🌒 === SHADOW DOM [{node.shadow_context}] ==='
+				context_suffix = f'{depth_str}🌒 === END SHADOW [{node.shadow_context}] ==='
+				next_depth += 1
 
-			# Enhanced element display with more information
+			# Add context markers if this is iframe/shadow content
+			if context_prefix:
+				formatted_text.append(context_prefix)
+
+			# Enhanced element display with iframe/shadow context
 			if (
 				node.interactive_index is not None
 				or getattr(node.original_node, 'is_scrollable', False)
 				or self._should_show_element(node)
 			):
-				next_depth += 1
+				next_depth_for_element = next_depth if context_prefix else depth + 1
 
 				# Build attributes string with enhanced information
 				attributes_html_str = self._build_enhanced_attributes_string(node.original_node, include_attributes, node)
 
-				# Build the line with enhanced prefixes - SIMPLIFIED FORMAT
-				line = self._build_element_line(node, depth_str, attributes_html_str)
+				# Build the line with enhanced prefixes
+				line = self._build_element_line_with_context(
+					node, depth_str if not context_prefix else depth_str + '\t', attributes_html_str
+				)
 
 				if line:
 					formatted_text.append(line)
 
 		elif node.original_node.node_type == NodeType.TEXT_NODE:
-			# Include meaningful text content
+			# Include meaningful text content with context
 			if self._should_include_text(node):
 				clean_text = node.original_node.node_value.strip()
 				# Limit text length for readability
 				if len(clean_text) > 100:
 					clean_text = clean_text[:97] + '...'
 
-				# Add context prefix for iframe/shadow text
+				# Enhanced context prefix for iframe/shadow text
 				context_prefix = ''
 				if node.iframe_context:
 					context_prefix = f'[{node.iframe_context}] '
 				elif node.shadow_context:
 					context_prefix = f'[{node.shadow_context}] '
 
-				formatted_text.append(f'{depth_str}{context_prefix}{clean_text}')
+				text_depth = depth_str if not (node.iframe_context or node.shadow_context) else depth_str + '\t'
+				formatted_text.append(f'{text_depth}{context_prefix}{clean_text}')
 
-		# Process children
+		# Process children with proper depth
 		for child in node.children:
 			child_text = self._serialize_tree(child, include_attributes, next_depth)
 			if child_text:
 				formatted_text.append(child_text)
+
+		# Add context suffix if this was iframe/shadow content
+		if node.original_node.node_type == NodeType.ELEMENT_NODE and context_suffix:
+			formatted_text.append(context_suffix)
 
 		return '\n'.join(formatted_text)
 
@@ -1134,7 +1405,7 @@ class DOMTreeSerializer:
 		}
 
 		# Add interaction-specific attributes
-		interaction_attributes = {'type', 'href', 'onclick', 'role', 'tabindex', 'data-action', 'data-toggle', 'src'}
+		interaction_attributes = {'type', 'onclick', 'role', 'tabindex', 'data-action', 'data-toggle', 'src'}
 
 		for attr in interaction_attributes:
 			if attr in node.attributes and attr not in attributes_to_include:
@@ -1190,3 +1461,42 @@ class DOMTreeSerializer:
 		if len(text) <= max_length:
 			return text
 		return text[:max_length] + '...'
+
+	def _build_element_line_with_context(self, node: SimplifiedNode, depth_str: str, attributes_html_str: str) -> str:
+		"""Build the formatted line for an element with enhanced context information."""
+		prefixes = []
+
+		# Context prefix for iframe/shadow
+		context_info = ''
+		if node.iframe_context:
+			context_info = f'[{node.iframe_context}]'
+		elif node.shadow_context:
+			context_info = f'[{node.shadow_context}]'
+
+		# Scrollable prefix
+		if getattr(node.original_node, 'is_scrollable', False):
+			prefixes.append('SCROLL')
+
+		# Interactive index - show number
+		if node.interactive_index is not None:
+			prefixes.append(str(node.interactive_index))
+
+		# Build prefix string
+		if prefixes:
+			if 'SCROLL' in prefixes and any(p.isdigit() for p in prefixes):
+				prefix_str = '[SCROLL+' + '+'.join(p for p in prefixes if p != 'SCROLL') + ']'
+			elif any(p.isdigit() for p in prefixes):
+				prefix_str = '[' + '+'.join(prefixes) + ']'
+			else:
+				prefix_str = '[' + '+'.join(prefixes) + ']'
+		else:
+			return ''  # Don't show elements without any interactive features
+
+		# Build the complete line with context
+		line = f'{depth_str}{context_info}{prefix_str}<{node.original_node.node_name}'
+
+		if attributes_html_str:
+			line += f' {attributes_html_str}'
+
+		line += ' />'
+		return line

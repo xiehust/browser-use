@@ -460,7 +460,7 @@ class ImprovedDOMTreeSerializer:
 					attrs[attr] = value
 
 		# Add interaction-specific attributes
-		interaction_attrs = ['type', 'href', 'onclick', 'role', 'tabindex', 'data-action', 'data-toggle']
+		interaction_attrs = ['type', 'onclick', 'role', 'tabindex', 'data-action', 'data-toggle']
 		for attr in interaction_attrs:
 			if attr in node.original_node.attributes and attr not in attrs:
 				attrs[attr] = str(node.original_node.attributes[attr]).strip()

@@ -14,6 +14,7 @@ from browser_use.dom.enhanced_snapshot import (
 	build_snapshot_lookup,
 )
 from browser_use.dom.serializer import DOMTreeSerializer
+from browser_use.dom.serializer_enhanced import serialize_with_enhanced_filtering
 from browser_use.dom.views import EnhancedAXNode, EnhancedAXProperty, EnhancedDOMTreeNode, NodeType
 
 
@@ -407,27 +408,26 @@ class DOMService:
 		return snapshot, dom_tree, ax_tree
 
 	async def _ensure_iframe_content_loaded(self, cdp_client: CDPClient, session_id: str) -> None:
-		"""Ensure all iframe content is fully loaded before capturing DOM tree - OPTIMIZED."""
+		"""Ensure all iframe content is fully loaded before capturing DOM tree - ENHANCED for nested iframes."""
 		try:
-			print('🔄 Ensuring iframe content is loaded (optimized)...')
+			print('🔄 Ensuring iframe content is loaded (enhanced for nested iframes)...')
 
-			# Step 1: Get DOM to find iframes (use limited depth for performance)
-			initial_dom = await cdp_client.send.DOM.getDocument(params={'depth': 2, 'pierce': False}, session_id=session_id)
+			# Step 1: Get DOM with deeper piercing to capture iframe content
+			initial_dom = await cdp_client.send.DOM.getDocument(params={'depth': -1, 'pierce': True}, session_id=session_id)
 
-			# Step 2: Find all iframe elements
+			# Step 2: Find all iframe elements recursively (including nested ones)
 			iframe_nodes = []
-			self._find_iframes_recursive_sync(initial_dom['root'], iframe_nodes)
+			self._find_all_iframes_recursive(initial_dom['root'], iframe_nodes)
 
 			if iframe_nodes:
-				print(f'📋 Found {len(iframe_nodes)} iframe(s) to load...')
+				print(f'📋 Found {len(iframe_nodes)} iframe(s) (including nested) to load...')
 
-				# Step 3: Load iframes with optimized approach
-				for iframe_node in iframe_nodes:
-					await self._wait_for_iframe_content_optimized(cdp_client, session_id, iframe_node)
+				# Step 3: Load all iframes with enhanced processing
+				await self._load_all_iframe_content_enhanced(cdp_client, session_id, iframe_nodes)
 
-				# Step 4: Shorter wait for dynamic content
-				await asyncio.sleep(0.5)  # Reduced from 1.5s
-				print('✅ All iframe content loaded')
+				# Step 4: Wait for dynamic content and nested iframe loading
+				await asyncio.sleep(1.0)  # Allow time for nested iframe loading
+				print('✅ All iframe content loaded (including nested)')
 			else:
 				print('📋 No iframes found on page')
 
@@ -435,108 +435,144 @@ class DOMService:
 			print(f'⚠️ Error ensuring iframe content loaded: {e}')
 			# Continue anyway - don't fail the entire DOM capture
 
-	def _find_iframes_recursive_sync(self, node: Node, iframe_nodes: list) -> None:
-		"""Synchronously find all iframe elements in the DOM tree."""
+	def _find_all_iframes_recursive(self, node: Node, iframe_nodes: list, depth: int = 0) -> None:
+		"""Recursively find ALL iframe elements in the DOM tree, including nested ones."""
 		try:
-			if node.get('nodeName', '').upper() == 'IFRAME':
-				iframe_nodes.append(node)
-				print(f'  🎯 Found iframe: {node.get("nodeName")} (nodeId: {node.get("nodeId")})')
+			node_name = node.get('nodeName', '').upper()
+
+			if node_name == 'IFRAME':
+				iframe_src = ''
+				if 'attributes' in node:
+					attrs = node['attributes']
+					for i in range(0, len(attrs), 2):
+						if i + 1 < len(attrs) and attrs[i] == 'src':
+							iframe_src = attrs[i + 1]
+							break
+
+				iframe_nodes.append({'node': node, 'depth': depth, 'src': iframe_src, 'node_id': node.get('nodeId')})
+				print(f'  🎯 Found iframe at depth {depth}: {iframe_src[:60]}{"..." if len(iframe_src) > 60 else ""}')
 
 			# Recursively check children
 			if 'children' in node:
 				for child in node['children']:
-					self._find_iframes_recursive_sync(child, iframe_nodes)
+					self._find_all_iframes_recursive(child, iframe_nodes, depth)
+
+			# Also check content document (for nested iframes)
+			if 'contentDocument' in node and node['contentDocument']:
+				print(f'  🔍 Checking content document for nested iframes at depth {depth}...')
+				self._find_all_iframes_recursive(node['contentDocument'], iframe_nodes, depth + 1)
 
 		except Exception as e:
-			print(f'⚠️ Error in iframe recursive search: {e}')
+			print(f'⚠️ Error in iframe recursive search at depth {depth}: {e}')
 
-	async def _find_iframes_recursive(self, cdp_client: CDPClient, session_id: str, node: Node, iframe_nodes: list) -> None:
-		"""Recursively find all iframe elements in the DOM."""
+	async def _load_all_iframe_content_enhanced(self, cdp_client: CDPClient, session_id: str, iframe_infos: list) -> None:
+		"""Load all iframe content with enhanced support for nested and cross-origin iframes."""
+		# Process iframes in order of depth (outermost first)
+		iframe_infos.sort(key=lambda x: x['depth'])
+
+		for iframe_info in iframe_infos:
+			await self._load_single_iframe_enhanced(cdp_client, session_id, iframe_info)
+
+	async def _load_single_iframe_enhanced(self, cdp_client: CDPClient, session_id: str, iframe_info: dict) -> None:
+		"""Load a single iframe with enhanced cross-origin and nested iframe support."""
 		try:
-			if node.get('nodeName', '').upper() == 'IFRAME':
-				iframe_nodes.append(node)
+			node = iframe_info['node']
+			depth = iframe_info['depth']
+			src = iframe_info['src']
+			node_id = iframe_info['node_id']
 
-			# Get children of this node
-			if 'children' in node:
-				for child in node['children']:
-					await self._find_iframes_recursive(cdp_client, session_id, child, iframe_nodes)
-			else:
-				# If no children in the current node, request them
-				try:
-					node_id = node.get('nodeId')
-					if node_id:
-						children_result = await cdp_client.send.DOM.requestChildNodes(
-							params={'nodeId': node_id, 'depth': 1}, session_id=session_id
-						)
-						# Children are added to the node via events, so re-check
-						if 'children' in node:
-							for child in node['children']:
-								await self._find_iframes_recursive(cdp_client, session_id, child, iframe_nodes)
-				except Exception:
-					pass  # Continue if we can't get children for this node
+			indent = '  ' * (depth + 1)
+			print(f'{indent}🔄 Loading iframe: {src[:50]}{"..." if len(src) > 50 else ""}')
 
-		except Exception as e:
-			print(f'⚠️ Error finding iframes: {e}')
-
-	async def _wait_for_iframe_content_optimized(self, cdp_client: CDPClient, session_id: str, iframe_node: Node) -> None:
-		"""Wait for a specific iframe's content to be fully loaded - OPTIMIZED."""
-		try:
-			iframe_src = ''
-			if 'attributes' in iframe_node:
-				# Extract src attribute
-				attrs = iframe_node['attributes']
-				for i in range(0, len(attrs), 2):
-					if i + 1 < len(attrs) and attrs[i] == 'src':
-						iframe_src = attrs[i + 1]
-						break
-
-			print(f'  🔄 Loading iframe: {iframe_src[:50]}{"..." if len(iframe_src) > 50 else ""}')
-
-			node_id = iframe_node.get('nodeId')
 			if not node_id:
-				print('    ⚠️ No nodeId for iframe')
+				print(f'{indent}⚠️ No nodeId for iframe')
 				return
 
-			# Optimized: Only 3 attempts instead of 8, shorter waits
-			max_retries = 3
+			# Enhanced loading with multiple strategies
+			max_retries = 5
 			for attempt in range(max_retries):
 				try:
-					# Request child nodes with limited depth for performance
+					# Strategy 1: Request child nodes with deep piercing
 					await cdp_client.send.DOM.requestChildNodes(
-						params={'nodeId': node_id, 'depth': 2, 'pierce': True}, session_id=session_id
+						params={'nodeId': node_id, 'depth': -1, 'pierce': True}, session_id=session_id
 					)
 
-					# Shorter wait
-					await asyncio.sleep(0.15)  # Reduced from 0.3s
+					await asyncio.sleep(0.2)
 
-					# Get the updated node with content document
-					updated_node = await cdp_client.send.DOM.describeNode(params={'nodeId': node_id}, session_id=session_id)
+					# Strategy 2: Get the updated node description
+					updated_node = await cdp_client.send.DOM.describeNode(
+						params={'nodeId': node_id, 'depth': -1, 'pierce': True}, session_id=session_id
+					)
 
 					# Check if we now have content document
 					content_doc = updated_node.get('node', {}).get('contentDocument')
 					if content_doc:
-						print(f'    ✅ Iframe content loaded (attempt {attempt + 1})')
+						print(f'{indent}✅ Iframe content loaded (attempt {attempt + 1})')
 
-						# Also request children with limited depth
+						# Strategy 3: Recursively load content of the iframe
 						content_doc_id = content_doc.get('nodeId')
 						if content_doc_id:
+							# Request all children with deep piercing
 							await cdp_client.send.DOM.requestChildNodes(
-								params={'nodeId': content_doc_id, 'depth': 2, 'pierce': True}, session_id=session_id
+								params={'nodeId': content_doc_id, 'depth': -1, 'pierce': True}, session_id=session_id
 							)
-							await asyncio.sleep(0.1)  # Reduced from 0.2s
-						break
+							await asyncio.sleep(0.15)
 
-					# Shorter retry wait
-					await asyncio.sleep(0.2)  # Reduced from 0.4s
+							# Strategy 4: Check for nested iframes in this iframe
+							nested_iframes = []
+							self._find_all_iframes_recursive(content_doc, nested_iframes, depth + 1)
+							if nested_iframes:
+								print(f'{indent}🔍 Found {len(nested_iframes)} nested iframe(s), loading...')
+								await self._load_all_iframe_content_enhanced(cdp_client, session_id, nested_iframes)
+
+						break
+					else:
+						# Strategy 5: For cross-origin iframes, try alternative approaches
+						if 'cross-origin' in src.lower() or self._looks_like_cross_origin(src):
+							print(f'{indent}🌐 Detected potential cross-origin iframe: {src[:40]}...')
+							# For cross-origin, we may have limited access, but try anyway
+							try:
+								await cdp_client.send.DOM.getFrameOwner(params={'frameId': str(node_id)}, session_id=session_id)
+							except Exception:
+								pass  # Cross-origin restrictions may prevent access
+
+					await asyncio.sleep(0.3)
 
 				except Exception as retry_error:
 					if attempt == max_retries - 1:
-						print(f'    ⚠️ Failed to load iframe content after {max_retries} attempts: {retry_error}')
+						print(f'{indent}⚠️ Failed to load iframe after {max_retries} attempts: {retry_error}')
+						# For cross-origin iframes, this might be expected
+						if self._looks_like_cross_origin(src):
+							print(f'{indent}ℹ️ Cross-origin iframe access limited: {src[:40]}...')
 					else:
-						await asyncio.sleep(0.2)  # Reduced from 0.4s
+						await asyncio.sleep(0.3)
 
 		except Exception as e:
-			print(f'⚠️ Error waiting for iframe content: {e}')
+			print(f'⚠️ Error loading iframe: {e}')
+
+	def _looks_like_cross_origin(self, src: str) -> bool:
+		"""Heuristic to detect if an iframe source looks like it might be cross-origin."""
+		if not src:
+			return False
+
+		cross_origin_indicators = [
+			'://',  # Different protocol/domain
+			'www.',  # Different subdomain
+			'.com',
+			'.org',
+			'.net',
+			'.io',  # Different top-level domain
+			'google',
+			'facebook',
+			'twitter',
+			'youtube',  # Known external services
+			'mailerlite',
+			'typeform',
+			'hubspot',  # Known iframe services
+		]
+
+		src_lower = src.lower()
+		return any(indicator in src_lower for indicator in cross_origin_indicators)
 
 	async def get_dom_tree(self) -> EnhancedDOMTreeNode:
 		snapshot, dom_tree, ax_tree = await self._get_all_trees()
@@ -556,6 +592,7 @@ class DOMService:
 	async def get_serialized_dom_tree(
 		self,
 		include_attributes: list[str] | None = None,
+		use_enhanced_filtering: bool = True,
 	) -> tuple[str, dict[int, EnhancedDOMTreeNode]]:
 		"""Get the serialized DOM tree representation for LLM consumption.
 
@@ -566,6 +603,7 @@ class DOMService:
 
 		Args:
 			include_attributes: List of attributes to include
+			use_enhanced_filtering: Whether to use enhanced filtering to remove non-interactive containers
 
 		Returns:
 			- Serialized string representation including iframe and shadow content
@@ -573,20 +611,17 @@ class DOMService:
 		"""
 		enhanced_dom_tree = await self.get_dom_tree()
 
-		# Get viewport information for filtering
-		viewport_width, viewport_height, device_pixel_ratio, scroll_x, scroll_y = await self._get_viewport_size()
-		viewport_info = {
-			'width': viewport_width,
-			'height': viewport_height,
-			'device_pixel_ratio': device_pixel_ratio,
-			'scroll_x': scroll_x,
-			'scroll_y': scroll_y,
-		}
-
 		start = time.time()
-		serialized, selector_map = DOMTreeSerializer(enhanced_dom_tree, viewport_info).serialize_accessible_elements(
-			include_attributes
-		)
+
+		if use_enhanced_filtering:
+			# Use enhanced serializer with aggressive container filtering
+			serialized, selector_map = serialize_with_enhanced_filtering(enhanced_dom_tree, include_attributes)
+			serialization_method = 'enhanced filtering'
+		else:
+			# Use legacy serializer
+			serialized, selector_map = DOMTreeSerializer(enhanced_dom_tree).serialize_accessible_elements(include_attributes)
+			serialization_method = 'legacy'
+
 		end = time.time()
 
 		# Get current page info for better debugging
@@ -594,7 +629,7 @@ class DOMService:
 		page_info = f"tab '{current_page.url}'"
 
 		print(f'Time taken to serialize DOM tree for {page_info}: {end - start:.2f} seconds')
-		print(f'🎯 Detected {len(selector_map)} interactive elements in {page_info} (comprehensive mode with viewport filtering)')
+		print(f'🎯 Detected {len(selector_map)} interactive elements in {page_info} (using {serialization_method})')
 
 		return serialized, selector_map
 

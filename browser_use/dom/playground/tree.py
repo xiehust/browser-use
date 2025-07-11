@@ -284,7 +284,7 @@ async def main():
 
 		print('🔍 Interactive DOM Extraction Tester')
 		print('=' * 50)
-		print('🎯 RECENT IMPROVEMENTS (v2.2):')
+		print('🎯 RECENT IMPROVEMENTS (v3.0):')
 		print('  ✅ Conservative DIV/SPAN detection with scoring system')
 		print('  ✅ Eliminated cursor-pointer-only false positives')
 		print('  ✅ Improved parent-child consolidation')
@@ -295,6 +295,10 @@ async def main():
 		print('  🆕 ROLE DETECTION: Enhanced combobox/role detection')
 		print('  🆕 CONTAINER FILTERING: Smart calendar/menu container handling')
 		print('  🆕 JSACTION SUPPORT: Google Material Design elements')
+		print('  🔥 ENHANCED IFRAMES: Recursive DOM extraction inside ALL iframes')
+		print('  🔥 NESTED IFRAMES: Full support for iframes within iframes')
+		print('  🔥 CROSS-ORIGIN IFRAMES: Enhanced detection and processing')
+		print('  🔥 SHADOW DOM: Recursive processing of shadow DOM content')
 		print('  ✅ Reduced redundant elements by 60-80%')
 		print('  ✅ Added Google Flights & Semantic UI test URLs')
 		print('=' * 50)
@@ -322,6 +326,18 @@ async def main():
 					print(f'  - Interactive elements: {len(interactive_elements)}')
 					print(f'  - Serialized length: {len(serialized)} characters')
 
+					# Show iframe and shadow DOM information
+					iframe_contexts = serialized.count('=== IFRAME CONTENT')
+					shadow_contexts = serialized.count('=== SHADOW DOM')
+					cross_origin_iframes = serialized.count('[CROSS-ORIGIN]')
+
+					if iframe_contexts > 0 or shadow_contexts > 0:
+						print(f'  - 🖼️  Iframe contexts found: {iframe_contexts}')
+						if cross_origin_iframes > 0:
+							print(f'  - 🌐 Cross-origin iframes: {cross_origin_iframes}')
+						print(f'  - 🌒 Shadow DOM contexts: {shadow_contexts}')
+						print('  - ✅ Enhanced iframe/shadow DOM processing active')
+
 					# Show viewport info if available
 					if interactive_elements:
 						min_x = min(elem['x'] for elem in interactive_elements)
@@ -346,8 +362,8 @@ async def main():
 							print(f'  ... and {len(interactive_elements) - 5} more')
 
 					# Highlight elements if debug mode or user wants it
-					if is_debug_mode() or len(interactive_elements) > 0:
-						await inject_highlighting_script(browser_session, interactive_elements)
+
+					await inject_highlighting_script(browser_session, interactive_elements)
 
 					# Save outputs to files
 					await save_outputs_to_files(serialized, selector_map, interactive_elements, 'comprehensive', url)
