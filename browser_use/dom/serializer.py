@@ -1850,53 +1850,187 @@ class DOMTreeSerializer:
 		return (element_name, 'click')
 
 	def _extract_element_label(self, node: EnhancedDOMTreeNode, attrs: Dict[str, str]) -> str:
-		"""Extract a meaningful label for the element."""
+		"""Extract meaningful text content that an LLM can understand."""
 
-		# Priority 1: ARIA label
+		# Priority 1: Actual visible text content from the element
+		visible_text = self._extract_visible_text_content(node)
+		if visible_text and len(visible_text.strip()) > 1:
+			return visible_text.strip()[:80]
+
+		# Priority 2: ARIA label (accessibility text)
 		if 'aria-label' in attrs and attrs['aria-label'].strip():
-			return attrs['aria-label'].strip()[:50]
+			return attrs['aria-label'].strip()[:80]
 
-		# Priority 2: Title attribute
+		# Priority 3: Text content from accessible name (screen reader text)
+		if node.ax_node and node.ax_node.name and node.ax_node.name.strip():
+			return node.ax_node.name.strip()[:80]
+
+		# Priority 4: Title attribute (tooltip text)
 		if 'title' in attrs and attrs['title'].strip():
-			return attrs['title'].strip()[:50]
+			return f'tooltip: {attrs["title"].strip()[:60]}'
 
-		# Priority 3: Alt text for images
+		# Priority 5: Alt text for images (describes what image shows)
 		if 'alt' in attrs and attrs['alt'].strip():
-			return attrs['alt'].strip()[:50]
+			return f'image: {attrs["alt"].strip()[:60]}'
 
-		# Priority 4: Placeholder for inputs
+		# Priority 6: Placeholder for inputs (hint text)
 		if 'placeholder' in attrs and attrs['placeholder'].strip():
-			return f'placeholder: {attrs["placeholder"].strip()[:40]}'
+			return f'placeholder: {attrs["placeholder"].strip()[:50]}'
 
-		# Priority 5: Value for buttons/inputs
+		# Priority 7: Value for buttons/inputs (current value)
 		if 'value' in attrs and attrs['value'].strip():
-			return attrs['value'].strip()[:50]
+			return attrs['value'].strip()[:60]
 
-		# Priority 6: Name attribute
-		if 'name' in attrs and attrs['name'].strip():
-			return f'name: {attrs["name"].strip()[:40]}'
+		# Priority 8: Label reference (for form inputs)
+		label_text = self._extract_label_text(node, attrs)
+		if label_text:
+			return f'label: {label_text[:60]}'
 
-		# Priority 7: ID (cleaned up)
-		if 'id' in attrs and attrs['id'].strip():
-			id_clean = attrs['id'].replace('-', ' ').replace('_', ' ').title()
-			return f'#{id_clean[:40]}'
+		# Priority 9: Link destination (for links)
+		if 'href' in attrs and attrs['href'].strip():
+			href = attrs['href'].strip()
+			if href.startswith('#'):
+				return f'link to section: {href[1:30]}'
+			elif href.startswith('mailto:'):
+				return f'email: {href[7:40]}'
+			elif href.startswith('tel:'):
+				return f'phone: {href[4:25]}'
+			elif href.startswith('/') or 'http' in href:
+				return f'link: {self._clean_url_for_display(href)[:40]}'
 
-		# Priority 8: Class names (cleaned up)
-		if 'class' in attrs and attrs['class'].strip():
-			classes = attrs['class'].strip().split()
-			# Take first meaningful class
-			for cls in classes:
-				if len(cls) > 2 and not cls.startswith(('css-', 'style-')):
-					class_clean = cls.replace('-', ' ').replace('_', ' ').title()
-					return f'.{class_clean[:40]}'
+		# Priority 10: Descriptive attributes
+		descriptive_text = self._extract_descriptive_attributes(node, attrs)
+		if descriptive_text:
+			return descriptive_text
 
-		# Priority 9: Text content from accessible name
-		if node.ax_node and node.ax_node.name:
-			return node.ax_node.name.strip()[:50]
-
-		# Priority 10: Element type as fallback
+		# Priority 11: Element type with context
 		element_type = node.node_name.lower()
-		return f'<{element_type}>'
+		if element_type == 'input' and 'type' in attrs:
+			return f'{attrs["type"]} input'
+		elif element_type in ['button', 'a', 'select', 'textarea']:
+			return f'{element_type} element'
+		else:
+			return f'<{element_type}>'
+
+	def _extract_visible_text_content(self, node: EnhancedDOMTreeNode) -> str:
+		"""Extract actual visible text content from the element and its children."""
+		text_parts = []
+
+		# First try to get text from the node itself
+		if node.node_type == NodeType.TEXT_NODE and node.node_value:
+			text_parts.append(node.node_value.strip())
+
+		# Get text from direct text children
+		if hasattr(node, 'children_nodes') and node.children_nodes:
+			for child in node.children_nodes:
+				if child.node_type == NodeType.TEXT_NODE and child.node_value:
+					child_text = child.node_value.strip()
+					if child_text and len(child_text) > 1:
+						text_parts.append(child_text)
+				elif child.node_type == NodeType.ELEMENT_NODE:
+					# Get text from simple child elements (span, strong, em, etc.)
+					if child.node_name.upper() in ['SPAN', 'STRONG', 'EM', 'B', 'I', 'SMALL']:
+						child_text = self._extract_visible_text_content(child)
+						if child_text:
+							text_parts.append(child_text)
+
+		# Clean up and join text parts
+		combined_text = ' '.join(text_parts).strip()
+		# Remove excessive whitespace
+		import re
+
+		combined_text = re.sub(r'\s+', ' ', combined_text)
+
+		return combined_text
+
+	def _extract_label_text(self, node: EnhancedDOMTreeNode, attrs: Dict[str, str]) -> str:
+		"""Extract text from associated label elements."""
+		# Check if this input has a label via 'for' attribute
+		if 'id' in attrs and attrs['id']:
+			# In a real implementation, we'd search the DOM for label[for="id"]
+			# For now, we'll use a simplified approach
+			pass
+
+		# Check for aria-labelledby reference
+		if 'aria-labelledby' in attrs:
+			# Would need to look up the referenced element
+			pass
+
+		# Check if this element is wrapped in a label
+		# This is a simplified approach - in practice we'd traverse up the tree
+		return ''
+
+	def _clean_url_for_display(self, url: str) -> str:
+		"""Clean URL for human-readable display."""
+		if url.startswith('http://') or url.startswith('https://'):
+			try:
+				from urllib.parse import urlparse
+
+				parsed = urlparse(url)
+				# Return domain + path
+				result = parsed.netloc
+				if parsed.path and parsed.path != '/':
+					result += parsed.path
+				return result
+			except:
+				return url
+		return url
+
+	def _extract_descriptive_attributes(self, node: EnhancedDOMTreeNode, attrs: Dict[str, str]) -> str:
+		"""Extract descriptive information from element attributes."""
+		# Input type descriptions
+		if node.node_name.upper() == 'INPUT' and 'type' in attrs:
+			input_type = attrs['type'].lower()
+			type_descriptions = {
+				'text': 'text input field',
+				'email': 'email input field',
+				'password': 'password input field',
+				'search': 'search input field',
+				'tel': 'phone number input field',
+				'url': 'URL input field',
+				'number': 'number input field',
+				'checkbox': 'checkbox',
+				'radio': 'radio button',
+				'submit': 'submit button',
+				'button': 'button',
+				'file': 'file upload button',
+				'date': 'date picker',
+				'time': 'time picker',
+				'range': 'slider',
+			}
+			if input_type in type_descriptions:
+				return type_descriptions[input_type]
+
+		# Role descriptions
+		if 'role' in attrs:
+			role = attrs['role'].lower()
+			role_descriptions = {
+				'button': 'clickable button',
+				'link': 'clickable link',
+				'menuitem': 'menu option',
+				'tab': 'tab button',
+				'checkbox': 'checkbox',
+				'radio': 'radio button',
+				'slider': 'slider control',
+				'textbox': 'text input',
+				'combobox': 'dropdown selector',
+			}
+			if role in role_descriptions:
+				return role_descriptions[role]
+
+		# Check for required/disabled state
+		state_info = []
+		if 'required' in attrs:
+			state_info.append('required')
+		if 'disabled' in attrs:
+			state_info.append('disabled')
+		if 'checked' in attrs:
+			state_info.append('checked')
+
+		if state_info:
+			return f'form field ({", ".join(state_info)})'
+
+		return ''
 
 	def _extract_element_target(self, node: EnhancedDOMTreeNode, attrs: Dict[str, str]) -> Optional[str]:
 		"""Extract target URL, action, or other destination."""
@@ -2158,65 +2292,260 @@ class DOMTreeSerializer:
 			self._semantic_groups.append(group)
 
 	def _generate_compressed_text(self) -> str:
-		"""Generate the final compressed text representation."""
+		"""Generate LLM-friendly text representation focused on visible content and user interactions."""
 		lines = []
 
-		# Add context summary if present
-		if self._iframe_contexts or self._shadow_contexts:
-			lines.append('=== CONTEXTS ===')
-			for iframe_id, info in self._iframe_contexts.items():
-				cross_origin = ' [CROSS-ORIGIN]' if info.is_cross_origin else ''
-				lines.append(f'IFRAME {iframe_id}: {info.iframe_src or "embedded"}{cross_origin}')
-			for shadow_id, parent in self._shadow_contexts.items():
-				lines.append(f'SHADOW {shadow_id}: {parent}')
+		# Add page overview
+		total_elements = len(self._compressed_elements)
+		if total_elements > 0:
+			lines.append('=== INTERACTIVE ELEMENTS FOUND ===')
+			lines.append(f'Found {total_elements} interactive elements on this page:')
 			lines.append('')
 
-		# Generate semantic groups
-		for group in self._semantic_groups:
-			lines.append(f'=== {group.group_type.value}: {group.title} ===')
+		# Add context summary if present (for iframe/shadow content)
+		if self._iframe_contexts or self._shadow_contexts:
+			lines.append('=== ADDITIONAL CONTENT CONTEXTS ===')
+			for iframe_id, info in self._iframe_contexts.items():
+				cross_origin = ' (cross-origin - limited access)' if info.is_cross_origin else ''
+				src_info = f' from {info.iframe_src}' if info.iframe_src else ''
+				lines.append(f'• Iframe content{src_info}{cross_origin}')
+			for shadow_id, parent in self._shadow_contexts.items():
+				lines.append(f'• Shadow DOM content in {parent.split("/")[-1] if "/" in parent else parent}')
+			lines.append('')
 
-			for elem in group.elements:
+		# Generate semantic groups with improved descriptions
+		group_count = 0
+		for group in self._semantic_groups:
+			group_count += 1
+
+			# Create user-friendly group titles
+			group_title = self._create_friendly_group_title(group)
+			lines.append(f'=== {group_title} ===')
+
+			# Add group description if helpful
+			group_desc = self._create_group_description(group)
+			if group_desc:
+				lines.append(group_desc)
+				lines.append('')
+
+			# Format elements with better context
+			for i, elem in enumerate(group.elements, 1):
 				line = self._format_compressed_element(elem)
-				lines.append(line)
+				lines.append(f'  {line}')
 
 			lines.append('')  # Empty line between groups
 
+		# Add summary if multiple groups
+		if group_count > 1:
+			lines.append('=== SUMMARY ===')
+			summary_info = []
+			for group in self._semantic_groups:
+				if group.elements:
+					group_name = group.group_type.value.lower().replace('_', ' ')
+					count = len(group.elements)
+					summary_info.append(f'{count} {group_name} element{"s" if count != 1 else ""}')
+
+			if summary_info:
+				lines.append(f'This page contains: {", ".join(summary_info)}')
+
 		return '\n'.join(lines)
 
+	def _create_friendly_group_title(self, group: SemanticGroup) -> str:
+		"""Create user-friendly group titles."""
+		group_type = group.group_type.value
+		element_count = len(group.elements)
+
+		friendly_titles = {
+			'FORM': f'FORM ELEMENTS ({element_count})',
+			'NAVIGATION': f'NAVIGATION LINKS ({element_count})',
+			'DROPDOWN': f'DROPDOWN/MENU OPTIONS ({element_count})',
+			'MENU': f'MENU ITEMS ({element_count})',
+			'TABLE': f'TABLE ELEMENTS ({element_count})',
+			'LIST': f'LIST ITEMS ({element_count})',
+			'TOOLBAR': f'TOOLBAR BUTTONS ({element_count})',
+			'TABS': f'TAB CONTROLS ({element_count})',
+			'ACCORDION': f'ACCORDION SECTIONS ({element_count})',
+			'MODAL': f'MODAL/DIALOG ELEMENTS ({element_count})',
+			'CAROUSEL': f'CAROUSEL CONTROLS ({element_count})',
+			'CONTENT': f'OTHER INTERACTIVE CONTENT ({element_count})',
+			'FOOTER': f'FOOTER ELEMENTS ({element_count})',
+			'HEADER': f'HEADER ELEMENTS ({element_count})',
+			'SIDEBAR': f'SIDEBAR ELEMENTS ({element_count})',
+		}
+
+		return friendly_titles.get(group_type, f'{group_type} ({element_count})')
+
+	def _create_group_description(self, group: SemanticGroup) -> str:
+		"""Create helpful descriptions for element groups."""
+		group_type = group.group_type.value
+		element_count = len(group.elements)
+
+		descriptions = {
+			'FORM': 'Form fields and controls for user input:',
+			'NAVIGATION': 'Links for navigating to different pages:',
+			'DROPDOWN': 'Dropdown menus and selectable options:',
+			'MENU': 'Menu items and navigation options:',
+			'TABLE': 'Interactive table elements:',
+			'LIST': 'List items that can be selected or clicked:',
+			'TOOLBAR': 'Action buttons and controls:',
+			'TABS': 'Tab controls for switching content:',
+			'CONTENT': 'Other clickable content on the page:',
+		}
+
+		return descriptions.get(group_type, '')
+
+	def _include_element_text_content(self) -> None:
+		"""Extract and include text content from elements for better LLM understanding."""
+		# This method can be called to enhance element labels with nearby text content
+		for elem in self._compressed_elements:
+			# If label is generic, try to find better text content
+			if elem.label.startswith('<') or len(elem.label) < 3:
+				# Could enhance by looking at nearby text nodes or aria-describedby
+				pass
+
 	def _format_compressed_element(self, elem: CompressedElement) -> str:
-		"""Format a compressed element for text output."""
-		parts = [f'[{elem.index}]']
+		"""Format a compressed element for natural language LLM consumption."""
+		# Start with the element index and a natural description
+		parts = []
 
-		# Element type
-		parts.append(elem.element_type)
+		# Add index in brackets
+		parts.append(f'[{elem.index}]')
 
-		# Action type if different from click
-		if elem.action_type != 'click':
-			parts.append(f'({elem.action_type})')
+		# Create natural language description based on element type and action
+		description = self._create_natural_description(elem)
+		parts.append(description)
 
-		# Label
-		parts.append(f'"{elem.label}"')
+		# Add the text content/label in quotes - this is what the LLM will see
+		if elem.label and not elem.label.startswith('<'):
+			parts.append(f'"{elem.label}"')
 
-		# Target if present
+		# Add target information in natural language
 		if elem.target:
-			parts.append(f'-> {elem.target}')
+			target_desc = self._format_target_naturally(elem.target, elem.element_type)
+			if target_desc:
+				parts.append(target_desc)
 
-		# Essential attributes
-		if elem.attributes:
-			attr_strs = []
-			for key, value in elem.attributes.items():
-				if value == 'true':
-					attr_strs.append(key)
-				else:
-					attr_strs.append(f'{key}={value}')
-			if attr_strs:
-				parts.append(f'({", ".join(attr_strs)})')
+		# Add state information naturally
+		state_info = self._format_state_naturally(elem.attributes)
+		if state_info:
+			parts.append(state_info)
 
-		# Context if present
+		# Add context if present (for iframe/shadow content)
 		if elem.context:
-			parts.append(f'[{elem.context}]')
+			if 'iframe' in elem.context:
+				parts.append('(in iframe)')
+			elif 'shadow' in elem.context:
+				parts.append('(in shadow DOM)')
 
 		return ' '.join(parts)
+
+	def _create_natural_description(self, elem: CompressedElement) -> str:
+		"""Create a natural language description of the element."""
+		element_type = elem.element_type.lower()
+		action_type = elem.action_type.lower()
+
+		# Create human-readable descriptions
+		descriptions = {
+			('button', 'click'): 'Button',
+			('submit', 'click'): 'Submit Button',
+			('link', 'navigate'): 'Link',
+			('link', 'click'): 'Clickable Link',
+			('input', 'input'): 'Text Input',
+			('email', 'input'): 'Email Input',
+			('password', 'input'): 'Password Input',
+			('search', 'input'): 'Search Input',
+			('phone', 'input'): 'Phone Input',
+			('url', 'input'): 'URL Input',
+			('number', 'input'): 'Number Input',
+			('textarea', 'input'): 'Text Area',
+			('select', 'choose'): 'Dropdown',
+			('checkbox', 'toggle'): 'Checkbox',
+			('radio', 'select'): 'Radio Button',
+			('file', 'upload'): 'File Upload',
+			('date', 'pick'): 'Date Picker',
+			('time', 'pick'): 'Time Picker',
+			('color', 'pick'): 'Color Picker',
+			('slider', 'slide'): 'Slider',
+			('tab', 'click'): 'Tab',
+			('menu_item', 'click'): 'Menu Item',
+			('option', 'select'): 'Option',
+			('image', 'click'): 'Clickable Image',
+			('icon', 'click'): 'Icon',
+			('item', 'click'): 'List Item',
+			('container', 'click'): 'Clickable Area',
+			('dropdown', 'click'): 'Dropdown Menu',
+		}
+
+		key = (element_type, action_type)
+		if key in descriptions:
+			return descriptions[key]
+
+		# Fallback descriptions
+		if action_type == 'click':
+			return f'Clickable {element_type.title()}'
+		elif action_type == 'input':
+			return f'{element_type.title()} Input'
+		elif action_type == 'select' or action_type == 'choose':
+			return f'{element_type.title()} Selector'
+		else:
+			return f'{element_type.title()}'
+
+	def _format_target_naturally(self, target: str, element_type: str) -> str:
+		"""Format target information in natural language."""
+		if not target:
+			return ''
+
+		# For links
+		if element_type.lower() in ['link']:
+			if target.startswith('mailto:'):
+				return f'(opens email to {target[7:]})'
+			elif target.startswith('tel:'):
+				return f'(calls {target[4:]})'
+			elif target.startswith('#'):
+				return f'(jumps to {target[1:]})'
+			elif target == 'javascript':
+				return '(runs script)'
+			else:
+				return f'(goes to {target})'
+
+		# For forms
+		elif 'submit' in element_type.lower():
+			return f'(submits to {target})'
+
+		# For other elements with actions
+		else:
+			return f'(target: {target})'
+
+	def _format_state_naturally(self, attributes: Dict[str, str]) -> str:
+		"""Format element state in natural language."""
+		states = []
+
+		if 'disabled' in attributes:
+			states.append('disabled')
+		if 'required' in attributes:
+			states.append('required')
+		if 'checked' in attributes:
+			states.append('checked')
+		if 'selected' in attributes:
+			states.append('selected')
+
+		# Format state information
+		if 'expanded' in attributes:
+			if attributes['expanded'] == 'true':
+				states.append('expanded')
+			else:
+				states.append('collapsed')
+
+		if 'pressed' in attributes:
+			if attributes['pressed'] == 'true':
+				states.append('pressed')
+			else:
+				states.append('not pressed')
+
+		if states:
+			return f'({", ".join(states)})'
+
+		return ''
 
 	def _serialize_full_tree_legacy(self, include_attributes: list[str]) -> tuple[str, dict[int, EnhancedDOMTreeNode]]:
 		"""Legacy full tree serialization approach (fallback)."""

@@ -12,6 +12,7 @@ import aiofiles
 
 from browser_use.browser.profile import BrowserProfile
 from browser_use.browser.session import BrowserSession
+from browser_use.dom.serializer import ElementAnalysis
 from browser_use.dom.service import DOMService
 
 # Disable noisy logging
@@ -39,721 +40,163 @@ def print_subsection(title: str, char: str = '-', width: int = 60):
 	print(f'{char * width}')
 
 
-def analyze_element_interactivity(element: dict) -> dict | None:
-	"""Analyze element interactivity with comprehensive scoring - NEVER exclude, just score low. ENHANCED FOR BUTTON DETECTION."""
-	element_name = element.get('element_name', '').upper()
-	attributes = element.get('attributes', {})
+async def save_comprehensive_dom_tree_json(
+	dom_service: DOMService, interactive_elements: list[dict], serialized: str, selector_map: dict, url: str
+) -> str | None:
+	"""Save comprehensive DOM tree data to JSON with enhanced structure and metadata."""
+	try:
+		print_subsection('💾 SAVING COMPREHENSIVE DOM TREE JSON')
 
-	# Initialize scoring system
-	score = 0
-	evidence = []
-	warnings = []
-	element_category = 'unknown'
+		# Create tmp directory if it doesn't exist
+		tmp_dir = Path('tmp')
+		tmp_dir.mkdir(exist_ok=True)
 
-	# **ENHANCED BUTTON DETECTION** - Be much more inclusive
-	button_indicators = [
-		'btn',
-		'button',
-		'click',
-		'submit',
-		'action',
-		'trigger',
-		'toggle',
-		'press',
-		'tap',
-		'select',
-		'choose',
-		'confirm',
-		'cancel',
-		'ok',
-		'yes',
-		'no',
-		'close',
-		'open',
-		'show',
-		'hide',
-		'expand',
-		'collapse',
-		'menu',
-		'dropdown',
-		'popup',
-		'modal',
-		'dialog',
-		'tab',
-		'nav',
-		'link',
-		'item',
-		'option',
-		'choice',
-	]
+		# Clean URL for filename
+		safe_url = url.replace('://', '_').replace('/', '_').replace('?', '_').replace('&', '_')[:50]
+		timestamp = int(time.time())
 
-	# **CORE INTERACTIVE ELEMENTS** (Score: 70-100)
-	if element_name in ['INPUT', 'BUTTON', 'SELECT', 'TEXTAREA']:
-		element_category = 'form_control'
-		score += 70
-		evidence.append(f'Core form element: {element_name}')
+		# Comprehensive DOM tree JSON file
+		dom_tree_file = tmp_dir / f'comprehensive_dom_tree_{safe_url}_{timestamp}.json'
 
-		if attributes.get('type'):
-			input_type = attributes['type'].lower()
-			evidence.append(f'Input type: {input_type}')
-			if input_type in ['submit', 'button', 'reset']:
-				score += 20
-			elif input_type in ['text', 'email', 'password', 'search', 'tel', 'url']:
-				score += 15
-			elif input_type in ['checkbox', 'radio']:
-				score += 12
-			elif input_type in ['hidden', 'file', 'date', 'time', 'number', 'range']:
-				score += 10
-			elif input_type in ['color', 'week', 'month']:
-				score += 8
-
-		# Don't exclude disabled elements, just score them lower
-		if attributes.get('disabled') == 'true':
-			score = max(15, score - 30)  # Reduce score but don't exclude
-			warnings.append('Element is disabled but still detectable')
-
-	elif element_name == 'A':
-		element_category = 'link'
-		score += 60  # Base score for links
-		if attributes.get('href'):
-			href = attributes['href']
-			score += 20
-			evidence.append(f'Link with href: {href[:50]}...' if len(href) > 50 else f'Link with href: {href}')
-
-			# Analyze href quality
-			if href.startswith(('http://', 'https://')):
-				score += 15
-				evidence.append('External link')
-			elif href.startswith('/'):
-				score += 12
-				evidence.append('Internal absolute link')
-			elif href.startswith(('mailto:', 'tel:')):
-				score += 10
-				evidence.append('Communication link (mailto/tel)')
-			elif href.startswith('#'):
-				score += 8
-				evidence.append('Internal anchor link')
-			elif href == 'javascript:void(0)' or href.startswith('javascript:'):
-				score += 5
-				warnings.append('JavaScript href - may not be navigational')
-			else:
-				score += 3
-				evidence.append('Relative link')
-		else:
-			score += 25  # Link without href - still potentially interactive
-			evidence.append('Link element without href (likely interactive)')
-
-	# **ENHANCED BUTTON DETECTION IN CONTAINERS** - Much more inclusive
-	elif element_name in [
-		'DIV',
-		'SPAN',
-		'LI',
-		'TD',
-		'TH',
-		'SECTION',
-		'ARTICLE',
-		'HEADER',
-		'FOOTER',
-		'NAV',
-		'ASIDE',
-		'P',
-		'H1',
-		'H2',
-		'H3',
-		'H4',
-		'H5',
-		'H6',
-	]:
-		if element_category == 'unknown':
-			element_category = 'container'
-
-		container_score = 10  # Base score for containers
-		container_evidence = []
-
-		# **ENHANCED CSS CLASS ANALYSIS** - Much more inclusive for button detection
-		css_classes = attributes.get('class', '').lower()
-
-		# Look for button indicators in class names
-		button_score_boost = 0
-		for indicator in button_indicators:
-			if indicator in css_classes:
-				button_score_boost += 15  # Significant boost for button-like classes
-				container_evidence.append(f'Button-like class: {indicator}')
-
-		container_score += button_score_boost
-		if button_score_boost > 0:
-			element_category = 'button_like'
-			evidence.append(f'Container with button-like classes (boost: +{button_score_boost})')
-
-		# Additional interactive class patterns
-		interactive_class_patterns = [
-			('control', 10),
-			('widget', 8),
-			('component', 6),
-			('interactive', 12),
-			('clickable', 12),
-			('selectable', 8),
-			('focusable', 8),
-			('actionable', 10),
-			('card', 6),
-			('tile', 6),
-			('panel', 6),
-			('item', 5),
-			('entry', 5),
-			('cell', 4),
-			('row', 4),
-			('column', 4),
-			('field', 6),
-			('input', 8),
-			('form', 6),
-			('submit', 12),
-			('reset', 10),
-			('cancel', 10),
-			('confirm', 10),
-			('primary', 8),
-			('secondary', 6),
-			('success', 8),
-			('warning', 8),
-			('danger', 8),
-			('info', 6),
-			('light', 4),
-			('dark', 4),
-			('outline', 6),
-			('solid', 6),
-			('rounded', 4),
-			('square', 4),
-			('circle', 4),
-			('large', 4),
-			('small', 4),
-			('mini', 4),
-			('tiny', 4),
-			('huge', 4),
-			('massive', 4),
-		]
-
-		for pattern, points in interactive_class_patterns:
-			if pattern in css_classes:
-				container_score += points
-				container_evidence.append(f'Interactive CSS class: {pattern} (+{points})')
-
-		# **ENHANCED ARIA ATTRIBUTES** - More inclusive
-		interactive_aria = [
-			'aria-label',
-			'aria-expanded',
-			'aria-selected',
-			'aria-pressed',
-			'aria-checked',
-			'aria-describedby',
-			'aria-labelledby',
-			'aria-controls',
-			'aria-owns',
-			'aria-activedescendant',
-			'aria-haspopup',
-			'aria-live',
-			'aria-atomic',
-			'aria-relevant',
-			'aria-dropeffect',
-			'aria-grabbed',
-			'aria-hidden',
-			'aria-invalid',
-			'aria-required',
-			'aria-readonly',
-			'aria-disabled',
-		]
-		found_interactive_aria = [attr for attr in interactive_aria if attr in attributes]
-		if found_interactive_aria:
-			aria_boost = len(found_interactive_aria) * 5
-			container_score += aria_boost
-			container_evidence.append(f'Interactive ARIA attributes: {", ".join(found_interactive_aria)} (+{aria_boost})')
-
-		# **ENHANCED TABINDEX ANALYSIS**
-		if 'tabindex' in attributes:
-			try:
-				tabindex = int(attributes['tabindex'])
-				if tabindex >= 0:
-					container_score += 20
-					container_evidence.append(f'Focusable (tabindex: {tabindex}) (+20)')
-				elif tabindex == -1:
-					container_score += 12
-					container_evidence.append('Programmatically focusable (tabindex: -1) (+12)')
-			except ValueError:
-				container_score += 3
-				warnings.append(f'Invalid tabindex: {attributes["tabindex"]}')
-
-		# **ENHANCED CURSOR STYLE DETECTION**
-		style = attributes.get('style', '')
-		if any(cursor_type in style for cursor_type in ['cursor: pointer', 'cursor:pointer', 'cursor: hand', 'cursor:hand']):
-			container_score += 15
-			container_evidence.append('Pointer cursor style (+15)')
-
-		# **ENHANCED ID AND DATA ATTRIBUTES**
-		if attributes.get('id'):
-			id_val = attributes['id'].lower()
-			# Check if ID suggests interactivity
-			if any(indicator in id_val for indicator in button_indicators):
-				container_score += 12
-				container_evidence.append(f'Interactive ID: {attributes["id"][:20]}... (+12)')
-			else:
-				container_score += 4
-				container_evidence.append(f'Has ID: {attributes["id"][:20]}... (+4)')
-
-		# **ENHANCED DATA ATTRIBUTES** - Much more inclusive
-		data_attrs = [k for k in attributes.keys() if k.startswith('data-')]
-		if data_attrs:
-			data_boost = min(len(data_attrs) * 3, 15)  # Up to 15 points for data attributes
-			container_score += data_boost
-			container_evidence.append(f'Data attributes: {len(data_attrs)} found (+{data_boost})')
-
-			# Special boost for common interactive data attributes
-			interactive_data_attrs = [
-				'data-action',
-				'data-toggle',
-				'data-target',
-				'data-href',
-				'data-click',
-				'data-submit',
-				'data-confirm',
-				'data-cancel',
-				'data-close',
-				'data-open',
-				'data-show',
-				'data-hide',
-				'data-expand',
-				'data-collapse',
-				'data-select',
-				'data-testid',
-				'data-test',
-				'data-qa',
-				'data-cy',
-				'data-selenium',
-			]
-			found_interactive_data = [attr for attr in interactive_data_attrs if attr in attributes]
-			if found_interactive_data:
-				special_boost = len(found_interactive_data) * 8
-				container_score += special_boost
-				container_evidence.append(f'Interactive data attributes: {", ".join(found_interactive_data)} (+{special_boost})')
-
-		score += container_score
-		evidence.extend(container_evidence)
-
-	# **EVENT HANDLERS** (Score: 40-70) - More inclusive
-	event_handlers = [
-		'onclick',
-		'onmousedown',
-		'onmouseup',
-		'onkeydown',
-		'onkeyup',
-		'onkeypress',
-		'ondblclick',
-		'onchange',
-		'onfocus',
-		'onblur',
-		'onsubmit',
-		'onreset',
-		'onselect',
-		'oninput',
-		'onload',
-		'onunload',
-		'onresize',
-		'onscroll',
-		'onmouseover',
-		'onmouseout',
-		'onmouseenter',
-		'onmouseleave',
-		'onmousemove',
-		'ontouchstart',
-		'ontouchend',
-		'ontouchmove',
-		'ontouchcancel',
-		'onpointerdown',
-		'onpointerup',
-		'onpointermove',
-		'onpointercancel',
-	]
-
-	found_handlers = [attr for attr in event_handlers if attr in attributes]
-	if found_handlers:
-		if element_category == 'unknown':
-			element_category = 'event_handler'
-
-		# Primary click handler gets big boost
-		if 'onclick' in attributes:
-			score += 45
-			evidence.append('Has onclick event handler (+45)')
-
-		# Other handlers get smaller boosts
-		other_handlers = [h for h in found_handlers if h != 'onclick']
-		if other_handlers:
-			handler_boost = len(other_handlers) * 6
-			score += handler_boost
-			evidence.append(f'Additional event handlers: {", ".join(other_handlers)} (+{handler_boost})')
-
-	# **ARIA ROLES** (Score: 30-60) - More inclusive
-	if attributes.get('role'):
-		if element_category == 'unknown':
-			element_category = 'aria_role'
-		role = attributes['role'].lower()
-		interactive_roles = {
-			'button': 60,
-			'link': 60,
-			'menuitem': 55,
-			'tab': 55,
-			'option': 50,
-			'checkbox': 50,
-			'radio': 50,
-			'switch': 50,
-			'slider': 45,
-			'spinbutton': 45,
-			'combobox': 45,
-			'listbox': 45,
-			'textbox': 40,
-			'searchbox': 40,
-			'tree': 35,
-			'grid': 35,
-			'menu': 35,
-			'menubar': 35,
-			'tablist': 35,
-			'dialog': 30,
-			'alertdialog': 30,
-			'tooltip': 25,
-			'progressbar': 20,
-			'scrollbar': 20,
-			'presentation': 8,
-			'none': 8,
-			'img': 10,
-			'figure': 10,
-			'heading': 12,
-			'banner': 15,
-			'main': 15,
-			'navigation': 20,
-			'search': 20,
-			'form': 18,
-			'region': 15,
-			'article': 12,
-			'section': 12,
-			'group': 10,
-			'list': 10,
-			'listitem': 8,
-			'cell': 8,
-			'row': 8,
-			'columnheader': 12,
-			'rowheader': 12,
-			'gridcell': 15,
-			'application': 25,
-			'document': 10,
+		# Build comprehensive DOM tree structure
+		comprehensive_dom_data = {
+			'metadata': {
+				'url': url,
+				'timestamp': timestamp,
+				'extraction_method': 'enhanced_comprehensive',
+				'total_elements': len(interactive_elements),
+				'selector_map_size': len(selector_map),
+				'serialized_length': len(serialized),
+				'version': '2.0.0',
+			},
+			'statistics': {
+				'confidence_distribution': {},
+				'element_type_distribution': {},
+				'score_ranges': {
+					'90-100': 0,
+					'80-89': 0,
+					'70-79': 0,
+					'60-69': 0,
+					'50-59': 0,
+					'40-49': 0,
+					'30-39': 0,
+					'20-29': 0,
+					'10-19': 0,
+					'0-9': 0,
+				},
+				'category_distribution': {},
+			},
+			'interactive_elements': [],
+			'serialized_output': serialized,
+			'advanced_features': {
+				'iframe_contexts': serialized.count('=== IFRAME CONTENT'),
+				'shadow_dom_contexts': serialized.count('=== SHADOW DOM'),
+				'cross_origin_elements': serialized.count('[CROSS-ORIGIN]'),
+			},
 		}
 
-		if role in interactive_roles:
-			role_score = interactive_roles[role]
-			score += role_score
-			evidence.append(f'ARIA role: {role} (+{role_score})')
-		else:
-			score += 18  # Unknown role but still potentially interactive
-			evidence.append(f'Unknown ARIA role: {role} (+18)')
+		# Process each element and build statistics
+		for elem in interactive_elements:
+			reasoning = elem.get('reasoning', {})
+			confidence = reasoning.get('confidence', 'MINIMAL')
+			score = reasoning.get('score', 0)
+			element_type = reasoning.get('element_type', 'UNKNOWN')
+			category = reasoning.get('element_category', 'unknown')
 
-	# **SPECIAL ELEMENT TYPES** - More inclusive
-	elif element_name == 'LABEL':
-		element_category = 'form_label'
-		score += 40
-		if attributes.get('for'):
-			score += 25
-			evidence.append(f'Label for form element: {attributes["for"]} (+25)')
-		else:
-			score += 15  # Don't exclude, just lower score
-			evidence.append('Label without "for" attribute (+15)')
+			# Update statistics
+			comprehensive_dom_data['statistics']['confidence_distribution'][confidence] = (
+				comprehensive_dom_data['statistics']['confidence_distribution'].get(confidence, 0) + 1
+			)
 
-	elif element_name in [
-		'SVG',
-		'PATH',
-		'POLYGON',
-		'CIRCLE',
-		'RECT',
-		'G',
-		'USE',
-		'ELLIPSE',
-		'LINE',
-		'POLYLINE',
-		'TEXT',
-		'TSPAN',
-		'IMAGE',
-	]:
-		element_category = 'graphic'
-		score += 20  # Base score for graphics
+			comprehensive_dom_data['statistics']['element_type_distribution'][element_type] = (
+				comprehensive_dom_data['statistics']['element_type_distribution'].get(element_type, 0) + 1
+			)
 
-		if attributes.get('onclick'):
-			score += 30
-			evidence.append('Graphics with click handler (+30)')
-		if 'cursor: pointer' in attributes.get('style', ''):
-			score += 25
-			evidence.append('Graphics with pointer cursor (+25)')
-		if any(attr.startswith('data-') for attr in attributes):
-			score += 15
-			evidence.append('Graphics with data attributes (+15)')
-		# Check for interactive SVG classes
-		svg_classes = attributes.get('class', '').lower()
-		if any(indicator in svg_classes for indicator in ['icon', 'button', 'click', 'interactive']):
-			score += 20
-			evidence.append('Interactive SVG classes (+20)')
+			comprehensive_dom_data['statistics']['category_distribution'][category] = (
+				comprehensive_dom_data['statistics']['category_distribution'].get(category, 0) + 1
+			)
 
-	elif element_name == 'IMG':
-		element_category = 'image'
-		score += 25  # Base score for images
-		if attributes.get('onclick'):
-			score += 30
-			evidence.append('Image with click handler (+30)')
-		if 'cursor: pointer' in attributes.get('style', ''):
-			score += 25
-			evidence.append('Image with pointer cursor (+25)')
-		if attributes.get('alt'):
-			score += 8
-			evidence.append('Image with alt text (+8)')
-		# Check for interactive image classes
-		img_classes = attributes.get('class', '').lower()
-		if any(indicator in img_classes for indicator in button_indicators):
-			score += 18
-			evidence.append('Interactive image classes (+18)')
+			# Score ranges
+			if score >= 90:
+				comprehensive_dom_data['statistics']['score_ranges']['90-100'] += 1
+			elif score >= 80:
+				comprehensive_dom_data['statistics']['score_ranges']['80-89'] += 1
+			elif score >= 70:
+				comprehensive_dom_data['statistics']['score_ranges']['70-79'] += 1
+			elif score >= 60:
+				comprehensive_dom_data['statistics']['score_ranges']['60-69'] += 1
+			elif score >= 50:
+				comprehensive_dom_data['statistics']['score_ranges']['50-59'] += 1
+			elif score >= 40:
+				comprehensive_dom_data['statistics']['score_ranges']['40-49'] += 1
+			elif score >= 30:
+				comprehensive_dom_data['statistics']['score_ranges']['30-39'] += 1
+			elif score >= 20:
+				comprehensive_dom_data['statistics']['score_ranges']['20-29'] += 1
+			elif score >= 10:
+				comprehensive_dom_data['statistics']['score_ranges']['10-19'] += 1
+			else:
+				comprehensive_dom_data['statistics']['score_ranges']['0-9'] += 1
 
-	# **FORM ELEMENTS** - More inclusive
-	elif element_name in ['FORM', 'FIELDSET', 'LEGEND', 'OPTGROUP', 'OPTION']:
-		element_category = 'form_structure'
-		score += 30
-		evidence.append(f'Form structure element: {element_name} (+30)')
+			# Add element to interactive_elements array
+			comprehensive_dom_data['interactive_elements'].append(
+				{
+					'interactive_index': elem.get('interactive_index'),
+					'element_name': elem.get('element_name'),
+					'position': {
+						'x': elem.get('x'),
+						'y': elem.get('y'),
+						'width': elem.get('width'),
+						'height': elem.get('height'),
+					},
+					'reasoning': reasoning,
+					'attributes': elem.get('attributes', {}),
+					'is_clickable': elem.get('is_clickable', False),
+					'is_scrollable': elem.get('is_scrollable', False),
+					'frame_id': elem.get('frame_id'),
+				}
+			)
 
-	# **MEDIA ELEMENTS**
-	elif element_name in ['VIDEO', 'AUDIO', 'CANVAS', 'EMBED', 'OBJECT', 'IFRAME']:
-		element_category = 'media'
-		score += 35
-		evidence.append(f'Media element: {element_name} (+35)')
-		# Media elements with controls are more interactive
-		if attributes.get('controls'):
-			score += 20
-			evidence.append('Media with controls (+20)')
+		# Save comprehensive version
+		async with aiofiles.open(dom_tree_file, 'w', encoding='utf-8') as f:
+			await f.write(json.dumps(comprehensive_dom_data, indent=2, ensure_ascii=False))
 
-	# **CUSTOM ELEMENTS** - Very inclusive
-	elif '-' in element_name:  # Custom elements contain hyphens
-		element_category = 'custom_element'
-		score += 40
-		evidence.append(f'Custom element: {element_name} (+40)')
+		# Also save a simplified version for easier consumption
+		simplified_file = tmp_dir / f'simple_dom_tree_{safe_url}_{timestamp}.json'
+		simplified_data = {
+			'url': url,
+			'timestamp': timestamp,
+			'total_elements': len(interactive_elements),
+			'elements': [
+				{
+					'index': elem.get('interactive_index'),
+					'type': elem.get('reasoning', {}).get('element_type', 'UNKNOWN'),
+					'confidence': elem.get('reasoning', {}).get('confidence', 'MINIMAL'),
+					'score': elem.get('reasoning', {}).get('score', 0),
+					'position': {
+						'x': elem.get('x'),
+						'y': elem.get('y'),
+						'width': elem.get('width'),
+						'height': elem.get('height'),
+					},
+					'primary_reason': elem.get('reasoning', {}).get('primary_reason', 'unknown'),
+				}
+				for elem in interactive_elements
+			],
+		}
 
-	# **TEXT FORMATTING AND ICONS** - More inclusive
-	elif element_name in ['I', 'EM', 'STRONG', 'B', 'SMALL', 'MARK', 'DEL', 'INS', 'SUB', 'SUP']:
-		element_category = 'text_formatting'
-		score += 18  # Base score
-		if attributes.get('onclick'):
-			score += 25
-			evidence.append('Text formatting with click handler (+25)')
-		if 'cursor: pointer' in attributes.get('style', ''):
-			score += 20
-			evidence.append('Text formatting with pointer cursor (+20)')
+		async with aiofiles.open(simplified_file, 'w', encoding='utf-8') as f:
+			await f.write(json.dumps(simplified_data, indent=2, ensure_ascii=False))
 
-		# Check for icon classes (very common pattern)
-		text_classes = attributes.get('class', '').lower()
-		icon_patterns = ['icon', 'fa-', 'fas-', 'far-', 'fab-', 'fal-', 'glyphicon', 'material-icons', 'mdi-', 'bi-']
-		if any(pattern in text_classes for pattern in icon_patterns):
-			score += 15
-			evidence.append('Icon classes detected (+15)')
+		print(f'📁 Comprehensive DOM tree saved to: {dom_tree_file.name}')
+		print(f'📁 Simplified DOM tree saved to: {simplified_file.name}')
 
-		# Check for button-like classes in text elements
-		if any(indicator in text_classes for indicator in button_indicators):
-			score += 12
-			evidence.append('Button-like text formatting (+12)')
+		return str(dom_tree_file)
 
-	# **TABLE ELEMENTS** - More inclusive
-	elif element_name in ['TABLE', 'THEAD', 'TBODY', 'TFOOT', 'TR', 'TD', 'TH']:
-		element_category = 'table'
-		score += 12  # Base score
-		if attributes.get('onclick'):
-			score += 20
-			evidence.append('Table element with click handler (+20)')
-		# Sortable table headers are common
-		if element_name == 'TH' and any(indicator in attributes.get('class', '').lower() for indicator in ['sort', 'sortable']):
-			score += 15
-			evidence.append('Sortable table header (+15)')
-
-	# **LIST ELEMENTS** - More inclusive
-	elif element_name in ['UL', 'OL', 'DL', 'LI', 'DT', 'DD']:
-		element_category = 'list'
-		score += 15  # Base score
-		if attributes.get('onclick'):
-			score += 20
-			evidence.append('List element with click handler (+20)')
-		# Interactive list items are common
-		if element_name == 'LI':
-			li_classes = attributes.get('class', '').lower()
-			if any(indicator in li_classes for indicator in ['item', 'option', 'choice', 'select']):
-				score += 12
-				evidence.append('Interactive list item (+12)')
-
-	# **STRUCTURAL ELEMENTS** - Don't exclude, just score low but still consider
-	elif element_name in ['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BR', 'HR', 'PRE', 'CODE', 'BLOCKQUOTE']:
-		element_category = 'structural'
-		score += 8  # Low but not zero
-		if attributes.get('onclick'):
-			score += 18
-			evidence.append('Structural element with click handler (+18)')
-		# Sometimes headings are clickable (collapsible sections)
-		if element_name.startswith('H') and any(
-			indicator in attributes.get('class', '').lower() for indicator in ['toggle', 'collapse', 'expand']
-		):
-			score += 12
-			evidence.append('Interactive heading (+12)')
-
-	# **BODY AND HTML** - Score very low but don't exclude
-	elif element_name in ['BODY', 'HTML', 'HEAD', 'TITLE', 'META', 'SCRIPT', 'STYLE', 'NOSCRIPT']:
-		element_category = 'document_structure'
-		score += 5  # Minimal score
-		if attributes.get('onclick'):
-			score += 10
-			evidence.append('Document structure with click handler (+10)')
-
-	# **FALLBACK FOR UNKNOWN ELEMENTS** - More inclusive
-	else:
-		element_category = 'unknown'
-		score += 25  # Give unknown elements a reasonable base score
-		evidence.append(f'Unknown element: {element_name} (+25)')
-
-	# **ADDITIONAL SCORING FACTORS** - Enhanced
-
-	# Any element with many attributes gets some score
-	if attributes:
-		attr_boost = min(len(attributes) * 2, 20)  # Up to 20 points for having attributes
-		score += attr_boost
-		evidence.append(f'Has {len(attributes)} attributes (+{attr_boost})')
-
-	# **ENHANCED COMMON INTERACTIVE INDICATORS**
-	if attributes.get('title'):
-		score += 5
-		evidence.append('Has title attribute (+5)')
-
-	if attributes.get('data-testid') or attributes.get('data-test') or attributes.get('data-qa'):
-		score += 12
-		evidence.append('Has test ID (+12)')
-
-	# **NEW: Enhanced pattern matching for missed buttons**
-	# Look for common button text patterns in text content or attributes
-	text_content = attributes.get('text', '').lower()
-	aria_label = attributes.get('aria-label', '').lower()
-	title = attributes.get('title', '').lower()
-
-	all_text = f'{text_content} {aria_label} {title}'.strip()
-	button_text_patterns = [
-		'click',
-		'submit',
-		'send',
-		'save',
-		'delete',
-		'remove',
-		'add',
-		'create',
-		'edit',
-		'update',
-		'cancel',
-		'close',
-		'open',
-		'show',
-		'hide',
-		'more',
-		'less',
-		'expand',
-		'collapse',
-		'next',
-		'previous',
-		'back',
-		'forward',
-		'login',
-		'logout',
-		'signin',
-		'signup',
-		'register',
-		'download',
-		'upload',
-		'search',
-		'filter',
-		'sort',
-		'play',
-		'pause',
-		'stop',
-		'start',
-		'go',
-		'ok',
-		'yes',
-		'no',
-		'accept',
-		'decline',
-		'agree',
-		'disagree',
-		'continue',
-		'proceed',
-		'finish',
-		'complete',
-		'done',
-		'apply',
-		'reset',
-		'clear',
-	]
-
-	if all_text and any(pattern in all_text for pattern in button_text_patterns):
-		score += 15
-		evidence.append('Contains button-like text (+15)')
-
-	# **DETERMINE FINAL CONFIDENCE - ADJUSTED THRESHOLDS**
-	# Make thresholds more inclusive for better button detection
-	if score >= 65:
-		confidence = 'DEFINITE'
-		confidence_description = 'Very likely interactive'
-	elif score >= 35:
-		confidence = 'LIKELY'
-		confidence_description = 'Probably interactive'
-	elif score >= 18:
-		confidence = 'POSSIBLE'
-		confidence_description = 'Possibly interactive'
-	elif score >= 10:
-		confidence = 'QUESTIONABLE'
-		confidence_description = 'Questionable interactivity'
-	else:
-		confidence = 'MINIMAL'
-		confidence_description = 'Minimal interactivity'
-
-	# **DETERMINE PRIMARY REASON**
-	primary_reason = element_category if element_category != 'unknown' else 'mixed_indicators'
-
-	# **ADD CONTEXT INFORMATION**
-	context_info = []
-	if attributes.get('id'):
-		context_info.append(f'ID: {attributes["id"][:30]}{"..." if len(attributes["id"]) > 30 else ""}')
-	if attributes.get('aria-label'):
-		context_info.append(f'ARIA: {attributes["aria-label"][:40]}{"..." if len(attributes["aria-label"]) > 40 else ""}')
-	if attributes.get('class'):
-		context_info.append(f'Class: {attributes["class"][:40]}{"..." if len(attributes["class"]) > 40 else ""}')
-	if attributes.get('title'):
-		context_info.append(f'Title: {attributes["title"][:40]}{"..." if len(attributes["title"]) > 40 else ""}')
-
-	# **NEVER RETURN NONE - ALWAYS INCLUDE THE ELEMENT**
-	return {
-		'primary_reason': primary_reason,
-		'confidence': confidence,
-		'confidence_description': confidence_description,
-		'score': score,
-		'element_type': element_name,
-		'element_category': element_category,
-		'evidence': evidence,
-		'warnings': warnings,
-		'context_info': context_info,
-		'has_attributes': len(attributes) > 0,
-		'attribute_count': len(attributes),
-		'all_attributes': attributes,  # Include all attributes for detailed inspection
-		'interactive_indicators': {
-			'has_onclick': 'onclick' in attributes,
-			'has_href': 'href' in attributes,
-			'has_tabindex': 'tabindex' in attributes,
-			'has_role': 'role' in attributes,
-			'has_aria_label': 'aria-label' in attributes,
-			'has_data_attrs': any(k.startswith('data-') for k in attributes.keys()),
-			'has_button_classes': any(indicator in attributes.get('class', '').lower() for indicator in button_indicators),
-			'has_pointer_cursor': 'cursor: pointer' in attributes.get('style', ''),
-			'has_event_handlers': any(k.startswith('on') for k in attributes.keys()),
-		},
-	}
+	except Exception as e:
+		print(f'❌ Error saving comprehensive DOM tree JSON: {e}')
+		traceback.print_exc()
+		return None
 
 
 async def extract_interactive_elements_from_service(dom_service: DOMService) -> tuple[list[dict], str, dict]:
@@ -804,45 +247,41 @@ async def extract_interactive_elements_from_service(dom_service: DOMService) -> 
 						'frame_id': getattr(node, 'frame_id', None),
 					}
 
-					# Enhanced element analysis with proper type recognition
-					reasoning = analyze_element_interactivity(element)
+					# Use ElementAnalysis from serializer for enhanced element analysis
+					reasoning = ElementAnalysis.analyze_element_interactivity(node)
 
-					# Fallback if analysis returns None
-					if reasoning is None:
-						reasoning = {
-							'primary_reason': 'fallback_detected',
-							'confidence': 'MINIMAL',
-							'confidence_description': 'Fallback minimal scoring',
-							'score': 5,
-							'element_type': element.get('element_name', 'UNKNOWN'),
-							'element_category': 'fallback',
-							'evidence': ['Fallback - no detailed analysis available'],
-							'warnings': ['Element analysis returned None'],
-							'context_info': [],
-							'interactive_indicators': {
-								'has_onclick': 'onclick' in element.get('attributes', {}),
-								'has_href': 'href' in element.get('attributes', {}),
-								'has_tabindex': 'tabindex' in element.get('attributes', {}),
-								'has_role': 'role' in element.get('attributes', {}),
-								'has_aria_label': 'aria-label' in element.get('attributes', {}),
-								'has_data_attrs': any(k.startswith('data-') for k in element.get('attributes', {}).keys()),
-								'has_button_classes': False,
-								'has_pointer_cursor': False,
-								'has_event_handlers': any(k.startswith('on') for k in element.get('attributes', {}).keys()),
-							},
-						}
+					# Convert ElementAnalysis to dict format
+					reasoning_dict = {
+						'primary_reason': reasoning.primary_reason,
+						'confidence': reasoning.confidence,
+						'confidence_description': reasoning.confidence_description,
+						'score': reasoning.score,
+						'element_type': reasoning.element_type,
+						'element_category': reasoning.element_category,
+						'evidence': reasoning.evidence,
+						'warnings': reasoning.warnings,
+						'context_info': reasoning.context_info,
+						'interactive_indicators': reasoning.interactive_indicators,
+						'event_listeners': reasoning.event_listeners,
+						'computed_styles_info': reasoning.computed_styles_info,
+						'accessibility_info': reasoning.accessibility_info,
+						'positioning_info': reasoning.positioning_info,
+						'has_attributes': len(node.attributes or {}) > 0,
+						'attribute_count': len(node.attributes or {}),
+						'all_attributes': node.attributes or {},
+					}
 
-					element['reasoning'] = reasoning
+					element['reasoning'] = reasoning_dict
 					interactive_elements.append(element)
 
 					# Update statistics
-					confidence = reasoning['confidence']
+					confidence = reasoning.confidence
 					reasoning_summary[f'{confidence}_confidence'] += 1
 
-					element_type = reasoning['element_type']
+					element_type = reasoning.element_type
 					reasoning_summary['by_type'][element_type] = reasoning_summary['by_type'].get(element_type, 0) + 1
 
-					primary_reason = reasoning['primary_reason']
+					primary_reason = reasoning.primary_reason
 					reasoning_summary['by_reason'][primary_reason] = reasoning_summary['by_reason'].get(primary_reason, 0) + 1
 
 		# Print detailed statistics
@@ -1052,17 +491,35 @@ async def inject_highlighting_script(browser_session: BrowserSession, interactiv
 				else stats.minimal++;
 			});
 			
-			statsSection.innerHTML = `
-				<div style="color: #4a90e2; font-weight: bold; margin-bottom: 8px;">📊 Element Statistics</div>
-				<div style="font-size: 11px; line-height: 1.4;">
-					<div>🟢 DEFINITE: ${stats.definite} (${(stats.definite/interactiveElements.length*100).toFixed(1)}%)</div>
-					<div>🟡 LIKELY: ${stats.likely} (${(stats.likely/interactiveElements.length*100).toFixed(1)}%)</div>
-					<div>🟠 POSSIBLE: ${stats.possible} (${(stats.possible/interactiveElements.length*100).toFixed(1)}%)</div>
-					<div>🔴 QUESTIONABLE: ${stats.questionable} (${(stats.questionable/interactiveElements.length*100).toFixed(1)}%)</div>
-					<div>🟣 MINIMAL: ${stats.minimal} (${(stats.minimal/interactiveElements.length*100).toFixed(1)}%)</div>
-					<div style="margin-top: 5px; font-weight: bold;">Total: ${interactiveElements.length} elements</div>
-				</div>
-			`;
+			// Build stats section safely
+			const statsTitle = document.createElement('div');
+			statsTitle.style.cssText = 'color: #4a90e2; font-weight: bold; margin-bottom: 8px;';
+			statsTitle.textContent = '📊 Element Statistics';
+			statsSection.appendChild(statsTitle);
+			
+			const statsContent = document.createElement('div');
+			statsContent.style.cssText = 'font-size: 11px; line-height: 1.4;';
+			
+			// Create individual stat lines
+			const statLines = [
+				`🟢 DEFINITE: ${stats.definite} (${(stats.definite/interactiveElements.length*100).toFixed(1)}%)`,
+				`🟡 LIKELY: ${stats.likely} (${(stats.likely/interactiveElements.length*100).toFixed(1)}%)`,
+				`🟠 POSSIBLE: ${stats.possible} (${(stats.possible/interactiveElements.length*100).toFixed(1)}%)`,
+				`🔴 QUESTIONABLE: ${stats.questionable} (${(stats.questionable/interactiveElements.length*100).toFixed(1)}%)`,
+				`🟣 MINIMAL: ${stats.minimal} (${(stats.minimal/interactiveElements.length*100).toFixed(1)}%)`,
+				`Total: ${interactiveElements.length} elements`
+			];
+			
+			statLines.forEach((line, index) => {
+				const lineDiv = document.createElement('div');
+				if (index === statLines.length - 1) {
+					lineDiv.style.cssText = 'margin-top: 5px; font-weight: bold;';
+				}
+				lineDiv.textContent = line;
+				statsContent.appendChild(lineDiv);
+			});
+			
+			statsSection.appendChild(statsContent);
 			panelContent.appendChild(statsSection);
 			
 			// Control buttons section
@@ -1161,13 +618,27 @@ async def inject_highlighting_script(browser_session: BrowserSession, interactiv
 					z-index: 1000025; font-size: 16px; text-align: center;
 					box-shadow: 0 10px 30px rgba(0,0,0,0.5); animation: pulse 1s ease-in-out;
 				`;
-				feedback.innerHTML = `
-					🚀 Auto-navigating to <strong>${site.name}</strong><br>
-					<small style="opacity: 0.8;">${site.url}</small><br>
-					<div style="margin-top: 10px; font-size: 12px;">
-						Site ${state.currentWebsiteIndex + 1} of ${testWebsites.length} • Auto-highlighting will start...
-					</div>
-				`;
+				// Build feedback content safely
+				const feedbackText1 = document.createTextNode('🚀 Auto-navigating to ');
+				feedback.appendChild(feedbackText1);
+				
+				const siteName = document.createElement('strong');
+				siteName.textContent = site.name;
+				feedback.appendChild(siteName);
+				
+				feedback.appendChild(document.createElement('br'));
+				
+				const siteUrl = document.createElement('small');
+				siteUrl.style.cssText = 'opacity: 0.8;';
+				siteUrl.textContent = site.url;
+				feedback.appendChild(siteUrl);
+				
+				feedback.appendChild(document.createElement('br'));
+				
+				const progressDiv = document.createElement('div');
+				progressDiv.style.cssText = 'margin-top: 10px; font-size: 12px;';
+				progressDiv.textContent = `Site ${state.currentWebsiteIndex + 1} of ${testWebsites.length} • Auto-highlighting will start...`;
+				feedback.appendChild(progressDiv);
 				document.body.appendChild(feedback);
 				
 				// Navigate after brief delay
@@ -1265,12 +736,19 @@ async def inject_highlighting_script(browser_session: BrowserSession, interactiv
 			
 			const perfContent = document.createElement('div');
 			perfContent.style.cssText = 'font-size: 10px; line-height: 1.4;';
-			perfContent.innerHTML = `
-				<div>🎯 Detection Rate: ${((stats.definite + stats.likely)/interactiveElements.length*100).toFixed(1)}%</div>
-				<div>📊 Confidence Score: ${(stats.definite*5 + stats.likely*4 + stats.possible*3 + stats.questionable*2 + stats.minimal*1)/interactiveElements.length/5*100}%</div>
-				<div>🔄 Load Time: ${performance.now().toFixed(0)}ms</div>
-				<div>💾 Memory: ~${(JSON.stringify(interactiveElements).length/1024).toFixed(1)}KB</div>
-			`;
+			// Build performance content safely
+			const perfLines = [
+				`🎯 Detection Rate: ${((stats.definite + stats.likely)/interactiveElements.length*100).toFixed(1)}%`,
+				`📊 Confidence Score: ${(stats.definite*5 + stats.likely*4 + stats.possible*3 + stats.questionable*2 + stats.minimal*1)/interactiveElements.length/5*100}%`,
+				`🔄 Load Time: ${performance.now().toFixed(0)}ms`,
+				`💾 Memory: ~${(JSON.stringify(interactiveElements).length/1024).toFixed(1)}KB`
+			];
+			
+			perfLines.forEach(line => {
+				const lineDiv = document.createElement('div');
+				lineDiv.textContent = line;
+				perfContent.appendChild(lineDiv);
+			});
 			perfSection.appendChild(perfContent);
 			panelContent.appendChild(perfSection);
 			
@@ -1280,19 +758,54 @@ async def inject_highlighting_script(browser_session: BrowserSession, interactiv
 			function updateDataView() {
 				if (state.showSerializedData) {
 					dataView.style.display = 'block';
-					dataView.innerHTML = `
-						<div style="color: #4a90e2; font-weight: bold; margin-bottom: 8px;">📄 Serialized Data Preview</div>
-						<div style="background: rgba(0,0,0,0.3); padding: 8px; border-radius: 4px; font-size: 9px; max-height: 200px; overflow-y: auto;">
-							<div>URL: ${window.location.href}</div>
-							<div>Timestamp: ${new Date().toLocaleString()}</div>
-							<div>Elements: ${interactiveElements.length}</div>
-							<hr style="border: 1px solid #333; margin: 8px 0;">
-							${interactiveElements.slice(0, 10).map(el => 
-								`[${el.interactive_index}] ${el.reasoning?.element_type || 'UNKNOWN'} (${el.reasoning?.score || 0}pts)`
-							).join('<br>')}
-							${interactiveElements.length > 10 ? '<br>... and ' + (interactiveElements.length - 10) + ' more' : ''}
-						</div>
-					`;
+					
+					// Clear existing content safely
+					while (dataView.firstChild) {
+						dataView.removeChild(dataView.firstChild);
+					}
+					
+					// Build data view safely
+					const dataTitle = document.createElement('div');
+					dataTitle.style.cssText = 'color: #4a90e2; font-weight: bold; margin-bottom: 8px;';
+					dataTitle.textContent = '📄 Serialized Data Preview';
+					dataView.appendChild(dataTitle);
+					
+					const dataContent = document.createElement('div');
+					dataContent.style.cssText = 'background: rgba(0,0,0,0.3); padding: 8px; border-radius: 4px; font-size: 9px; max-height: 200px; overflow-y: auto;';
+					
+					// Add basic info
+					const infoLines = [
+						`URL: ${window.location.href}`,
+						`Timestamp: ${new Date().toLocaleString()}`,
+						`Elements: ${interactiveElements.length}`
+					];
+					
+					infoLines.forEach(line => {
+						const lineDiv = document.createElement('div');
+						lineDiv.textContent = line;
+						dataContent.appendChild(lineDiv);
+					});
+					
+					// Add separator
+					const hr = document.createElement('hr');
+					hr.style.cssText = 'border: 1px solid #333; margin: 8px 0;';
+					dataContent.appendChild(hr);
+					
+					// Add element list
+					interactiveElements.slice(0, 10).forEach(el => {
+						const elementDiv = document.createElement('div');
+						elementDiv.textContent = `[${el.interactive_index}] ${el.reasoning?.element_type || 'UNKNOWN'} (${el.reasoning?.score || 0}pts)`;
+						dataContent.appendChild(elementDiv);
+					});
+					
+					// Add "more" indicator if needed
+					if (interactiveElements.length > 10) {
+						const moreDiv = document.createElement('div');
+						moreDiv.textContent = `... and ${interactiveElements.length - 10} more`;
+						dataContent.appendChild(moreDiv);
+					}
+					
+					dataView.appendChild(dataContent);
 				} else {
 					dataView.style.display = 'none';
 				}
@@ -1305,21 +818,49 @@ async def inject_highlighting_script(browser_session: BrowserSession, interactiv
 						state.currentFilter === 'ALL' || (el.reasoning?.confidence === state.currentFilter)
 					);
 					
-					elementList.innerHTML = `
-						<div style="color: #4a90e2; font-weight: bold; margin-bottom: 8px;">📋 Element List (${filteredElements.length})</div>
-						<div style="background: rgba(0,0,0,0.3); padding: 8px; border-radius: 4px; font-size: 9px; max-height: 200px; overflow-y: auto;">
-							${filteredElements.map(el => {
-								const conf = el.reasoning?.confidence || 'MINIMAL';
-								const emoji = {'DEFINITE': '🟢', 'LIKELY': '🟡', 'POSSIBLE': '🟠', 'QUESTIONABLE': '🔴', 'MINIMAL': '🟣'}[conf];
-								return `<div style="margin: 2px 0; cursor: pointer; padding: 2px; border-radius: 2px;" 
-									onmouseover="this.style.background='rgba(255,255,255,0.1)'" 
-									onmouseout="this.style.background='transparent'"
-									onclick="document.querySelector('[data-element-id=\\"${el.interactive_index}\\"]').scrollIntoView({behavior: 'smooth', block: 'center'})">
-									${emoji} [${el.interactive_index}] ${el.reasoning?.element_type || 'UNKNOWN'} (${el.reasoning?.score || 0}pts)
-								</div>`;
-							}).join('')}
-						</div>
-					`;
+					// Clear existing content safely
+					while (elementList.firstChild) {
+						elementList.removeChild(elementList.firstChild);
+					}
+					
+					// Build element list safely
+					const listTitle = document.createElement('div');
+					listTitle.style.cssText = 'color: #4a90e2; font-weight: bold; margin-bottom: 8px;';
+					listTitle.textContent = `📋 Element List (${filteredElements.length})`;
+					elementList.appendChild(listTitle);
+					
+					const listContent = document.createElement('div');
+					listContent.style.cssText = 'background: rgba(0,0,0,0.3); padding: 8px; border-radius: 4px; font-size: 9px; max-height: 200px; overflow-y: auto;';
+					
+					// Add each element
+					filteredElements.forEach(el => {
+						const conf = el.reasoning?.confidence || 'MINIMAL';
+						const emoji = {'DEFINITE': '🟢', 'LIKELY': '🟡', 'POSSIBLE': '🟠', 'QUESTIONABLE': '🔴', 'MINIMAL': '🟣'}[conf];
+						
+						const elementDiv = document.createElement('div');
+						elementDiv.style.cssText = 'margin: 2px 0; cursor: pointer; padding: 2px; border-radius: 2px;';
+						elementDiv.textContent = `${emoji} [${el.interactive_index}] ${el.reasoning?.element_type || 'UNKNOWN'} (${el.reasoning?.score || 0}pts)`;
+						
+						// Add hover effects
+						elementDiv.addEventListener('mouseover', () => {
+							elementDiv.style.background = 'rgba(255,255,255,0.1)';
+						});
+						elementDiv.addEventListener('mouseout', () => {
+							elementDiv.style.background = 'transparent';
+						});
+						
+						// Add click handler
+						elementDiv.addEventListener('click', () => {
+							const highlight = document.querySelector(`[data-element-id="${el.interactive_index}"]`);
+							if (highlight) {
+								highlight.scrollIntoView({behavior: 'smooth', block: 'center'});
+							}
+						});
+						
+						listContent.appendChild(elementDiv);
+					});
+					
+					elementList.appendChild(listContent);
 				} else {
 					elementList.style.display = 'none';
 				}
@@ -1809,21 +1350,43 @@ async def inject_highlighting_script(browser_session: BrowserSession, interactiv
 				container.appendChild(highlight);
 			});
 			
-			// Add enhanced animations
+			// Add enhanced animations based on score gradients
 			const style = document.createElement('style');
 			style.textContent = `
-				@keyframes definite-pulse {
-					0%, 100% { box-shadow: 0 0 5px rgba(40, 167, 69, 0.5); }
-					50% { box-shadow: 0 0 15px rgba(40, 167, 69, 0.8), 0 0 25px rgba(40, 167, 69, 0.4); }
+				@keyframes score-glow-80 {
+					0%, 100% { 
+						box-shadow: 0 0 8px currentColor; 
+						transform: scale(1);
+					}
+					50% { 
+						box-shadow: 0 0 20px currentColor, 0 0 30px currentColor; 
+						transform: scale(1.02);
+					}
 				}
 				
-				@keyframes high-score-glow {
-					0%, 100% { box-shadow: 0 0 8px rgba(255, 215, 0, 0.6); }
-					50% { box-shadow: 0 0 20px rgba(255, 215, 0, 0.9), 0 0 30px rgba(255, 215, 0, 0.5); }
+				@keyframes score-pulse-60 {
+					0%, 100% { 
+						box-shadow: 0 0 5px currentColor; 
+						opacity: 1;
+					}
+					50% { 
+						box-shadow: 0 0 15px currentColor; 
+						opacity: 0.9;
+					}
+				}
+				
+				@keyframes score-fade-low {
+					0%, 100% { 
+						opacity: 0.7; 
+					}
+					50% { 
+						opacity: 1; 
+					}
 				}
 				
 				[data-browser-use-highlight="element"]:hover {
 					z-index: 1000000 !important;
+					animation: none !important;
 				}
 				
 				button:hover {
@@ -1948,7 +1511,7 @@ async def save_outputs_to_files(serialized: str, selector_map: dict, interactive
 				for elem in interactive_elements:
 					reasoning = elem['reasoning']
 					confidence = reasoning['confidence']
-					confidence_counts[confidence] += 1
+					confidence_counts[confidence] = confidence_counts.get(confidence, 0) + 1
 					reason_counts[reasoning['primary_reason']] = reason_counts.get(reasoning['primary_reason'], 0) + 1
 					type_counts[reasoning['element_type']] = type_counts.get(reasoning['element_type'], 0) + 1
 
@@ -2515,6 +2078,13 @@ async def interactive_testing_mode():
 					# Save outputs to files
 					await save_outputs_to_files(serialized, selector_map, interactive_elements, url)
 
+					# Save comprehensive DOM tree JSON
+					json_file_path = await save_comprehensive_dom_tree_json(
+						dom_service, interactive_elements, serialized, selector_map, url
+					)
+					if json_file_path:
+						print(f'📄 DOM tree JSON saved to: {json_file_path}')
+
 					# Print serialized output preview
 					print('\n📄 Serialized output preview (first 800 chars):')
 					print('-' * 60)
@@ -3035,6 +2605,14 @@ async def quick_debug_test(url: str | None = None) -> None:
 		await inject_highlighting_script(browser_session, interactive_elements)
 		ui_time = time.time() - ui_start
 
+		# Save comprehensive DOM tree JSON
+		json_start = time.time()
+		print('💾 Saving comprehensive DOM tree JSON...')
+		json_file_path = await save_comprehensive_dom_tree_json(dom_service, interactive_elements, serialized, selector_map, url)
+		if json_file_path:
+			print(f'📄 DOM tree JSON saved to: {json_file_path}')
+		json_time = time.time() - json_start
+
 		total_time = time.time() - start_time
 
 		# ENHANCED SUMMARY WITH GREAT LOGS FOR SHARING
@@ -3048,6 +2626,7 @@ async def quick_debug_test(url: str | None = None) -> None:
 		print(f'   • Navigation: {nav_time:.2f}s')
 		print(f'   • Extraction: {extract_time:.3f}s')
 		print(f'   • UI Injection: {ui_time:.3f}s')
+		print(f'   • JSON Saving: {json_time:.3f}s')
 
 		# Element distribution
 		confidence_dist = {'DEFINITE': 0, 'LIKELY': 0, 'POSSIBLE': 0, 'QUESTIONABLE': 0, 'MINIMAL': 0}
@@ -3271,6 +2850,7 @@ async def persistent_debug_mode():
 	print('   • Debug UI automatically loads on each page')
 	print('   • Type URLs or use shortcuts')
 	print('   • Press ENTER to re-highlight current page')
+	print('   • Type "inspect" to analyze specific elements by ID')
 	print('   • Press Ctrl+C to exit')
 	print('')
 
@@ -3280,6 +2860,9 @@ async def persistent_debug_mode():
 	try:
 		await browser_session.start()
 		dom_service = DOMService(browser_session)
+
+		# Initialize interactive elements for inspection
+		interactive_elements = []
 
 		print('🌐 WEBSITE SHORTCUTS:')
 		shortcuts = {
@@ -3291,6 +2874,18 @@ async def persistent_debug_mode():
 			'6': ('Wikipedia', 'https://en.wikipedia.org/wiki/Internet'),
 			'7': ('Stack Overflow', 'https://stackoverflow.com'),
 			'8': ('Reddit', 'https://reddit.com'),
+			'9': ('YouTube', 'https://youtube.com'),
+			'10': ('Amazon', 'https://amazon.com'),
+			'11': ('Google Search', 'https://www.google.com/search?q=browser+automation'),
+			'12': ('Twitter/X', 'https://twitter.com'),
+			'13': ('LinkedIn', 'https://linkedin.com'),
+			'14': ('MDN Docs', 'https://developer.mozilla.org/en-US/'),
+			'15': ('HackerNews', 'https://news.ycombinator.com'),
+			'16': ('NPM', 'https://www.npmjs.com'),
+			'17': ('Docker Hub', 'https://hub.docker.com'),
+			'18': ('Vercel', 'https://vercel.com'),
+			'19': ('Stripe Docs', 'https://stripe.com/docs'),
+			'20': ('OpenAI', 'https://openai.com'),
 		}
 
 		for key, (name, url) in shortcuts.items():
@@ -3301,10 +2896,11 @@ async def persistent_debug_mode():
 		while True:
 			try:
 				print('🎯 Enter a website to debug:')
-				print('   • Type a number (1-8) for shortcuts')
+				print('   • Type a number (1-20) for shortcuts')
 				print('   • Type any URL (https://...)')
 				print('   • Press ENTER to re-highlight current page')
-				print('   • Type "help" for shortcuts')
+				print('   • Type "inspect" to inspect a specific element by ID')
+				print('   • Type "help" for all shortcuts')
 				print('   • Type "quit" to exit')
 
 				choice = input('\n🌐 Website: ').strip()
@@ -3316,6 +2912,36 @@ async def persistent_debug_mode():
 					print('\n🌐 AVAILABLE SHORTCUTS:')
 					for key, (name, url) in shortcuts.items():
 						print(f'   {key}. {name} - {url}')
+					continue
+				elif choice.lower() == 'inspect':
+					# Element inspection mode
+					if 'interactive_elements' in locals() and interactive_elements:
+						print('\n🔍 ELEMENT INSPECTION MODE')
+						print('=' * 50)
+						print(f'Found {len(interactive_elements)} interactive elements on current page')
+						available_ids = []
+						for elem in interactive_elements:
+							idx = elem.get('interactive_index')
+							if idx is not None:
+								available_ids.append(idx)
+						print('Available element IDs:', sorted(available_ids))
+
+						try:
+							element_id = input('\n🎯 Enter element ID to inspect: ').strip()
+
+							if element_id.lower() in ['quit', 'q', 'exit', 'back']:
+								print('👋 Exiting inspection mode')
+								continue
+							elif element_id.isdigit():
+								element_number = int(element_id)
+								inspect_element_by_number(interactive_elements, element_number)
+								input('\n📋 Press ENTER to continue...')
+							else:
+								print(f'❌ Invalid element ID: "{element_id}". Please enter a number.')
+						except (EOFError, KeyboardInterrupt):
+							print('\n👋 Exiting inspection mode')
+					else:
+						print('❌ No interactive elements available. Please navigate to a website first.')
 					continue
 				elif choice == '':
 					# Empty input - re-run highlighting on current page
@@ -3330,7 +2956,7 @@ async def persistent_debug_mode():
 					name = url.split('://')[1].split('/')[0]
 					print(f'🚀 Loading {name}...')
 				else:
-					print('❌ Invalid choice. Please enter a number (1-8) or a URL starting with http')
+					print('❌ Invalid choice. Please enter a number (1-20) or a URL starting with http')
 					continue
 
 				# Navigate to the website (or skip if re-highlighting current page)
@@ -3345,18 +2971,21 @@ async def persistent_debug_mode():
 
 				# Extract and inject debug UI
 				print('🔍 Extracting interactive elements...')
-				interactive_elements, serialized, selector_map = await extract_interactive_elements_from_service(dom_service)
+				current_elements, serialized, selector_map = await extract_interactive_elements_from_service(dom_service)
+
+				# Update global interactive_elements for inspection
+				interactive_elements = current_elements
 
 				print('🎮 Injecting debug UI...')
-				await inject_highlighting_script_safe(browser_session, interactive_elements)
+				await inject_highlighting_script_safe(browser_session, current_elements)
 
 				# Show quick summary
 				confidence_counts = {'DEFINITE': 0, 'LIKELY': 0, 'POSSIBLE': 0, 'QUESTIONABLE': 0, 'MINIMAL': 0}
-				for elem in interactive_elements:
+				for elem in current_elements:
 					conf = elem.get('reasoning', {}).get('confidence', 'MINIMAL')
 					confidence_counts[conf] = confidence_counts.get(conf, 0) + 1
 
-				print(f'✅ Debug UI loaded! Found {len(interactive_elements)} interactive elements')
+				print(f'✅ Debug UI loaded! Found {len(current_elements)} interactive elements')
 				print(
 					f'   🟢 DEFINITE: {confidence_counts["DEFINITE"]} | 🟡 LIKELY: {confidence_counts["LIKELY"]} | 🟠 POSSIBLE: {confidence_counts["POSSIBLE"]}'
 				)
@@ -3394,9 +3023,21 @@ async def inject_highlighting_script_safe(browser_session: BrowserSession, inter
 		# Create CSP-safe script that avoids innerHTML
 		elements_json = json.dumps(interactive_elements)
 
+		# Get the serialized data from the current extraction
+		# This should be available from the calling context
+		try:
+			# Get serialized data from the most recent extraction
+			page = await browser_session.get_current_page()
+			dom_service = DOMService(browser_session)
+			current_serialized, _ = await dom_service.get_serialized_dom_tree(use_enhanced_filtering=False)
+			serialized_json = json.dumps(current_serialized)
+		except Exception as e:
+			print(f'⚠️ Could not get current serialized data: {e}')
+			serialized_json = json.dumps('Serialized data not available - try re-extracting elements')
+
 		script = f"""
 		(function() {{
-			// Test websites for cycling - DEFINED AT THE VERY TOP TO AVOID SCOPING ISSUES
+			// Test websites for cycling - EXPANDED LIST WITH MORE VARIETY
 			const testWebsites = [
 				{{ name: 'Example.com', url: 'https://example.com' }},
 				{{ name: 'Browser Use', url: 'https://browser-use.com' }},
@@ -3407,7 +3048,17 @@ async def inject_highlighting_script_safe(browser_session: BrowserSession, inter
 				{{ name: 'Stack Overflow', url: 'https://stackoverflow.com' }},
 				{{ name: 'Reddit', url: 'https://reddit.com' }},
 				{{ name: 'YouTube', url: 'https://youtube.com' }},
-				{{ name: 'Amazon', url: 'https://amazon.com' }}
+				{{ name: 'Amazon', url: 'https://amazon.com' }},
+				{{ name: 'Google Search', url: 'https://www.google.com/search?q=browser+automation' }},
+				{{ name: 'Twitter/X', url: 'https://twitter.com' }},
+				{{ name: 'LinkedIn', url: 'https://linkedin.com' }},
+				{{ name: 'MDN Docs', url: 'https://developer.mozilla.org/en-US/' }},
+				{{ name: 'HackerNews', url: 'https://news.ycombinator.com' }},
+				{{ name: 'NPM', url: 'https://www.npmjs.com' }},
+				{{ name: 'Docker Hub', url: 'https://hub.docker.com' }},
+				{{ name: 'Vercel', url: 'https://vercel.com' }},
+				{{ name: 'Stripe Docs', url: 'https://stripe.com/docs' }},
+				{{ name: 'OpenAI', url: 'https://openai.com' }}
 			];
 			
 			// Remove existing highlights
@@ -3426,44 +3077,71 @@ async def inject_highlighting_script_safe(browser_session: BrowserSession, inter
 				tooltipsEnabled: true,
 				currentFilter: 'ALL',
 				lastHighlightTime: Date.now(),
-				currentWebsiteIndex: 0
+				currentWebsiteIndex: 0,
+				scoreThreshold: 10,
+				isReextracting: false
 			}};
 			
-			// Function to re-extract and re-highlight elements
+			// Function to re-extract and re-highlight elements (triggers page reload for full re-extraction)
 			async function reHighlightElements() {{
-				console.log('🔄 Re-highlighting elements...');
+				console.log('🔄 Re-extracting elements (full reload)...');
 				
 				// Show loading indicator
 				const loadingDiv = document.createElement('div');
 				loadingDiv.style.cssText = `
 					position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-					background: rgba(0, 0, 0, 0.8); color: white; padding: 20px;
-					border-radius: 10px; font-family: monospace; z-index: 1000020;
-					font-size: 14px; text-align: center;
+					background: linear-gradient(45deg, #28a745, #20c997); color: white; padding: 20px;
+					border-radius: 15px; font-family: monospace; z-index: 1000025;
+					font-size: 16px; text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,0.5);
 				`;
-				loadingDiv.textContent = '🔄 Re-highlighting elements...';
+				// Build loading content with safe DOM methods
+				const loadingIcon = document.createTextNode('🔄 Re-extracting elements...');
+				loadingDiv.appendChild(loadingIcon);
+				loadingDiv.appendChild(document.createElement('br'));
+				
+				const loadingSmall = document.createElement('small');
+				loadingSmall.style.cssText = 'opacity: 0.8;';
+				loadingSmall.textContent = 'Triggering full DOM re-analysis';
+				loadingDiv.appendChild(loadingSmall);
+				loadingDiv.appendChild(document.createElement('br'));
+				
+				const loadingDesc = document.createElement('div');
+				loadingDesc.style.cssText = 'margin-top: 10px; font-size: 12px;';
+				loadingDesc.textContent = 'This will reload the page with fresh highlighting';
+				loadingDiv.appendChild(loadingDesc);
 				document.body.appendChild(loadingDiv);
 				
-				try {{
-					// Remove existing highlights
-					const existingHighlights = document.querySelectorAll('[data-browser-use-highlight="element"], [data-browser-use-highlight="container"]');
-					existingHighlights.forEach(el => el.remove());
+				// Set flag to indicate we're re-extracting
+				state.isReextracting = true;
+				
+				// Trigger page reload after brief delay (this will cause full re-extraction)
+				setTimeout(() => {{
+					location.reload();
+				}}, 1500);
+				
+				console.log('🚀 Triggering page reload for full DOM re-extraction...');
+			}}
+			
+			// Apply score threshold filter
+			function applyScoreThreshold() {{
+				const highlights = container.querySelectorAll('[data-browser-use-highlight="element"]');
+				let visibleCount = 0;
+				
+				highlights.forEach(highlight => {{
+					const elementId = highlight.getAttribute('data-element-id');
+					const element = interactiveElements.find(el => el.interactive_index == elementId);
+					const score = element?.reasoning?.score || 0;
 					
-					// Small delay to let page settle
-					await new Promise(resolve => setTimeout(resolve, 500));
-					
-					// Re-create highlights (this would ideally trigger a new extraction, but for now we'll recreate with current data)
-					createHighlights();
-					
-					state.lastHighlightTime = Date.now();
-					console.log('✅ Re-highlighting completed');
-					
-				}} catch (error) {{
-					console.error('❌ Error re-highlighting:', error);
-				}} finally {{
-					// Remove loading indicator
-					loadingDiv.remove();
-				}}
+					if (score >= state.scoreThreshold) {{
+						highlight.style.display = 'block';
+						visibleCount++;
+					}} else {{
+						highlight.style.display = 'none';
+					}}
+				}});
+				
+				console.log(`📊 Score filter: showing ${{visibleCount}} elements with score >= ${{state.scoreThreshold}}`);
+				return visibleCount;
 			}}
 			
 			// Create container
@@ -3518,766 +3196,35 @@ async def inject_highlighting_script_safe(browser_session: BrowserSession, inter
 			const statsContent = document.createElement('div');
 			statsContent.style.cssText = 'font-size: 11px; line-height: 1.4;';
 			
-			// Add stats lines safely
+			// Add stats lines safely  
 			const statsLines = [
 				`🟢 DEFINITE: ${{stats.definite}} (${{(stats.definite/interactiveElements.length*100).toFixed(1)}}%)`,
 				`🟡 LIKELY: ${{stats.likely}} (${{(stats.likely/interactiveElements.length*100).toFixed(1)}}%)`,
 				`🟠 POSSIBLE: ${{stats.possible}} (${{(stats.possible/interactiveElements.length*100).toFixed(1)}}%)`,
 				`🔴 QUESTIONABLE: ${{stats.questionable}} (${{(stats.questionable/interactiveElements.length*100).toFixed(1)}}%)`,
 				`🟣 MINIMAL: ${{stats.minimal}} (${{(stats.minimal/interactiveElements.length*100).toFixed(1)}}%)`,
-				`📈 Total: ${{interactiveElements.length}} elements`,
-				`🔍 Enhanced: Button detection improved`
+				`📈 Total: ${{interactiveElements.length}} elements`
 			];
 			
 			statsLines.forEach(line => {{
-				const div = document.createElement('div');
-				div.textContent = line;
-				statsContent.appendChild(div);
+				const lineDiv = document.createElement('div');
+				lineDiv.textContent = line;
+				statsContent.appendChild(lineDiv);
 			}});
 			
 			statsSection.appendChild(statsContent);
 			debugPanel.appendChild(statsSection);
 			
-			// Enhanced control buttons
-			const controlsSection = document.createElement('div');
-			controlsSection.style.cssText = 'margin-bottom: 15px;';
-			
-			const controlsTitle = document.createElement('div');
-			controlsTitle.style.cssText = 'color: #4a90e2; font-weight: bold; margin-bottom: 8px;';
-			controlsTitle.textContent = '🎮 Enhanced Controls';
-			controlsSection.appendChild(controlsTitle);
-			
-			const buttonsDiv = document.createElement('div');
-			buttonsDiv.style.cssText = 'display: flex; flex-wrap: wrap; gap: 5px;';
-			
-			// Helper function to create buttons
-			function createButton(text, onClick, color = '#4a90e2') {{
-				const btn = document.createElement('button');
-				btn.textContent = text;
-				btn.style.cssText = `
-					background: ${{color}}; color: white; border: none; border-radius: 6px;
-					padding: 6px 12px; font-size: 10px; cursor: pointer;
-					transition: all 0.2s ease; font-family: inherit;
-				`;
-				btn.addEventListener('click', onClick);
-				return btn;
-			}}
-			
-			// Enhanced refresh button - re-highlights instead of page refresh
-			const refreshBtn = createButton('🔄 Re-highlight', async () => {{
-				await reHighlightElements();
-			}}, '#28a745');
-			refreshBtn.title = 'Re-run highlighting (useful after scrolling)';
-			
-			const toggleBtn = createButton('👁️ Toggle', () => {{
-				state.highlightsVisible = !state.highlightsVisible;
-				container.style.display = state.highlightsVisible ? 'block' : 'none';
-				toggleBtn.textContent = state.highlightsVisible ? '👁️ Hide' : '👁️ Show';
-			}});
-			toggleBtn.title = 'Toggle visibility of highlights';
-			
-			// Page refresh button (separate from re-highlight)
-			const pageRefreshBtn = createButton('↻ Page', () => {{
-				location.reload();
-			}}, '#dc3545');
-			pageRefreshBtn.title = 'Refresh entire page';
-			
-			buttonsDiv.appendChild(refreshBtn);
-			buttonsDiv.appendChild(toggleBtn);
-			buttonsDiv.appendChild(pageRefreshBtn);
-			controlsSection.appendChild(buttonsDiv);
-			debugPanel.appendChild(controlsSection);
-			
-			// Enhanced info section with website tracking
-			const infoSection = document.createElement('div');
-			infoSection.style.cssText = 'margin-bottom: 15px; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;';
-			
-			const infoTitle = document.createElement('div');
-			infoTitle.style.cssText = 'color: #4a90e2; font-weight: bold; margin-bottom: 4px; font-size: 10px;';
-			infoTitle.textContent = '🌐 Current Page Info';
-			infoSection.appendChild(infoTitle);
-			
-			// Find current website in list
-			const currentUrl = window.location.href;
-			let currentSiteInfo = 'Unknown site';
-			let siteProgress = '';
-			
-			for (let i = 0; i < testWebsites.length; i++) {{
-				const site = testWebsites[i];
-				if (currentUrl.includes(site.url.replace(/https?:\\/\\//, '').split('/')[0])) {{
-					state.currentWebsiteIndex = i;
-					currentSiteInfo = `${{site.name}} (${{i + 1}}/${{testWebsites.length}})`;
-					siteProgress = `🎯 Site ${{i + 1}} of ${{testWebsites.length}}`;
-					break;
-				}}
-			}}
-			
-			const infoContent = document.createElement('div');
-			infoContent.style.cssText = 'font-size: 9px; color: #ccc; line-height: 1.3;';
-			
-			const infoLines = [
-				`${{siteProgress}}`,
-				`Site: ${{currentSiteInfo}}`,
-				`Title: ${{document.title || 'No title'}}`,
-				`Viewport: ${{window.innerWidth}}x${{window.innerHeight}}`,
-				`Scroll: (${{window.scrollX}}, ${{window.scrollY}})`,
-				`Last highlight: ${{new Date(state.lastHighlightTime).toLocaleTimeString()}}`
-			];
-			
-			infoLines.forEach(line => {{
-				const div = document.createElement('div');
-				div.textContent = line;
-				infoContent.appendChild(div);
-			}});
-			
-			// Add quick progress bar
-			const progressBar = document.createElement('div');
-			progressBar.style.cssText = 'margin-top: 6px; height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px; overflow: hidden;';
-			const progressFill = document.createElement('div');
-			const progressPercent = ((state.currentWebsiteIndex + 1) / testWebsites.length) * 100;
-			progressFill.style.cssText = `height: 100%; background: linear-gradient(45deg, #28a745, #20c997); width: ${{progressPercent}}%; transition: width 0.3s ease;`;
-			progressBar.appendChild(progressFill);
-			
-			infoSection.appendChild(infoContent);
-			infoSection.appendChild(progressBar);
-			debugPanel.appendChild(infoSection);
-			
-			// Track active tooltip
-			let activeTooltip = null;
-			let currentHoverElement = null;
-			
-			// Function to create highlights
-			function createHighlights() {{
-				// Create highlights for each element
-				interactiveElements.forEach((element, index) => {{
-					const highlight = document.createElement('div');
-					highlight.setAttribute('data-browser-use-highlight', 'element');
-					highlight.setAttribute('data-element-id', element.interactive_index);
-					
-					const reasoning = element.reasoning || {{}};
-					const confidence = reasoning.confidence || 'MINIMAL';
-					const score = reasoning.score || 0;
-					
-					// Style based on confidence
-					let borderColor = '#6c757d';
-					let backgroundColor = 'rgba(108, 117, 125, 0.05)';
-					
-					if (confidence === 'DEFINITE') {{
-						borderColor = '#28a745';
-						backgroundColor = 'rgba(40, 167, 69, 0.15)';
-					}} else if (confidence === 'LIKELY') {{
-						borderColor = '#ffc107';
-						backgroundColor = 'rgba(255, 193, 7, 0.12)';
-					}} else if (confidence === 'POSSIBLE') {{
-						borderColor = '#fd7e14';
-						backgroundColor = 'rgba(253, 126, 20, 0.1)';
-					}} else if (confidence === 'QUESTIONABLE') {{
-						borderColor = '#dc3545';
-						backgroundColor = 'rgba(220, 53, 69, 0.08)';
-					}} else if (confidence === 'MINIMAL') {{
-						borderColor = '#6f42c1';
-						backgroundColor = 'rgba(111, 66, 193, 0.05)';
-					}}
-					
-					highlight.style.cssText = `
-						position: absolute;
-						left: ${{element.x}}px; top: ${{element.y}}px;
-						width: ${{element.width}}px; height: ${{element.height}}px;
-						border: 2px solid ${{borderColor}};
-						background-color: ${{backgroundColor}};
-						pointer-events: auto; box-sizing: border-box;
-						transition: all 0.3s ease; border-radius: 3px;
-						cursor: help;
-					`;
-					
-					// Enhanced label
-					const label = document.createElement('div');
-					label.textContent = element.interactive_index + ' (' + score + ')';
-					label.style.cssText = `
-						position: absolute; top: -24px; left: 0;
-						background-color: ${{borderColor}}; color: white;
-						padding: 3px 8px; font-size: 10px;
-						font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-						font-weight: bold; border-radius: 4px;
-						white-space: nowrap; z-index: 1000001;
-						box-shadow: 0 2px 6px rgba(0,0,0,0.3);
-						pointer-events: none;
-					`;
-					
-					// ENHANCED TOOLTIP WITH MUCH MORE INFORMATION
-					const tooltip = document.createElement('div');
-					tooltip.setAttribute('data-browser-use-highlight', 'tooltip');
-					tooltip.style.cssText = `
-						position: fixed; top: 10px; left: 10px;
-						background: linear-gradient(145deg, rgba(0, 0, 0, 0.95), rgba(20, 20, 20, 0.95));
-						color: white; padding: 20px; font-size: 11px;
-						font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-						border-radius: 12px; z-index: 1000005;
-						opacity: 0; visibility: hidden;
-						transition: opacity 0.2s ease, visibility 0.2s ease;
-						box-shadow: 0 12px 40px rgba(0,0,0,0.7);
-						border: 2px solid ${{borderColor}};
-						max-width: 500px; min-width: 350px;
-						pointer-events: none; line-height: 1.4;
-						max-height: 80vh; overflow-y: auto;
-					`;
-					
-					// Build comprehensive tooltip content
-					const tooltipContent = document.createElement('div');
-					
-					// HEADER with enhanced info
-					const header = document.createElement('div');
-					header.style.cssText = `color: ${{borderColor}}; font-weight: bold; font-size: 14px; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid #333;`;
-					header.textContent = `🎯 [${{element.interactive_index}}] ${{reasoning.element_type || 'UNKNOWN'}}`;
-					tooltipContent.appendChild(header);
-					
-					// CONFIDENCE with detailed breakdown
-					const confidenceDiv = document.createElement('div');
-					confidenceDiv.style.cssText = `
-						background: rgba(255, 255, 255, 0.1); padding: 8px; border-radius: 6px;
-						margin-bottom: 12px; border-left: 4px solid ${{borderColor}};
-					`;
-					
-					const confTitle = document.createElement('div');
-					confTitle.style.cssText = `color: ${{borderColor}}; font-weight: bold; font-size: 12px; margin-bottom: 4px;`;
-					confTitle.textContent = `${{confidence}} CONFIDENCE`;
-					confidenceDiv.appendChild(confTitle);
-					
-					const confDetails = document.createElement('div');
-					confDetails.style.cssText = 'font-size: 10px; color: #ddd;';
-					confDetails.textContent = `Score: ${{score}} points | Category: ${{reasoning.element_category || 'unknown'}}`;
-					confidenceDiv.appendChild(confDetails);
-					
-					const confDesc = document.createElement('div');
-					confDesc.style.cssText = 'font-size: 10px; color: #aaa; margin-top: 4px; font-style: italic;';
-					confDesc.textContent = reasoning.confidence_description || 'No description available';
-					confidenceDiv.appendChild(confDesc);
-					
-					tooltipContent.appendChild(confidenceDiv);
-					
-					// ENHANCED EVIDENCE - Show more items
-					if (reasoning.evidence && reasoning.evidence.length > 0) {{
-						const evidenceDiv = document.createElement('div');
-						evidenceDiv.style.cssText = 'margin-bottom: 12px;';
-						
-						const evidenceTitle = document.createElement('div');
-						evidenceTitle.style.cssText = 'color: #28a745; font-size: 11px; margin-bottom: 6px; font-weight: bold;';
-						evidenceTitle.textContent = `✅ Evidence (${{reasoning.evidence.length}} items):`;
-						evidenceDiv.appendChild(evidenceTitle);
-						
-						const evidenceList = document.createElement('div');
-						evidenceList.style.cssText = 'background: rgba(40, 167, 69, 0.1); padding: 8px; border-radius: 4px;';
-						
-						reasoning.evidence.slice(0, 8).forEach((ev, i) => {{
-							const item = document.createElement('div');
-							item.style.cssText = 'color: #ccc; font-size: 10px; margin-bottom: 3px; padding-left: 12px; position: relative;';
-							
-							const bullet = document.createElement('span');
-							bullet.style.cssText = 'position: absolute; left: 0; color: #28a745;';
-							bullet.textContent = '▪';
-							item.appendChild(bullet);
-							
-							const text = document.createElement('span');
-							text.textContent = ev;
-							item.appendChild(text);
-							
-							evidenceList.appendChild(item);
-						}});
-						
-						if (reasoning.evidence.length > 8) {{
-							const more = document.createElement('div');
-							more.style.cssText = 'color: #999; font-size: 9px; font-style: italic; margin-top: 4px;';
-							more.textContent = `... and ${{reasoning.evidence.length - 8}} more`;
-							evidenceList.appendChild(more);
-						}}
-						
-						evidenceDiv.appendChild(evidenceList);
-						tooltipContent.appendChild(evidenceDiv);
-					}}
-					
-					// ENHANCED WARNINGS
-					if (reasoning.warnings && reasoning.warnings.length > 0) {{
-						const warningsDiv = document.createElement('div');
-						warningsDiv.style.cssText = 'margin-bottom: 12px;';
-						
-						const warningsTitle = document.createElement('div');
-						warningsTitle.style.cssText = 'color: #ffc107; font-size: 11px; margin-bottom: 6px; font-weight: bold;';
-						warningsTitle.textContent = `⚠️ Warnings (${{reasoning.warnings.length}} items):`;
-						warningsDiv.appendChild(warningsTitle);
-						
-						const warningsList = document.createElement('div');
-						warningsList.style.cssText = 'background: rgba(255, 193, 7, 0.1); padding: 8px; border-radius: 4px;';
-						
-						reasoning.warnings.forEach((warn, i) => {{
-							const item = document.createElement('div');
-							item.style.cssText = 'color: #ffeb3b; font-size: 10px; margin-bottom: 3px; padding-left: 12px; position: relative;';
-							
-							const bullet = document.createElement('span');
-							bullet.style.cssText = 'position: absolute; left: 0; color: #ffc107;';
-							bullet.textContent = '▲';
-							item.appendChild(bullet);
-							
-							const text = document.createElement('span');
-							text.textContent = warn;
-							item.appendChild(text);
-							
-							warningsList.appendChild(item);
-						}});
-						
-						warningsDiv.appendChild(warningsList);
-						tooltipContent.appendChild(warningsDiv);
-					}}
-					
-					// ENHANCED INTERACTIVE INDICATORS
-					if (reasoning.interactive_indicators) {{
-						const indicatorsDiv = document.createElement('div');
-						indicatorsDiv.style.cssText = 'margin-bottom: 12px;';
-						
-						const indicatorsTitle = document.createElement('div');
-						indicatorsTitle.style.cssText = 'color: #17a2b8; font-size: 11px; margin-bottom: 6px; font-weight: bold;';
-						indicatorsTitle.textContent = '🔍 Interactive Indicators:';
-						indicatorsDiv.appendChild(indicatorsTitle);
-						
-						const indicatorsList = document.createElement('div');
-						indicatorsList.style.cssText = 'background: rgba(23, 162, 184, 0.1); padding: 8px; border-radius: 4px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px;';
-						
-						const indicators = reasoning.interactive_indicators;
-						Object.entries(indicators).forEach(([key, value]) => {{
-							const item = document.createElement('div');
-							item.style.cssText = 'color: #b3e5fc; font-size: 9px; display: flex; align-items: center;';
-							
-							const indicator = document.createElement('span');
-							indicator.style.cssText = `color: ${{value ? '#4caf50' : '#f44336'}}; margin-right: 4px;`;
-							indicator.textContent = value ? '✓' : '✗';
-							item.appendChild(indicator);
-							
-							const label = document.createElement('span');
-							label.textContent = key.replace('has_', '').replace('_', ' ');
-							item.appendChild(label);
-							
-							indicatorsList.appendChild(item);
-						}});
-						
-						indicatorsDiv.appendChild(indicatorsList);
-						tooltipContent.appendChild(indicatorsDiv);
-					}}
-					
-					// ENHANCED ATTRIBUTES - Show more attributes with better formatting
-					if (reasoning.all_attributes && Object.keys(reasoning.all_attributes).length > 0) {{
-						const attrsDiv = document.createElement('div');
-						attrsDiv.style.cssText = 'margin-bottom: 12px;';
-						
-						const attrsTitle = document.createElement('div');
-						attrsTitle.style.cssText = 'color: #6f42c1; font-size: 11px; margin-bottom: 6px; font-weight: bold;';
-						attrsTitle.textContent = `🏷️ All Attributes (${{Object.keys(reasoning.all_attributes).length}}):`;
-						attrsDiv.appendChild(attrsTitle);
-						
-						const attrsList = document.createElement('div');
-						attrsList.style.cssText = 'background: rgba(111, 66, 193, 0.1); padding: 8px; border-radius: 4px; max-height: 150px; overflow-y: auto;';
-						
-						Object.entries(reasoning.all_attributes).forEach(([key, value]) => {{
-							const item = document.createElement('div');
-							item.style.cssText = 'color: #d1c4e9; font-size: 9px; margin-bottom: 3px; word-break: break-all;';
-							
-							const keySpan = document.createElement('span');
-							keySpan.style.cssText = 'color: #ba68c8; font-weight: bold;';
-							keySpan.textContent = key;
-							item.appendChild(keySpan);
-							
-							const separator = document.createElement('span');
-							separator.style.cssText = 'color: #666; margin: 0 4px;';
-							separator.textContent = '=';
-							item.appendChild(separator);
-							
-							const valueSpan = document.createElement('span');
-							valueSpan.style.cssText = 'color: #e1bee7;';
-							const displayValue = value.toString().length > 60 ? value.toString().substring(0, 60) + '...' : value.toString();
-							valueSpan.textContent = `"${{displayValue}}"`;
-							item.appendChild(valueSpan);
-							
-							attrsList.appendChild(item);
-						}});
-						
-						attrsDiv.appendChild(attrsList);
-						tooltipContent.appendChild(attrsDiv);
-					}}
-					
-					// ENHANCED CONTEXT INFORMATION
-					if (reasoning.context_info && reasoning.context_info.length > 0) {{
-						const contextDiv = document.createElement('div');
-						contextDiv.style.cssText = 'margin-bottom: 12px;';
-						
-						const contextTitle = document.createElement('div');
-						contextTitle.style.cssText = 'color: #fd7e14; font-size: 11px; margin-bottom: 6px; font-weight: bold;';
-						contextTitle.textContent = `📋 Context Information (${{reasoning.context_info.length}}):`;
-						contextDiv.appendChild(contextTitle);
-						
-						const contextList = document.createElement('div');
-						contextList.style.cssText = 'background: rgba(253, 126, 20, 0.1); padding: 8px; border-radius: 4px;';
-						
-						reasoning.context_info.forEach((info, i) => {{
-							const item = document.createElement('div');
-							item.style.cssText = 'color: #ffcc80; font-size: 10px; margin-bottom: 3px; padding-left: 12px; position: relative;';
-							
-							const bullet = document.createElement('span');
-							bullet.style.cssText = 'position: absolute; left: 0; color: #fd7e14;';
-							bullet.textContent = '●';
-							item.appendChild(bullet);
-							
-							const text = document.createElement('span');
-							text.textContent = info;
-							item.appendChild(text);
-							
-							contextList.appendChild(item);
-						}});
-						
-						contextDiv.appendChild(contextList);
-						tooltipContent.appendChild(contextDiv);
-					}}
-					
-					// ENHANCED POSITION AND TECHNICAL INFO
-					const techDiv = document.createElement('div');
-					techDiv.style.cssText = 'margin-bottom: 12px;';
-					
-					const techTitle = document.createElement('div');
-					techTitle.style.cssText = 'color: #607d8b; font-size: 11px; margin-bottom: 6px; font-weight: bold;';
-					techTitle.textContent = '🔧 Technical Details:';
-					techDiv.appendChild(techTitle);
-					
-					const techList = document.createElement('div');
-					techList.style.cssText = 'background: rgba(96, 125, 139, 0.1); padding: 8px; border-radius: 4px; font-size: 9px; line-height: 1.3;';
-					
-					const techItems = [
-						`Position: (${{Math.round(element.x)}}, ${{Math.round(element.y)}})`,
-						`Size: ${{Math.round(element.width)}}×${{Math.round(element.height)}}px`,
-						`Area: ${{Math.round(element.width * element.height)}} px²`,
-						`Bounds: (${{Math.round(element.x)}}, ${{Math.round(element.y)}}) to (${{Math.round(element.x + element.width)}}, ${{Math.round(element.y + element.height)}})`,
-						`Clickable: ${{element.is_clickable ? 'Yes' : 'No'}}`,
-						`Scrollable: ${{element.is_scrollable ? 'Yes' : 'No'}}`,
-						`Frame ID: ${{element.frame_id || 'main'}}`,
-						`Primary Reason: ${{reasoning.primary_reason || 'unknown'}}`,
-						`Has Attributes: ${{reasoning.has_attributes ? 'Yes' : 'No'}} (${{reasoning.attribute_count || 0}} total)`,
-						`Detection Time: ${{new Date().toLocaleTimeString()}}`
-					];
-					
-					techItems.forEach(item => {{
-						const div = document.createElement('div');
-						div.style.cssText = 'color: #b0bec5; margin-bottom: 2px;';
-						div.textContent = item;
-						techList.appendChild(div);
-					}});
-					
-					techDiv.appendChild(techList);
-					tooltipContent.appendChild(techDiv);
-					
-					// AX TREE INFORMATION (if available)
-					if (element.ax_tree_info) {{
-						const axDiv = document.createElement('div');
-						axDiv.style.cssText = 'margin-bottom: 12px;';
-						
-						const axTitle = document.createElement('div');
-						axTitle.style.cssText = 'color: #e91e63; font-size: 11px; margin-bottom: 6px; font-weight: bold;';
-						axTitle.textContent = '🌳 AX Tree Information:';
-						axDiv.appendChild(axTitle);
-						
-						const axList = document.createElement('div');
-						axList.style.cssText = 'background: rgba(233, 30, 99, 0.1); padding: 8px; border-radius: 4px; font-size: 9px; font-family: monospace;';
-						
-						const axData = JSON.stringify(element.ax_tree_info, null, 2);
-						const axPre = document.createElement('pre');
-						axPre.style.cssText = 'color: #f8bbd9; margin: 0; white-space: pre-wrap; word-wrap: break-word;';
-						axPre.textContent = axData;
-						axList.appendChild(axPre);
-						
-						axDiv.appendChild(axList);
-						tooltipContent.appendChild(axDiv);
-					}}
-					
-					// FOOTER with interaction tips
-					const footer = document.createElement('div');
-					footer.style.cssText = 'margin-top: 12px; padding-top: 8px; border-top: 1px solid #333; font-size: 8px; color: #666; text-align: center;';
-					footer.textContent = 'Click for detailed console analysis | Hover for live updates | Use Ctrl+R to re-highlight';
-					tooltipContent.appendChild(footer);
-					
-					tooltip.appendChild(tooltipContent);
-					
-					// ENHANCED HOVER EFFECTS
-					function showTooltip(e) {{
-						// Hide other tooltips
-						const allTooltips = container.querySelectorAll('[data-browser-use-highlight="tooltip"]');
-						allTooltips.forEach(t => {{
-							if (t !== tooltip) {{
-								t.style.opacity = '0';
-								t.style.visibility = 'hidden';
-							}}
-						}});
-						
-						currentHoverElement = element.interactive_index;
-						
-						// Enhanced visual feedback
-						highlight.style.borderColor = '#ff6b6b';
-						highlight.style.backgroundColor = 'rgba(255, 107, 107, 0.25)';
-						highlight.style.borderWidth = '3px';
-						highlight.style.boxShadow = '0 0 15px rgba(255, 107, 107, 0.6)';
-						highlight.style.transform = 'scale(1.02)';
-						
-						// Position and show tooltip
-						const x = Math.min(e.clientX + 15, window.innerWidth - 520);
-						const y = Math.min(e.clientY + 15, window.innerHeight - 400);
-						tooltip.style.left = x + 'px';
-						tooltip.style.top = y + 'px';
-						tooltip.style.opacity = '1';
-						tooltip.style.visibility = 'visible';
-						
-						// Enhanced console logging with grouped output
-						console.group(`🎯 Element [${{element.interactive_index}}] ${{reasoning.element_type || 'UNKNOWN'}} - DETAILED HOVER`);
-						console.log(`🏷️ Type: ${{reasoning.element_type || 'UNKNOWN'}}`);
-						console.log(`📊 Confidence: ${{confidence}} (${{score}} points)`);
-						console.log(`📍 Position: (${{element.x}}, ${{element.y}}) Size: ${{element.width}}×${{element.height}}`);
-						console.log(`🎯 Category: ${{reasoning.element_category || 'unknown'}}`);
-						console.log(`💡 Primary Reason: ${{reasoning.primary_reason || 'unknown'}}`);
-						if (reasoning.evidence) console.log(`✅ Evidence (${{reasoning.evidence.length}}):`, reasoning.evidence);
-						if (reasoning.warnings) console.log(`⚠️ Warnings (${{reasoning.warnings.length}}):`, reasoning.warnings);
-						if (reasoning.interactive_indicators) console.log(`🔍 Interactive Indicators:`, reasoning.interactive_indicators);
-						if (reasoning.all_attributes) console.log(`🏷️ All Attributes (${{Object.keys(reasoning.all_attributes).length}}):`, reasoning.all_attributes);
-						console.groupEnd();
-					}}
-					
-					function hideTooltip() {{
-						if (currentHoverElement === element.interactive_index) {{
-							currentHoverElement = null;
-							
-							// Reset visual effects
-							highlight.style.borderColor = borderColor;
-							highlight.style.backgroundColor = backgroundColor;
-							highlight.style.borderWidth = '2px';
-							highlight.style.boxShadow = 'none';
-							highlight.style.transform = 'scale(1)';
-							
-							tooltip.style.opacity = '0';
-							tooltip.style.visibility = 'hidden';
-						}}
-					}}
-					
-					function updateTooltipPosition(e) {{
-						if (tooltip.style.opacity === '1') {{
-							const x = Math.min(e.clientX + 15, window.innerWidth - 520);
-							const y = Math.min(e.clientY + 15, window.innerHeight - 400);
-							tooltip.style.left = x + 'px';
-							tooltip.style.top = y + 'px';
-						}}
-					}}
-					
-					// Event listeners
-					highlight.addEventListener('mouseenter', showTooltip);
-					highlight.addEventListener('mouseleave', hideTooltip);
-					highlight.addEventListener('mousemove', updateTooltipPosition);
-					
-					// SUPER ENHANCED CLICK HANDLER
-					highlight.addEventListener('click', function(e) {{
-						e.stopPropagation();
-						
-						console.group(`🎯 Element [${{element.interactive_index}}] CLICKED - COMPREHENSIVE ANALYSIS`);
-						console.log('=' * 80);
-						
-						// Basic info
-						console.log(`🏷️ ELEMENT INFO:`);
-						console.log(`   Type: ${{reasoning.element_type || 'UNKNOWN'}}`);
-						console.log(`   Tag: ${{element.element_name || 'UNKNOWN'}}`);
-						console.log(`   Interactive Index: ${{element.interactive_index}}`);
-						console.log(`   Frame ID: ${{element.frame_id || 'main'}}`);
-						
-						// Confidence analysis
-						console.log(`📊 CONFIDENCE ANALYSIS:`);
-						console.log(`   Confidence: ${{confidence}}`);
-						console.log(`   Score: ${{score}} points`);
-						console.log(`   Category: ${{reasoning.element_category || 'unknown'}}`);
-						console.log(`   Primary Reason: ${{reasoning.primary_reason || 'unknown'}}`);
-						console.log(`   Description: ${{reasoning.confidence_description || 'No description'}}`);
-						
-						// Position and size
-						console.log(`📍 POSITION & SIZE:`);
-						console.log(`   Position: (${{element.x}}, ${{element.y}})`);
-						console.log(`   Size: ${{element.width}}×${{element.height}}px`);
-						console.log(`   Area: ${{Math.round(element.width * element.height)}} px²`);
-						console.log(`   Bounds: (${{Math.round(element.x)}}, ${{Math.round(element.y)}}) to (${{Math.round(element.x + element.width)}}, ${{Math.round(element.y + element.height)}})`);
-						
-						// Properties
-						console.log(`🔧 PROPERTIES:`);
-						console.log(`   Clickable: ${{element.is_clickable}}`);
-						console.log(`   Scrollable: ${{element.is_scrollable}}`);
-						console.log(`   Has Attributes: ${{reasoning.has_attributes}} (${{reasoning.attribute_count || 0}} total)`);
-						
-						// Interactive indicators
-						if (reasoning.interactive_indicators) {{
-							console.log(`🔍 INTERACTIVE INDICATORS:`);
-							Object.entries(reasoning.interactive_indicators).forEach(([key, value]) => {{
-								console.log(`   ${{key}}: ${{value}}`);
-							}});
-						}}
-						
-						// Evidence
-						if (reasoning.evidence && reasoning.evidence.length > 0) {{
-							console.log(`✅ EVIDENCE (${{reasoning.evidence.length}} items):`);
-							reasoning.evidence.forEach((ev, i) => {{
-								console.log(`   ${{i + 1}}. ${{ev}}`);
-							}});
-						}}
-						
-						// Warnings
-						if (reasoning.warnings && reasoning.warnings.length > 0) {{
-							console.log(`⚠️ WARNINGS (${{reasoning.warnings.length}} items):`);
-							reasoning.warnings.forEach((warn, i) => {{
-								console.log(`   ${{i + 1}}. ${{warn}}`);
-							}});
-						}}
-						
-						// All attributes
-						if (reasoning.all_attributes && Object.keys(reasoning.all_attributes).length > 0) {{
-							console.log(`🏷️ ALL ATTRIBUTES (${{Object.keys(reasoning.all_attributes).length}} total):`);
-							Object.entries(reasoning.all_attributes).forEach(([key, value]) => {{
-								const displayValue = value.toString().length > 100 ? value.toString().substring(0, 100) + '...' : value;
-								console.log(`   ${{key}}: "${{displayValue}}"`);
-							}});
-						}}
-						
-						// Context info
-						if (reasoning.context_info && reasoning.context_info.length > 0) {{
-							console.log(`📋 CONTEXT INFO (${{reasoning.context_info.length}} items):`);
-							reasoning.context_info.forEach((info, i) => {{
-								console.log(`   ${{i + 1}}. ${{info}}`);
-							}});
-						}}
-						
-						// AX tree info
-						if (element.ax_tree_info) {{
-							console.log(`🌳 AX TREE INFO:`);
-							console.log(element.ax_tree_info);
-						}}
-						
-						// Recommendations
-						console.log(`🎯 RECOMMENDATIONS:`);
-						if (confidence === 'DEFINITE') {{
-							console.log(`   ✅ This element should definitely be included in automation`);
-						}} else if (confidence === 'LIKELY') {{
-							console.log(`   ✅ This element is probably safe to include in automation`);
-						}} else if (confidence === 'POSSIBLE') {{
-							console.log(`   ⚠️ Consider including this element, but test thoroughly`);
-						}} else if (confidence === 'QUESTIONABLE') {{
-							console.log(`   ⚠️ Use caution - this element might not be reliably interactive`);
-						}} else {{
-							console.log(`   ❌ This element is unlikely to be interactive - consider excluding`);
-						}}
-						
-						console.log('=' * 80);
-						console.groupEnd();
-					}});
-					
-					highlight.appendChild(tooltip);
-					highlight.appendChild(label);
-					container.appendChild(highlight);
-				}});
-			}}
-			
-			// Create initial highlights
-			createHighlights();
-			
-			// Add to document
-			document.body.appendChild(container);
-			document.body.appendChild(debugPanel);
-			
-			// Enhanced keyboard shortcuts with navigation
-			document.addEventListener('keydown', (e) => {{
-				if (e.ctrlKey) {{
-					switch(e.key.toLowerCase()) {{
-						case 'r':
-							e.preventDefault();
-							reHighlightElements();
-							break;
-						case 'h':
-							e.preventDefault();
-							state.highlightsVisible = !state.highlightsVisible;
-							container.style.display = state.highlightsVisible ? 'block' : 'none';
-							break;
-						case 'p':
-							e.preventDefault();
-							location.reload();
-							break;
-						case 'n':
-							e.preventDefault();
-							// Auto-navigate to next site (Ctrl+N)
-							state.currentWebsiteIndex = (state.currentWebsiteIndex + 1) % testWebsites.length;
-							const nextSite = testWebsites[state.currentWebsiteIndex];
-							console.log(`🚀 KEYBOARD NAV: ${{state.currentWebsiteIndex + 1}}/${{testWebsites.length}} - ${{nextSite.name}}`);
-							window.location.href = nextSite.url;
-							break;
-						case 'b':
-							e.preventDefault();
-							// Auto-navigate to previous site (Ctrl+B)
-							state.currentWebsiteIndex = (state.currentWebsiteIndex - 1 + testWebsites.length) % testWebsites.length;
-							const prevSite = testWebsites[state.currentWebsiteIndex];
-							console.log(`🚀 KEYBOARD NAV: ${{state.currentWebsiteIndex + 1}}/${{testWebsites.length}} - ${{prevSite.name}}`);
-							window.location.href = prevSite.url;
-							break;
-					}}
-				}}
-			}});
-			
-			console.log('✅ Enhanced CSP-safe debugging UI loaded successfully!');
-			console.log('🎮 Features: Re-highlight refresh, detailed hover tooltips, enhanced button detection, auto-navigation');
-			console.log('⌨️ Shortcuts: Ctrl+R (re-highlight), Ctrl+H (toggle), Ctrl+P (page refresh)');
-			console.log('🚀 Navigation: Ctrl+N (next site), Ctrl+B (previous site), or use Auto Next button');
-			console.log(`📊 Website Progress: Site ${{state.currentWebsiteIndex + 1}} of ${{testWebsites.length}} available for testing`);
-			console.log('🔍 Hover for detailed analysis, click for comprehensive console output');
+			console.log('✅ Enhanced debugging UI injected successfully');
 		}})();
 		"""
 
-		# Inject the enhanced CSP-safe script
 		await page.evaluate(script)
-		print('✅ Enhanced CSP-safe interactive debugging UI injected successfully!')
-		print('🎮 New features: Re-highlight refresh, detailed hover info, enhanced button detection, auto-navigation')
-		print('⌨️ Shortcuts: Ctrl+R (re-highlight), Ctrl+H (toggle), Ctrl+P (page refresh)')
-		print('🚀 Auto-Navigation: Use "Auto Next" button or Ctrl+N/Ctrl+B for quick website testing')
-		print(f'📊 Website Testing: Now part of {len(TEST_WEBSITES)} predefined test sites')
 
 	except Exception as e:
-		print(f'❌ Error injecting enhanced debug UI: {e}')
-		# Don't crash, just continue without UI
-		print('🔄 Continuing without debug UI...')
+		print('❌ Error injecting highlighting script: {e}')
+		traceback.print_exc()
 
 
 if __name__ == '__main__':
-	print_section_header('🚀 PERSISTENT BROWSER DEBUG MODE')
-	print('🎯 FIXED: CSP errors + persistent browser session!')
-	print('')
-	print('✨ NEW PERSISTENT MODE:')
-	print('   • Browser stays open permanently')
-	print('   • Navigate to any website with debug UI')
-	print('   • Type URLs or use number shortcuts')
-	print('   • No more stopping after one website')
-	print('   • Fixed CSP TrustedHTML errors')
-	print('   • AUTO-NAVIGATION: Quickly cycle through test websites')
-	print('')
-	print('🚀 QUICK START:')
-	print('>>> import asyncio')
-	print('>>> from browser_use.dom.playground.tree import persistent_debug_mode')
-	print('>>> asyncio.run(persistent_debug_mode())')
-	print('')
-	print('⚠️  Or run single website tests:')
-	print('>>> asyncio.run(quick_debug_test())')
-	print('')
-	print('🔧 FEATURES:')
-	print('   • Persistent browser session')
-	print('   • CSP-safe JavaScript injection')
-	print('   • Interactive element highlighting')
-	print('   • Detailed console logging')
-	print('   • Keyboard shortcuts (Ctrl+R, Ctrl+H, Ctrl+N, Ctrl+B)')
-	print('   • AUTO-NAVIGATION: "Auto Next" button + keyboard shortcuts')
-	print('   • 10 predefined test websites for quick comparison')
-	print('   • Press ENTER to re-highlight current page (useful after scrolling)')
-	print('   • Progress tracking and site information display')
-	print('   • Works across all websites')
-	print('')
-	print_section_header('', char='=')
-	# Launch persistent mode instead of single test
-	asyncio.run(persistent_debug_mode())
+	asyncio.run(main())
