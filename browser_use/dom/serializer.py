@@ -1,8 +1,10 @@
 # @file purpose: Serializes enhanced DOM trees to string format for LLM consumption
 
+import json
 import time
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 from cdp_use.cdp.accessibility.types import AXPropertyName
@@ -937,12 +939,15 @@ class SimplifiedNode:
 		if node_name in {'DIV', 'SPAN', 'LABEL'}:
 			result = self._is_container_truly_interactive(node)
 			if is_iframe_or_shadow and result:
-				print(f'    ✅ Interactive container {node_name}{context_debug} is clickable')
+				# print(f'    ✅ Interactive container {node_name}{context_debug} is clickable')
+				pass
 			elif is_iframe_or_shadow and not result:
-				print(f'    ❌ Non-interactive container {node_name}{context_debug}')
+				# print(f'    ❌ Non-interactive container {node_name}{context_debug}')
+				pass
 			elif not result and node_name == 'DIV':
 				# Extra debug for non-iframe DIVs that are being filtered
-				print(f'    🗑️  Filtered non-interactive DIV{context_debug}')
+				# print(f'    🗑️  Filtered non-interactive DIV{context_debug}')
+				pass
 			return result
 
 		# **EXPLICIT EVENT HANDLERS**: Elements with explicit event handlers
@@ -1244,23 +1249,23 @@ class DOMTreeSerializer:
 		if not include_attributes:
 			include_attributes = DEFAULT_INCLUDE_ATTRIBUTES
 
-		# Try optimized AX tree-driven approach first
+		# Try optimized AX tree-driven approach first (CORRECTED ORDER!)
 		try:
 			result = self._serialize_ax_tree_optimized(include_attributes)
 			self.metrics.finish()
 			self.metrics.log_summary()
 			return result
 		except Exception as e:
-			print(f'⚠️  AX tree optimization failed ({e}), falling back to full tree traversal')
-			# Fall back to original approach
+			print(f'⚠️  AX tree optimization failed ({e}), falling back to legacy full tree traversal')
 			result = self._serialize_full_tree_legacy(include_attributes)
+			# Fall back to legacy approach
 			self.metrics.finish()
 			self.metrics.log_summary()
 			return result
 
 	def _serialize_ax_tree_optimized(self, include_attributes: list[str]) -> tuple[str, dict[int, EnhancedDOMTreeNode]]:
-		"""OPTIMIZED: Use AX tree nodes directly for 10x speed improvement."""
-		print('🚀 Starting AX tree-driven optimization')
+		"""OPTIMIZED: Use AX tree nodes directly for 10x speed improvement with ENHANCED post-processing."""
+		print('🚀 Starting AX tree-driven optimization with legacy enhancements')
 
 		# Reset state
 		self._interactive_counter = 1
@@ -1305,20 +1310,243 @@ class DOMTreeSerializer:
 		self.metrics.tree_building_time = time.time() - step_start
 		print(f'  🔧 Built minimal tree with {len(simplified_elements)} elements in {self.metrics.tree_building_time:.3f}s')
 
+		# **NEW STEP 4.5: Apply legacy wrapper container detection and smart consolidation**
+		step_start = time.time()
+		enhanced_elements = self._apply_legacy_enhancements_to_optimized_tree(simplified_elements)
+		enhancement_time = time.time() - step_start
+		print(
+			f'  🎯 Applied legacy enhancements: {len(simplified_elements)} → {len(enhanced_elements)} in {enhancement_time:.3f}s'
+		)
+
 		# Step 5: Assign interactive indices (no heavy consolidation needed)
 		step_start = time.time()
-		self._assign_indices_to_filtered_elements(simplified_elements)
+		self._assign_indices_to_filtered_elements(enhanced_elements)
 		self.metrics.indexing_time = time.time() - step_start
 		self.metrics.final_interactive_count = len(self._selector_map)
 		print(f'  🏷️  Assigned {len(self._selector_map)} interactive indices in {self.metrics.indexing_time:.3f}s')
 
 		# Step 6: Serialize minimal tree
 		step_start = time.time()
-		serialized = self._serialize_minimal_tree_fast(simplified_elements, include_attributes)
+		serialized = self._serialize_minimal_tree_fast(enhanced_elements, include_attributes)
 		self.metrics.serialization_time = time.time() - step_start
 		print(f'  📝 Serialized {len(serialized)} characters in {self.metrics.serialization_time:.3f}s')
 
 		return serialized, self._selector_map
+
+	def _apply_legacy_enhancements_to_optimized_tree(self, simplified_elements: List[SimplifiedNode]) -> List[SimplifiedNode]:
+		"""Apply clever legacy tricks to the optimized tree for better filtering and consolidation."""
+		print('    🔧 Applying legacy enhancements:')
+
+		# Build a temporary tree structure from the flat list for processing
+		root_elements = self._build_temporary_tree_structure(simplified_elements)
+
+		enhanced_count = 0
+		for root in root_elements:
+			# Apply wrapper container detection
+			removed_wrappers = self._detect_and_remove_wrapper_containers_optimized(root)
+			enhanced_count += removed_wrappers
+
+			# Apply same-action consolidation
+			consolidated = self._apply_same_action_consolidation_optimized(root)
+			enhanced_count += consolidated
+
+			# Apply smart parent-child consolidation
+			parent_child_consolidated = self._apply_smart_parent_child_consolidation_optimized(root)
+			enhanced_count += parent_child_consolidated
+
+		# Extract the enhanced flat list, filtering out consolidated elements
+		enhanced_elements = []
+		for root in root_elements:
+			self._collect_non_consolidated_elements(root, enhanced_elements)
+
+		print(f'      ✅ Enhanced {enhanced_count} elements, final count: {len(enhanced_elements)}')
+		return enhanced_elements
+
+	def _build_temporary_tree_structure(self, simplified_elements: List[SimplifiedNode]) -> List[SimplifiedNode]:
+		"""Build a temporary parent-child tree structure from flat element list for processing."""
+		# For the optimized method, elements come as a flat list
+		# We need to reconstruct parent-child relationships for advanced processing
+
+		# Simple approach: treat all as root elements for now
+		# In a more sophisticated version, we could reconstruct actual DOM hierarchy
+		return simplified_elements
+
+	def _detect_and_remove_wrapper_containers_optimized(self, root: SimplifiedNode) -> int:
+		"""Apply sophisticated wrapper container detection from legacy method."""
+		removed_count = 0
+
+		# Apply the sophisticated wrapper detection logic from legacy
+		if self._is_wrapper_container_optimized(root):
+			# Mark as consolidated (remove from interactive detection)
+			root.is_consolidated = True
+			removed_count += 1
+			print(f'      🗑️  Removed wrapper: {root.original_node.node_name}')
+
+		# Process children recursively
+		for child in root.children:
+			removed_count += self._detect_and_remove_wrapper_containers_optimized(child)
+
+		return removed_count
+
+	def _is_wrapper_container_optimized(self, node: SimplifiedNode) -> bool:
+		"""Optimized version of sophisticated wrapper container detection."""
+		node_name = node.original_node.node_name.upper()
+
+		# Only consider common container elements as potential wrappers
+		if node_name not in {'DIV', 'SPAN', 'SECTION', 'ARTICLE', 'HEADER', 'FOOTER', 'MAIN', 'NAV', 'ASIDE'}:
+			return False
+
+		# If the node itself is interactive, don't treat as wrapper
+		if node.is_clickable():
+			return False
+
+		# Count interactive and non-interactive children
+		interactive_children = [child for child in node.children if child.is_clickable()]
+		total_children = len(node.children)
+
+		# **AGGRESSIVE WRAPPER DETECTION**: If ALL children are interactive, this is likely a wrapper
+		if len(interactive_children) > 0 and len(interactive_children) == total_children:
+			return True
+
+		# **LARGE CONTAINER DETECTION**: Calendar/menu container detection
+		if len(interactive_children) >= 10:  # Calendar with many date buttons
+			return True
+
+		# **MEDIUM CONTAINER WITH CLASS DETECTION**: Menu/calendar by class names
+		if len(interactive_children) >= 5 and total_children >= 8:
+			if node.original_node.attributes and 'class' in node.original_node.attributes:
+				classes = node.original_node.attributes['class'].lower()
+				calendar_menu_indicators = [
+					'calendar',
+					'menu',
+					'dropdown',
+					'picker',
+					'grid',
+					'table',
+					'list',
+					'items',
+					'options',
+					'choices',
+					'popup',
+					'datepicker',
+				]
+				if any(indicator in classes for indicator in calendar_menu_indicators):
+					return True
+			return True
+
+		# **SINGLE CHILD WRAPPER DETECTION**: Exactly one interactive child
+		if len(interactive_children) == 1 and total_children <= 3:
+			return True
+
+		# **HIGH RATIO WRAPPER DETECTION**: >70% children are interactive
+		if total_children > 1 and (len(interactive_children) / total_children) > 0.7:
+			return True
+
+		return False
+
+	def _apply_same_action_consolidation_optimized(self, root: SimplifiedNode) -> int:
+		"""Apply same-action detection and consolidation from legacy method."""
+		consolidated_count = 0
+
+		# Check parent-child same action scenarios
+		clickable_children = [child for child in root.children if child.is_clickable()]
+
+		if len(clickable_children) == 1 and root.is_clickable():
+			child = clickable_children[0]
+			if self._elements_would_do_same_action_optimized(root, child):
+				# Keep parent, consolidate child
+				child.is_consolidated = True
+				consolidated_count += 1
+				print(f'      🔗 Consolidated same-action: {child.original_node.node_name} into {root.original_node.node_name}')
+
+		# Process children recursively
+		for child in root.children:
+			consolidated_count += self._apply_same_action_consolidation_optimized(child)
+
+		return consolidated_count
+
+	def _elements_would_do_same_action_optimized(self, parent: SimplifiedNode, child: SimplifiedNode) -> bool:
+		"""Optimized version of same-action detection."""
+		parent_node = parent.original_node
+		child_node = child.original_node
+
+		# Check if both have the same href
+		parent_href = parent_node.attributes.get('href') if parent_node.attributes else None
+		child_href = child_node.attributes.get('href') if child_node.attributes else None
+		if parent_href and child_href and parent_href == child_href:
+			return True
+
+		# Check if both have the same onclick handler
+		parent_onclick = parent_node.attributes.get('onclick') if parent_node.attributes else None
+		child_onclick = child_node.attributes.get('onclick') if child_node.attributes else None
+		if parent_onclick and child_onclick and parent_onclick == child_onclick:
+			return True
+
+		# Check if both have the same data-action
+		parent_action = parent_node.attributes.get('data-action') if parent_node.attributes else None
+		child_action = child_node.attributes.get('data-action') if child_node.attributes else None
+		if parent_action and child_action and parent_action == child_action:
+			return True
+
+		# Wrapper around single meaningful child
+		if (
+			parent_node.node_name.upper() == 'DIV'
+			and child_node.node_name.upper() in {'BUTTON', 'A', 'INPUT'}
+			and len(parent.children) == 1
+		):
+			return True
+
+		return False
+
+	def _apply_smart_parent_child_consolidation_optimized(self, root: SimplifiedNode) -> int:
+		"""Apply smart parent-child consolidation from legacy method."""
+		consolidated_count = 0
+
+		parent_name = root.original_node.node_name.upper()
+
+		# PRIMARY CONSOLIDATION: Elements that should always consolidate their children
+		primary_consolidating_elements = {'A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA'}
+
+		if parent_name in primary_consolidating_elements:
+			# Remove interactive status from ALL descendants
+			for child in root.children:
+				if child.is_clickable():
+					child.is_consolidated = True
+					consolidated_count += 1
+			return consolidated_count
+
+		# SECONDARY CONSOLIDATION: DIV/SPAN with interactive attributes
+		if parent_name in {'DIV', 'SPAN'} and root.original_node.attributes:
+			attrs = root.original_node.attributes
+			has_click_handler = any(attr in attrs for attr in ['onclick', 'data-action', 'data-toggle', 'data-href'])
+			has_role = attrs.get('role', '').lower() in {'button', 'link', 'menuitem', 'tab', 'option'}
+
+			# Check for any interactive cursor
+			computed_styles_info = {}
+			if root.original_node.snapshot_node and hasattr(root.original_node.snapshot_node, 'computed_styles'):
+				computed_styles_info = root.original_node.snapshot_node.computed_styles or {}
+			has_interactive_cursor, _, _ = ElementAnalysis._has_any_interactive_cursor(root.original_node, computed_styles_info)
+
+			if has_click_handler or has_role or has_interactive_cursor:
+				for child in root.children:
+					if child.is_clickable():
+						child.is_consolidated = True
+						consolidated_count += 1
+
+		# Process children recursively
+		for child in root.children:
+			consolidated_count += self._apply_smart_parent_child_consolidation_optimized(child)
+
+		return consolidated_count
+
+	def _collect_non_consolidated_elements(self, node: SimplifiedNode, result_list: List[SimplifiedNode]):
+		"""Collect all non-consolidated elements from the tree into a flat list."""
+		if not node.is_consolidated:
+			result_list.append(node)
+
+		# Process children regardless of consolidation status
+		for child in node.children:
+			self._collect_non_consolidated_elements(child, result_list)
 
 	def _collect_ax_interactive_candidates_fast(self, node: EnhancedDOMTreeNode) -> List:
 		"""Collect interactive candidates using optimized traversal with ENHANCED analysis and caching."""
@@ -1383,10 +1611,10 @@ class DOMTreeSerializer:
 				for child in current_node.children_nodes:
 					collect_recursive_fast(child, depth + 1)
 
-			# Process iframe content
+			# **ENHANCED IFRAME PROCESSING**: Use legacy sophisticated logic
 			if current_node.content_document and current_node.node_name.upper() == 'IFRAME':
-				iframe_context_id = self._register_iframe_context(current_node)
-				print(f'    🖼️  Processing iframe: {iframe_context_id}')
+				iframe_context_id = self._register_iframe_context_enhanced(current_node)
+				print(f'    🖼️  Processing iframe with enhanced detection: {iframe_context_id}')
 				collect_recursive_fast(current_node.content_document, depth + 1)
 
 			# Process shadow DOM
@@ -1399,6 +1627,66 @@ class DOMTreeSerializer:
 		collect_recursive_fast(node)
 		self.metrics.total_dom_nodes = node_count
 		return candidates
+
+	def _register_iframe_context_enhanced(self, iframe_node: EnhancedDOMTreeNode) -> str:
+		"""Enhanced iframe context registration with sophisticated cross-origin detection from legacy."""
+		iframe_src = iframe_node.attributes.get('src') if iframe_node.attributes else None
+		iframe_xpath = iframe_node.x_path
+
+		# **ENHANCED CROSS-ORIGIN DETECTION** from legacy method
+		is_cross_origin = self._is_cross_origin_iframe_optimized(iframe_node)
+		if is_cross_origin and iframe_src:
+			self._cross_origin_iframes.append(iframe_src)
+			print(f'      🌐 Detected cross-origin iframe: {iframe_src}')
+
+		context_id = f'iframe_{len(self._iframe_contexts)}'
+		self._iframe_contexts[context_id] = IFrameContextInfo(
+			iframe_xpath=iframe_xpath, iframe_src=iframe_src, is_cross_origin=is_cross_origin, context_id=context_id
+		)
+		return context_id
+
+	def _is_cross_origin_iframe_optimized(self, iframe_node: EnhancedDOMTreeNode) -> bool:
+		"""Enhanced cross-origin detection from legacy method with sophisticated URL analysis."""
+		# Primary check: If we don't have content_document, it's likely cross-origin
+		if not iframe_node.content_document:
+			return True
+
+		# Secondary check: Analyze the src URL for cross-origin indicators
+		if iframe_node.attributes and 'src' in iframe_node.attributes:
+			src = iframe_node.attributes['src']
+
+			# Check for obvious cross-origin patterns (from legacy method)
+			cross_origin_patterns = [
+				'https://',  # Different protocol
+				'http://',  # Different protocol
+				'www.',  # Different subdomain
+				'.com/',
+				'.org/',
+				'.net/',
+				'.io/',  # Different domains
+				'google.com',
+				'facebook.com',
+				'twitter.com',
+				'youtube.com',
+				'mailerlite.com',
+				'typeform.com',
+				'hubspot.com',
+				'stripe.com',
+				'paypal.com',
+				'gravatar.com',
+				'calendly.com',
+				'intercom.com',
+			]
+
+			src_lower = src.lower()
+			if any(pattern in src_lower for pattern in cross_origin_patterns):
+				# Additional check: if it's a relative URL, it's same-origin
+				if not src.startswith(('http://', 'https://', '//')):
+					return False  # Relative URL = same origin
+				return True
+
+		# If we have content_document and no suspicious src, assume same-origin
+		return False
 
 	async def get_element_event_listeners_via_cdp(self, browser_session, node: EnhancedDOMTreeNode) -> List[str]:
 		"""Get actual event listeners attached to an element via CDP."""
@@ -1536,13 +1824,13 @@ class DOMTreeSerializer:
 		return depth
 
 	def _is_structural_element_fast(self, node: EnhancedDOMTreeNode) -> bool:
-		"""Fast check if element is a structural element that should be skipped."""
+		"""ENHANCED structural element detection with legacy method insights for better filtering."""
 		if node.node_type != NodeType.ELEMENT_NODE:
 			return False
 
 		node_name = node.node_name.upper()
 
-		# Skip obvious structural elements
+		# Skip obvious structural elements (enhanced list from legacy)
 		structural_elements = {
 			'HTML',
 			'HEAD',
@@ -1555,21 +1843,67 @@ class DOMTreeSerializer:
 			'#DOCUMENT',
 			'#COMMENT',
 			'NOSCRIPT',
+			'BASE',
+			'TEMPLATE',
 		}
 
 		if node_name in structural_elements:
 			return True
 
-		# Fast check for large empty containers
-		if node_name in {'DIV', 'SECTION', 'ARTICLE', 'MAIN', 'HEADER', 'FOOTER', 'NAV', 'ASIDE'}:
+		# **ENHANCED CONTAINER ANALYSIS** from legacy method
+		if node_name in {'DIV', 'SPAN', 'SECTION', 'ARTICLE', 'MAIN', 'HEADER', 'FOOTER', 'NAV', 'ASIDE'}:
 			# Quick attribute check
 			if not node.attributes:
 				return True
 
-			# Fast check for meaningful attributes
-			meaningful_attrs = {'onclick', 'data-action', 'role', 'tabindex', 'href'}
-			if not any(attr in node.attributes for attr in meaningful_attrs):
-				return True
+			# **EXPANDED MEANINGFUL ATTRIBUTES** from legacy insights
+			meaningful_attrs = {
+				'onclick',
+				'onmousedown',
+				'onkeydown',
+				'data-action',
+				'data-toggle',
+				'data-href',
+				'role',
+				'tabindex',
+				'href',
+				'aria-label',
+				'aria-labelledby',
+				'jsaction',
+				'ng-click',
+				'@click',
+				'v-on:',
+				'(click)',
+			}
+
+			# Check for any cursor styling (from enhanced cursor detection)
+			has_interactive_cursor = False
+			if node.snapshot_node and hasattr(node.snapshot_node, 'computed_styles'):
+				computed_styles_info = node.snapshot_node.computed_styles or {}
+				has_interactive_cursor, _, _ = ElementAnalysis._has_any_interactive_cursor(node, computed_styles_info)
+
+			# Not structural if it has meaningful attributes OR interactive cursor
+			if any(attr in node.attributes for attr in meaningful_attrs) or has_interactive_cursor:
+				return False
+
+			# **ENHANCED VISIBILITY CHECK** - don't skip potentially visible containers
+			if node.snapshot_node:
+				bbox = getattr(node.snapshot_node, 'bounding_box', None)
+				if bbox and bbox.get('width', 0) > 0 and bbox.get('height', 0) > 0:
+					# Has meaningful size, check if it might be interactive
+					return False
+
+			# If no meaningful attributes and no size, likely structural
+			return True
+
+		# **SVG ELEMENT HANDLING** - SVG elements can be interactive
+		if node_name in {'SVG', 'PATH', 'CIRCLE', 'RECT', 'G', 'USE'}:
+			# SVG elements with click handlers or roles are interactive
+			if node.attributes:
+				svg_interactive_attrs = {'onclick', 'role', 'tabindex', 'aria-label', 'data-action'}
+				if any(attr in node.attributes for attr in svg_interactive_attrs):
+					return False  # Not structural, potentially interactive
+			return True  # Most SVG elements are decorative
 
 		return False
 
@@ -1619,27 +1953,77 @@ class DOMTreeSerializer:
 		return False
 
 	def _is_likely_calendar_cell_fast(self, node: EnhancedDOMTreeNode) -> bool:
-		"""Fast check if this is likely a calendar cell in a large date picker."""
+		"""ENHANCED calendar cell detection with sophisticated patterns from legacy method."""
 		# If it's a DIV with gridcell role, check if it's part of a large calendar
 		if not node.attributes:
 			return True  # No attributes, likely just a date cell
 
-		# Fast check for common calendar patterns
+		# **ENHANCED CALENDAR PATTERN DETECTION** from legacy method
 		if node.attributes:
 			classes = node.attributes.get('class', '').lower()
-			calendar_indicators = ['date', 'day', 'cell', 'calendar', 'picker', 'grid']
+			id_attr = node.attributes.get('id', '').lower()
 
-			# If it has calendar-related classes, it's likely a calendar cell
-			if any(indicator in classes for indicator in calendar_indicators):
+			# Expanded calendar indicators from legacy method
+			calendar_indicators = [
+				'date',
+				'day',
+				'cell',
+				'calendar',
+				'picker',
+				'grid',
+				'datepicker',
+				'monthview',
+				'dayview',
+				'weekview',
+				'cal-',
+				'dp-',
+				'date-',
+				'picker-',
+				'month-',
+				'week-',
+				'flatpickr',
+				'react-datepicker',
+				'vue-datepicker',
+				'mui-picker',
+				'ant-picker',
+				'bootstrap-datepicker',
+			]
+
+			# Check both class and id attributes for calendar patterns
+			combined_attrs = f'{classes} {id_attr}'
+			if any(indicator in combined_attrs for indicator in calendar_indicators):
 				return True
 
-		# Fast structural check
-		if (
-			node.node_name.upper() == 'DIV'
-			and len(node.attributes) <= 2  # Only a few attributes
-			and not any(attr in node.attributes for attr in ['onclick', 'data-action', 'href', 'role'])
-		):
-			return True
+			# **DATE CONTENT PATTERN DETECTION**: Check if content looks like a date
+			if hasattr(node, 'node_value') and node.node_value:
+				text_content = str(node.node_value).strip()
+				# Simple date patterns: 1-31, day names, month names
+				if text_content.isdigit() and 1 <= int(text_content) <= 31:
+					return True
+
+		# **ENHANCED STRUCTURAL CHECK** from legacy method
+		if node.node_name.upper() == 'DIV':
+			# More sophisticated attribute analysis
+			attr_count = len(node.attributes)
+			has_meaningful_attrs = any(
+				attr in node.attributes for attr in ['onclick', 'data-action', 'href', 'role', 'aria-label', 'title']
+			)
+
+			# Likely calendar cell if: few attributes AND no meaningful interaction attributes
+			if attr_count <= 3 and not has_meaningful_attrs:
+				return True
+
+			# Check for typical calendar cell attributes
+			if node.attributes:
+				data_attrs = [k for k in node.attributes.keys() if k.startswith('data-')]
+				# Calendar cells often have data-date, data-day, etc.
+				calendar_data_attrs = [
+					attr
+					for attr in data_attrs
+					if any(indicator in attr for indicator in ['date', 'day', 'month', 'year', 'time'])
+				]
+				if calendar_data_attrs and attr_count <= 4:
+					return True
 
 		return False
 
@@ -2678,10 +3062,72 @@ class DOMTreeSerializer:
 
 		# Step 1: Create simplified tree with enhanced detection (includes iframe and shadow traversal)
 		simplified_tree = self._create_simplified_tree(self.root_node)
+		cwd = Path.cwd()
+		print(f'cwd: {cwd}')
 
+		# save simplified tree to file
+		# Save simplified_tree as JSON-serializable dict, not as SimplifiedNode objects
+
+		def _to_dict(node):
+			if node is None:
+				return None
+			# Recursively convert node and its children to dict
+			# Handle method calls properly and ensure JSON serializable values
+			try:
+				is_clickable_val = node.is_clickable() if hasattr(node, 'is_clickable') and callable(node.is_clickable) else False
+			except Exception:
+				is_clickable_val = False
+
+			try:
+				element_name = (
+					str(getattr(node.original_node, 'node_name', 'unknown'))
+					if hasattr(node, 'original_node')
+					else str(getattr(node, 'node_name', 'unknown'))
+				)
+			except Exception:
+				element_name = 'unknown'
+
+			try:
+				attributes = (
+					dict(getattr(node.original_node, 'attributes', {}))
+					if hasattr(node, 'original_node')
+					else dict(getattr(node, 'attributes', {}))
+				)
+			except Exception:
+				attributes = {}
+
+			try:
+				x_path = (
+					str(getattr(node.original_node, 'x_path', ''))
+					if hasattr(node, 'original_node')
+					else str(getattr(node, 'x_path', ''))
+				)
+			except Exception:
+				x_path = ''
+
+			result = {
+				'element_name': element_name,
+				'attributes': attributes,
+				'is_clickable': bool(is_clickable_val),
+				'is_scrollable': bool(getattr(node, 'is_scrollable', False)),
+				'frame_id': str(getattr(node, 'frame_id', None)) if getattr(node, 'frame_id', None) is not None else None,
+				'x_path': x_path,
+				'children': [_to_dict(child) for child in getattr(node, 'children', [])] if hasattr(node, 'children') else [],
+			}
+			return result
+
+		simplified_tree_file = Path(f'{cwd}/simplified_tree.json')
+		with open(simplified_tree_file, 'w') as f:
+			json.dump(_to_dict(simplified_tree), f, indent=2)
+		print(f'Saved simplified tree to {simplified_tree_file}')
 		# Step 2: Optimize tree (remove unnecessary parents)
 		optimized_tree = self._optimize_tree(simplified_tree)
 
+		# save optimized tree to file
+		optimized_tree_file = Path(f'{cwd}/optimized_tree.json')
+		with open(optimized_tree_file, 'w') as f:
+			json.dump(_to_dict(optimized_tree), f, indent=2)
+		print(f'Saved optimized tree to {optimized_tree_file}')
 		# Step 3: Group related elements (radio buttons, select options, etc.)
 		self._group_related_elements(optimized_tree)
 
@@ -2694,6 +3140,11 @@ class DOMTreeSerializer:
 		# Step 6: Serialize optimized tree with grouping and iframe/shadow content
 		serialized = self._serialize_tree(optimized_tree, include_attributes)
 
+		# save serialized tree to file
+		serialized_tree_file = Path(f'{cwd}/serialized_tree.txt')
+		with open(serialized_tree_file, 'w') as f:
+			f.write(serialized)
+		print(f'Saved serialized tree to {serialized_tree_file}')
 		# Step 7: Add iframe and shadow context summary
 		context_summary = self._build_context_summary()
 		if context_summary:

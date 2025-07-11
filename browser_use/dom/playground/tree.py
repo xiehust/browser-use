@@ -254,25 +254,39 @@ async def extract_interactive_elements_from_service(dom_service: DOMService) -> 
 					# Use ElementAnalysis from serializer for enhanced element analysis
 					reasoning = ElementAnalysis.analyze_element_interactivity(node)
 
-					# Convert ElementAnalysis to dict format
+					# Convert ElementAnalysis to dict format - with JSON safety
+					def make_json_safe(obj):
+						"""Recursively ensure all values are JSON serializable."""
+						if obj is None:
+							return None
+						elif isinstance(obj, (str, int, float, bool)):
+							return obj
+						elif isinstance(obj, list):
+							return [make_json_safe(item) for item in obj]
+						elif isinstance(obj, dict):
+							return {str(k): make_json_safe(v) for k, v in obj.items()}
+						else:
+							# Convert any other type to string
+							return str(obj)
+
 					reasoning_dict = {
-						'primary_reason': reasoning.primary_reason,
-						'confidence': reasoning.confidence,
-						'confidence_description': reasoning.confidence_description,
-						'score': reasoning.score,
-						'element_type': reasoning.element_type,
-						'element_category': reasoning.element_category,
-						'evidence': reasoning.evidence,
-						'warnings': reasoning.warnings,
-						'context_info': reasoning.context_info,
-						'interactive_indicators': reasoning.interactive_indicators,
-						'event_listeners': reasoning.event_listeners,
-						'computed_styles_info': reasoning.computed_styles_info,
-						'accessibility_info': reasoning.accessibility_info,
-						'positioning_info': reasoning.positioning_info,
-						'has_attributes': len(node.attributes or {}) > 0,
-						'attribute_count': len(node.attributes or {}),
-						'all_attributes': node.attributes or {},
+						'primary_reason': str(reasoning.primary_reason),
+						'confidence': str(reasoning.confidence),
+						'confidence_description': str(reasoning.confidence_description),
+						'score': int(reasoning.score),
+						'element_type': str(reasoning.element_type),
+						'element_category': str(reasoning.element_category),
+						'evidence': [str(e) for e in reasoning.evidence],
+						'warnings': [str(w) for w in reasoning.warnings],
+						'context_info': [str(c) for c in reasoning.context_info],
+						'interactive_indicators': make_json_safe(reasoning.interactive_indicators),
+						'event_listeners': [str(e) for e in reasoning.event_listeners],
+						'computed_styles_info': make_json_safe(reasoning.computed_styles_info),
+						'accessibility_info': make_json_safe(reasoning.accessibility_info),
+						'positioning_info': make_json_safe(reasoning.positioning_info),
+						'has_attributes': bool(len(node.attributes or {}) > 0),
+						'attribute_count': int(len(node.attributes or {})),
+						'all_attributes': make_json_safe(node.attributes or {}),
 					}
 
 					element['reasoning'] = reasoning_dict
@@ -2016,7 +2030,8 @@ async def main():
 	try:
 		choice = input('Enter choice (1 or 2): ').strip()
 		if choice == '2':
-			await run_comprehensive_website_tests()
+			print('❌ Comprehensive testing mode not available')
+			await interactive_testing_mode()
 		else:
 			await interactive_testing_mode()
 	except (EOFError, KeyboardInterrupt):
