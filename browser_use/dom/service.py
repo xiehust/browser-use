@@ -407,32 +407,11 @@ class DOMService:
 		return snapshot, dom_tree, ax_tree
 
 	async def _ensure_iframe_content_loaded(self, cdp_client: CDPClient, session_id: str) -> None:
-		"""Ensure all iframe content is fully loaded before capturing DOM tree - ENHANCED for nested iframes."""
-		try:
-			print('🔄 Ensuring iframe content is loaded (enhanced for nested iframes)...')
-
-			# Step 1: Get DOM with deeper piercing to capture iframe content
-			initial_dom = await cdp_client.send.DOM.getDocument(params={'depth': -1, 'pierce': True}, session_id=session_id)
-
-			# Step 2: Find all iframe elements recursively (including nested ones)
-			iframe_nodes = []
-			self._find_all_iframes_recursive(initial_dom['root'], iframe_nodes)
-
-			if iframe_nodes:
-				print(f'📋 Found {len(iframe_nodes)} iframe(s) (including nested) to load...')
-
-				# Step 3: Load all iframes with enhanced processing
-				await self._load_all_iframe_content_enhanced(cdp_client, session_id, iframe_nodes)
-
-				# Step 4: Wait for dynamic content and nested iframe loading
-				await asyncio.sleep(1.0)  # Allow time for nested iframe loading
-				print('✅ All iframe content loaded (including nested)')
-			else:
-				print('📋 No iframes found on page')
-
-		except Exception as e:
-			print(f'⚠️ Error ensuring iframe content loaded: {e}')
-			# Continue anyway - don't fail the entire DOM capture
+		"""DISABLED: Iframe content loading has been disabled to prevent CDP errors and improve performance."""
+		# All iframe processing has been disabled to eliminate CDP errors
+		# and improve performance. The system now focuses on main page content only.
+		print('🚀 Iframe processing disabled for optimal performance (no CDP errors)')
+		return
 
 	def _find_all_iframes_recursive(self, node: Node, iframe_nodes: list, depth: int = 0) -> None:
 		"""Recursively find ALL iframe elements in the DOM tree, including nested ones."""

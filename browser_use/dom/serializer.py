@@ -796,877 +796,766 @@ class SimplifiedNode:
 	group_type: str | None = None  # For grouping related elements
 	group_parent: int | None = None  # Reference to parent group index
 	interaction_priority: int = 0  # Higher = more important to keep
-	iframe_context: str | None = None  # iframe context for selector map
-	shadow_context: str | None = None  # Shadow DOM context
 	is_consolidated: bool = False  # Flag to track if element was consolidated into parent
 
+	def __str__(self) -> str:
+		node_name = self.original_node.node_name
+		attrs = self.original_node.attributes or {}
+
+		# Basic element identification
+		context_debug = ''
+
+		# Build attribute display
+		key_attrs = []
+		if 'id' in attrs:
+			key_attrs.append(f"id='{attrs['id'][:20]}{'...' if len(attrs['id']) > 20 else ''}'")
+		if 'class' in attrs:
+			key_attrs.append(f"class='{attrs['class'][:40]}{'...' if len(attrs['class']) > 40 else ''}'")
+
+		attr_str = f' ({", ".join(key_attrs)})' if key_attrs else ''
+
+		index_str = f' [{self.interactive_index}]' if self.interactive_index is not None else ''
+
+		return f'{node_name}{attr_str}{index_str}{context_debug}'
+
 	def is_clickable(self) -> bool:
-		"""Check if this node is clickable/interactive with comprehensive but conservative detection."""
-		# If element was consolidated into parent, it's no longer independently clickable
-		if self.is_consolidated:
+		"""Enhanced clickability detection with comprehensive analysis."""
+		if not self.original_node:
 			return False
 
 		node = self.original_node
 		node_name = node.node_name.upper()
 
-		# Debug output for iframe/shadow elements
-		is_iframe_or_shadow = self.iframe_context or self.shadow_context
-		context_debug = ''
-		if self.iframe_context:
-			context_debug = f' (iframe: {self.iframe_context})'
-		elif self.shadow_context:
-			context_debug = f' (shadow: {self.shadow_context})'
-
-		# **EXCLUDE STRUCTURAL CONTAINERS**: Never mark these as interactive
-		if node_name in {'HTML', 'BODY', 'HEAD', 'TITLE', 'META', 'STYLE', 'SCRIPT'}:
-			if is_iframe_or_shadow and node_name not in {'HEAD', 'TITLE', 'META', 'STYLE', 'SCRIPT'}:
-				print(f'    🚫 Excluding structural {node_name}{context_debug}')
-			return False
-
-		# **EXCLUDE COMMON CONTAINER ELEMENTS**: Unless they have explicit interactive attributes
-		if node_name in {'MAIN', 'SECTION', 'ARTICLE', 'ASIDE', 'NAV', 'HEADER', 'FOOTER', 'FIGURE', 'FIGCAPTION'}:
-			# Only allow these if they have explicit interactive attributes
-			if node.attributes:
-				has_explicit_interaction = any(
-					attr in node.attributes
-					for attr in [
-						'onclick',
-						'onmousedown',
-						'onkeydown',
-						'data-action',
-						'data-toggle',
-						'data-href',
-						'jsaction',
-						'tabindex',
-					]
-				)
-				if not has_explicit_interaction:
-					if is_iframe_or_shadow:
-						print(f'    🚫 Excluding container {node_name}{context_debug} (no explicit interaction)')
-					return False
-			else:
-				if is_iframe_or_shadow:
-					print(f'    🚫 Excluding container {node_name}{context_debug} (no attributes)')
-				return False
-
-		# **FORM ELEMENTS**: Always interactive if they're genuine form controls
+		# Standard form elements are always clickable
 		if node_name in {'INPUT', 'BUTTON', 'SELECT', 'TEXTAREA', 'OPTION'}:
-			if is_iframe_or_shadow:
-				print(f'    ✅ Form element {node_name}{context_debug} is clickable')
-			self.interaction_priority += 10
 			return True
 
-		# **LINKS**: Always interactive if they have href
+		# Links with href are clickable
 		if node_name == 'A' and node.attributes and 'href' in node.attributes:
-			if is_iframe_or_shadow:
-				print(f'    ✅ Link {node_name}{context_debug} with href is clickable')
-			self.interaction_priority += 9
 			return True
 
-		# **TRADITIONAL CLICKABILITY**: From snapshot (high confidence)
-		if node.snapshot_node and getattr(node.snapshot_node, 'is_clickable', False):
-			if is_iframe_or_shadow:
-				print(f'    ✅ Snapshot clickable {node_name}{context_debug}')
-			self.interaction_priority += 10
-			return True
-
-		# **ANY INTERACTIVE CURSOR**: Include ALL elements with interactive cursor styling (user's request)
-		computed_styles_info = {}
-		if node.snapshot_node and hasattr(node.snapshot_node, 'computed_styles'):
-			computed_styles_info = node.snapshot_node.computed_styles or {}
-
-		has_cursor, cursor_type, cursor_score = ElementAnalysis._has_any_interactive_cursor(node, computed_styles_info)
-
-		if has_cursor:
-			# Exclude obvious containers/wrappers but include most cursor-styled elements
-			if node_name not in {'HTML', 'BODY', 'MAIN', 'SECTION', 'ARTICLE', 'ASIDE', 'NAV', 'HEADER', 'FOOTER'}:
-				if is_iframe_or_shadow:
-					print(f'    ✅ Interactive cursor {cursor_type} {node_name}{context_debug} is clickable')
-				# Higher priority for more interactive cursor types
-				priority_boost = max(1, cursor_score // 25)  # Scale priority with cursor importance
-				self.interaction_priority += priority_boost
+		# **ENHANCED SNAPSHOT DETECTION** - Check snapshot data for clickability
+		if node.snapshot_node:
+			# CDP snapshot indicates clickability
+			if getattr(node.snapshot_node, 'is_clickable', False):
 				return True
 
-		# **INTERACTIVE ARIA ROLES**: From both AX tree and role attribute
-		interactive_roles = {
-			'button',
-			'link',
-			'menuitem',
-			'tab',
-			'option',
-			'checkbox',
-			'radio',
-			'slider',
-			'spinbutton',
-			'switch',
-			'textbox',
-			'combobox',
-			'listbox',
-			'tree',
-			'grid',
-			'gridcell',
-			'searchbox',
-			'menuitemradio',
-			'menuitemcheckbox',
-		}
+			# **COMPREHENSIVE CURSOR DETECTION** - Check for any interactive cursor
+			computed_styles_info = {}
+			if hasattr(node.snapshot_node, 'computed_styles'):
+				computed_styles_info = node.snapshot_node.computed_styles or {}
 
-		# Check AX tree role
-		if node.ax_node and node.ax_node.role and node.ax_node.role.lower() in interactive_roles:
-			if is_iframe_or_shadow:
-				print(f'    ✅ AX role {node.ax_node.role} {node_name}{context_debug} is clickable')
-			self.interaction_priority += 9
-			return True
+			has_cursor, cursor_type, cursor_score = ElementAnalysis._has_any_interactive_cursor(node, computed_styles_info)
+			if has_cursor:
+				return True
 
-		# Check role attribute
-		if node.attributes and 'role' in node.attributes and node.attributes['role'].lower() in interactive_roles:
-			if is_iframe_or_shadow:
-				print(f'    ✅ Role attribute {node.attributes["role"]} {node_name}{context_debug} is clickable')
-			self.interaction_priority += 9
-			return True
+		# **ENHANCED ATTRIBUTE DETECTION** - More comprehensive event handling checks
+		if node.attributes:
+			# Standard event handlers
+			event_attrs = {'onclick', 'onmousedown', 'onkeydown', 'data-action', 'data-toggle', 'jsaction'}
+			if any(attr in node.attributes for attr in event_attrs):
+				return True
 
-		# **ACCESSIBILITY FOCUSABLE**: Elements marked as focusable by accessibility tree
-		if node.ax_node and node.ax_node.properties:
-			for prop in node.ax_node.properties:
-				if prop.name == AXPropertyName.FOCUSABLE and prop.value:
-					if is_iframe_or_shadow:
-						print(f'    ✅ AX focusable {node_name}{context_debug} is clickable')
-					self.interaction_priority += 7
+			# Framework-specific event attributes (Angular, Vue, React, etc.)
+			framework_events = ['@click', 'v-on:', '(click)', 'ng-click', 'data-href', 'data-url']
+			for attr in node.attributes:
+				if any(framework in attr.lower() for framework in framework_events):
 					return True
 
-		# **CONSERVATIVE CONTAINER HANDLING**: For remaining DIV/SPAN/LABEL elements
-		if node_name in {'DIV', 'SPAN', 'LABEL'}:
-			result = self._is_container_truly_interactive(node)
-			if is_iframe_or_shadow and result:
-				# print(f'    ✅ Interactive container {node_name}{context_debug} is clickable')
-				pass
-			elif is_iframe_or_shadow and not result:
-				# print(f'    ❌ Non-interactive container {node_name}{context_debug}')
-				pass
-			elif not result and node_name == 'DIV':
-				# Extra debug for non-iframe DIVs that are being filtered
-				# print(f'    🗑️  Filtered non-interactive DIV{context_debug}')
-				pass
-			return result
-
-		# **EXPLICIT EVENT HANDLERS**: Elements with explicit event handlers
-		if node.attributes:
-			event_attributes = {
-				'onclick',
-				'onmousedown',
-				'onmouseup',
-				'onkeydown',
-				'onkeyup',
-				'onfocus',
-				'onblur',
-				'onchange',
-				'onsubmit',
-				'ondblclick',
+			# **ENHANCED ROLE DETECTION** - More comprehensive ARIA roles
+			role = node.attributes.get('role', '').lower()
+			interactive_roles = {
+				'button',
+				'link',
+				'menuitem',
+				'tab',
+				'option',
+				'checkbox',
+				'radio',
+				'slider',
+				'spinbutton',
+				'switch',
+				'textbox',
+				'combobox',
+				'listbox',
+				'tree',
+				'grid',
+				'gridcell',
+				'searchbox',
+				'menuitemradio',
+				'menuitemcheckbox',
 			}
-			if any(attr in node.attributes for attr in event_attributes):
-				if is_iframe_or_shadow:
-					print(f'    ✅ Event handler {node_name}{context_debug} is clickable')
-				self.interaction_priority += 6
+			if role in interactive_roles:
 				return True
 
-		# **INTERACTIVE DATA ATTRIBUTES**: Elements with explicit interactive data attributes
-		if node.attributes:
-			interactive_data_attrs = {
-				'data-toggle',
-				'data-dismiss',
-				'data-action',
-				'data-click',
-				'data-href',
-				'data-target',
-				'data-trigger',
-				'data-modal',
-				'data-tab',
-				'jsaction',
-			}
-			if any(attr in node.attributes for attr in interactive_data_attrs):
-				if is_iframe_or_shadow:
-					print(f'    ✅ Data attribute {node_name}{context_debug} is clickable')
-				self.interaction_priority += 6
+			# **TABINDEX DETECTION** - Elements with positive tabindex
+			tabindex = node.attributes.get('tabindex')
+			if tabindex and tabindex.lstrip('-').isdigit() and int(tabindex) >= 0:
 				return True
 
-		# **POSITIVE TABINDEX**: Elements explicitly made focusable (excluding -1)
-		if node.attributes and 'tabindex' in node.attributes:
-			try:
-				tabindex = int(node.attributes['tabindex'])
-				if tabindex >= 0:
-					if is_iframe_or_shadow:
-						print(f'    ✅ Tabindex {tabindex} {node_name}{context_debug} is clickable')
-					self.interaction_priority += 5
+		# **ENHANCED AX TREE DETECTION** - Accessibility tree analysis
+		if node.ax_node:
+			# Check for focusable AX properties
+			if node.ax_node.properties:
+				for prop in node.ax_node.properties:
+					if prop.name == AXPropertyName.FOCUSABLE and prop.value:
+						return True
+
+			# Check AX role for interactivity
+			if node.ax_node.role:
+				ax_interactive_roles = {
+					'button',
+					'link',
+					'menuitem',
+					'tab',
+					'option',
+					'checkbox',
+					'radio',
+					'slider',
+					'spinbutton',
+					'switch',
+					'textbox',
+					'combobox',
+					'listbox',
+				}
+				if node.ax_node.role.lower() in ax_interactive_roles:
 					return True
-			except ValueError:
-				pass
 
-		# **DRAGGABLE/EDITABLE**: Special interactive capabilities
-		if node.attributes:
-			if node.attributes.get('draggable') == 'true':
-				if is_iframe_or_shadow:
-					print(f'    ✅ Draggable {node_name}{context_debug} is clickable')
-				self.interaction_priority += 4
-				return True
-			if node.attributes.get('contenteditable') in {'true', ''}:
-				if is_iframe_or_shadow:
-					print(f'    ✅ Editable {node_name}{context_debug} is clickable')
-				self.interaction_priority += 4
-				return True
-
-		# If we got here and it's an iframe/shadow element, show why it wasn't detected
-		if is_iframe_or_shadow and node_name in {'BUTTON', 'A', 'INPUT', 'DIV', 'SPAN'}:
-			print(f'    ❌ Not clickable: {node_name}{context_debug} (no interaction indicators)')
+		# **ENHANCED CONTAINER ANALYSIS** - Deep analysis for containers (DIV, SPAN, etc.)
+		if node_name in {'DIV', 'SPAN', 'SECTION', 'ARTICLE', 'LI', 'TD', 'TH'}:
+			return self._is_container_truly_interactive(node)
 
 		return False
 
 	def _is_container_truly_interactive(self, node: EnhancedDOMTreeNode) -> bool:
-		"""Simplified check for whether a container element (DIV/SPAN/LABEL) is truly interactive."""
-		node_name = node.node_name.upper()
-
-		# **LABELS**: Interactive if they're for form controls or have explicit interaction
-		if node_name == 'LABEL':
-			if node.attributes:
-				# Labels with 'for' attribute that click to focus form elements
-				if 'for' in node.attributes:
-					self.interaction_priority += 5
-					return True
-				# Labels with explicit click handlers
-				if any(attr in node.attributes for attr in ['onclick', 'data-action', 'data-toggle']):
-					self.interaction_priority += 5
-					return True
+		"""Enhanced container interactivity detection with sophisticated heuristics."""
+		if not node.attributes:
 			return False
 
-		# **DIV/SPAN**: More conservative - require STRONG evidence of interactivity
-		if node_name in {'DIV', 'SPAN'}:
-			if not node.attributes:
-				return False
+		# **CHECK 1: Direct interaction attributes**
+		interactive_attrs = {
+			'onclick',
+			'onmousedown',
+			'onmouseup',
+			'onkeydown',
+			'onkeyup',
+			'onfocus',
+			'onblur',
+			'data-action',
+			'data-toggle',
+			'data-href',
+			'data-url',
+			'data-target',
+			'jsaction',
+			'ng-click',
+			'@click',
+			'v-on:',
+			'data-clickable',
+		}
 
-			attrs = node.attributes
-
-			# Require explicit event handlers (stronger evidence)
-			explicit_handlers = ['onclick', 'onmousedown', 'onmouseup', 'onkeydown', 'onkeyup']
-			if any(attr in attrs for attr in explicit_handlers):
-				self.interaction_priority += 4
+		# Direct attribute check
+		for attr in node.attributes:
+			if any(interactive in attr.lower() for interactive in interactive_attrs):
 				return True
 
-			# Require explicit interactive role (stronger evidence)
-			role = attrs.get('role', '').lower()
-			if role in {'button', 'link', 'menuitem', 'tab', 'option', 'combobox', 'textbox', 'searchbox'}:
-				self.interaction_priority += 4
+		# **CHECK 2: Class-based interaction patterns**
+		if 'class' in node.attributes:
+			classes = node.attributes['class'].lower()
+			interactive_class_patterns = [
+				'btn',
+				'button',
+				'clickable',
+				'interactive',
+				'link',
+				'tab',
+				'menu',
+				'dropdown',
+				'toggle',
+				'accordion',
+				'collapsible',
+				'expandable',
+				'modal',
+				'popup',
+				'overlay',
+				'trigger',
+				'action',
+				'control',
+				'widget',
+				'component',
+				'card-clickable',
+				'list-item-clickable',
+			]
+
+			if any(pattern in classes for pattern in interactive_class_patterns):
 				return True
 
-			# Require explicit interactive data attributes AND additional evidence
-			interactive_data_attrs = ['data-action', 'data-toggle', 'data-href', 'jsaction']
-			has_data_attr = any(attr in attrs for attr in interactive_data_attrs)
+		# **CHECK 3: Meaningful combination of attributes**
+		meaningful_attrs = ['role', 'tabindex', 'aria-label', 'aria-labelledby', 'title']
+		meaningful_count = sum(1 for attr in meaningful_attrs if attr in node.attributes)
 
-			if has_data_attr:
-				# Additional requirements for DIV with data attributes
-				if node_name == 'DIV':
-					# Also need interactive cursor, tabindex, or role for DIVs
-					computed_styles_info = {}
-					if node.snapshot_node and hasattr(node.snapshot_node, 'computed_styles'):
-						computed_styles_info = node.snapshot_node.computed_styles or {}
-					has_cursor, _, _ = ElementAnalysis._has_any_interactive_cursor(node, computed_styles_info)
+		# If has multiple meaningful attributes, likely interactive
+		if meaningful_count >= 2:
+			return True
 
-					has_tabindex = 'tabindex' in attrs and attrs['tabindex'] != '-1'
-					has_role = 'role' in attrs
+		# **CHECK 4: Specific role-based analysis**
+		if 'role' in node.attributes:
+			role = node.attributes['role'].lower()
+			container_interactive_roles = {
+				'button',
+				'link',
+				'menuitem',
+				'tab',
+				'option',
+				'checkbox',
+				'radio',
+				'slider',
+				'switch',
+				'textbox',
+				'combobox',
+				'listbox',
+				'tree',
+				'grid',
+				'gridcell',
+				'searchbox',
+				'menuitemradio',
+				'menuitemcheckbox',
+				'presentation',
+				'application',
+				'dialog',
+				'alertdialog',
+				'banner',
+				'navigation',
+				'main',
+				'complementary',
+				'contentinfo',
+			}
+			if role in container_interactive_roles:
+				return True
 
-					if has_cursor or has_tabindex or has_role:
-						self.interaction_priority += 3
+		# **CHECK 5: Size and positioning heuristics**
+		if node.snapshot_node and hasattr(node.snapshot_node, 'bounding_box'):
+			bbox = node.snapshot_node.bounding_box
+			if bbox:
+				width = bbox.get('width', 0)
+				height = bbox.get('height', 0)
+
+				# Small elements with attributes are likely interactive (buttons, icons)
+				if width > 0 and height > 0 and width <= 200 and height <= 100:
+					if len(node.attributes) >= 2:  # Has meaningful attributes
 						return True
-					else:
-						# DIV with only data attributes but no other evidence - likely not interactive
-						return False
-				else:
-					# SPAN with data attributes - allow
-					self.interaction_priority += 3
-					return True
 
-			# Require positive tabindex (explicitly focusable)
-			if 'tabindex' in attrs:
-				try:
-					tabindex = int(attrs['tabindex'])
-					if tabindex >= 0:
-						self.interaction_priority += 2
-						return True
-				except ValueError:
-					pass
+		# **CHECK 6: Data attributes suggesting interactivity**
+		data_attrs = [k for k in node.attributes.keys() if k.startswith('data-')]
+		interactive_data_patterns = [
+			'action',
+			'click',
+			'toggle',
+			'href',
+			'url',
+			'target',
+			'trigger',
+			'modal',
+			'popup',
+			'dropdown',
+			'tab',
+			'accordion',
+			'collapse',
+		]
+
+		for data_attr in data_attrs:
+			if any(pattern in data_attr.lower() for pattern in interactive_data_patterns):
+				return True
 
 		return False
 
 	def is_option_element(self) -> bool:
-		"""Check if this is an option element that should be grouped."""
-		if self.original_node.node_name.upper() == 'OPTION':
+		"""Check if this is an option or list item element."""
+		if not self.original_node:
+			return False
+
+		node_name = self.original_node.node_name.upper()
+		if node_name == 'OPTION':
 			return True
 
-		if (
-			self.original_node.attributes
-			and 'class' in self.original_node.attributes
-			and any(cls in self.original_node.attributes['class'].lower() for cls in ['option', 'menu-item', 'dropdown-item'])
-		):
+		# Check for role="option"
+		if self.original_node.attributes and self.original_node.attributes.get('role') == 'option':
 			return True
+
+		# Check for list items that might be selectable
+		if node_name in {'LI', 'DIV'} and self.original_node.attributes:
+			classes = self.original_node.attributes.get('class', '').lower()
+			if any(pattern in classes for pattern in ['option', 'item', 'choice', 'select']):
+				return True
 
 		return False
 
 	def is_radio_or_checkbox(self) -> bool:
 		"""Check if this is a radio button or checkbox."""
-		if self.original_node.node_name.upper() == 'INPUT' and self.original_node.attributes:
-			input_type = self.original_node.attributes.get('type', '').lower()
-			return input_type in {'radio', 'checkbox'}
-		return False
+		if not self.original_node or not self.original_node.attributes:
+			return False
+
+		input_type = self.original_node.attributes.get('type', '').lower()
+		return input_type in {'radio', 'checkbox'}
 
 	def get_group_name(self) -> str:
-		"""Get the name for grouping radio buttons or checkboxes."""
-		if self.original_node.attributes:
-			return self.original_node.attributes.get('name', '')
-		return ''
+		"""Get a semantic group name for this element."""
+		if not self.original_node:
+			return 'unknown'
+
+		node_name = self.original_node.node_name.upper()
+		attrs = self.original_node.attributes or {}
+
+		# Form elements
+		if node_name in {'INPUT', 'SELECT', 'TEXTAREA', 'BUTTON'}:
+			return 'form'
+
+		# Navigation
+		if node_name == 'A' or attrs.get('role') in {'navigation', 'menuitem'}:
+			return 'navigation'
+
+		# Lists
+		if node_name in {'LI', 'UL', 'OL'} or attrs.get('role') in {'list', 'listitem'}:
+			return 'list'
+
+		return 'content'
 
 	def count_direct_clickable_children(self) -> int:
-		"""Count how many direct children are clickable."""
+		"""Count direct clickable children."""
 		return sum(1 for child in self.children if child.is_clickable())
 
 	def has_any_clickable_descendant(self) -> bool:
-		"""Check if this node or any descendant is clickable."""
-		if self.is_clickable():
-			return True
-		return any(child.has_any_clickable_descendant() for child in self.children)
+		"""Check if this node has any clickable descendants."""
+		for child in self.children:
+			if child.is_clickable() or child.has_any_clickable_descendant():
+				return True
+		return False
 
 	def is_effectively_visible(self) -> bool:
-		"""Check if element is effectively visible considering z-index and other factors."""
-		if not self.original_node.snapshot_node:
+		"""Enhanced visibility detection with comprehensive checks."""
+		if not self.original_node or not self.original_node.snapshot_node:
 			return False
 
 		snapshot = self.original_node.snapshot_node
 
-		# Basic visibility checks - handle potential non-boolean type
-		is_visible = getattr(snapshot, 'is_visible', None)
-		if is_visible is False:
+		# **CHECK 1: Bounding box analysis**
+		bbox = getattr(snapshot, 'bounding_box', None)
+		if not bbox:
 			return False
 
-		# Check computed styles for more sophisticated visibility detection
-		computed_styles = getattr(snapshot, 'computed_styles', None)
-		if computed_styles:
-			# Check display
-			if computed_styles.get('display') == 'none':
-				return False
+		width = bbox.get('width', 0)
+		height = bbox.get('height', 0)
 
-			# Check visibility
-			if computed_styles.get('visibility') == 'hidden':
+		# Must have meaningful dimensions
+		if width <= 0 or height <= 0:
+			return False
+
+		# **CHECK 2: Style-based visibility**
+		if hasattr(snapshot, 'computed_styles'):
+			styles = snapshot.computed_styles or {}
+
+			# Check visibility styles
+			if styles.get('visibility') == 'hidden':
+				return False
+			if styles.get('display') == 'none':
 				return False
 
 			# Check opacity
+			opacity = styles.get('opacity', '1')
 			try:
-				opacity = float(computed_styles.get('opacity', '1'))
-				if opacity == 0:
+				if float(opacity) <= 0.01:  # Effectively invisible
 					return False
 			except (ValueError, TypeError):
 				pass
 
-			# Check if element is positioned off-screen
-			bounding_box = getattr(snapshot, 'bounding_box', None)
-			if bounding_box:
-				if (
-					bounding_box.get('x', 0) < -9000
-					or bounding_box.get('y', 0) < -9000
-					or bounding_box.get('width', 0) <= 0
-					or bounding_box.get('height', 0) <= 0
-				):
-					return False
+		# **CHECK 3: Position analysis**
+		x = bbox.get('x', 0)
+		y = bbox.get('y', 0)
 
-			# Check pointer-events
-			if computed_styles.get('pointer-events') == 'none':
-				return False
+		# Element positioned way off-screen is likely hidden
+		if x < -1000 or y < -1000 or x > 10000 or y > 10000:
+			return False
+
+		# **CHECK 4: Size reasonableness**
+		# Very large elements (like body, html) or very tiny elements might not be interactive
+		if width > 5000 or height > 5000:
+			return False
+
+		if width < 1 or height < 1:
+			return False
 
 		return True
 
 	def has_meaningful_bounds(self) -> bool:
-		"""Check if element has meaningful size (not just a wrapper)."""
-		if not self.original_node.snapshot_node:
+		"""Check if element has meaningful bounding box for interaction."""
+		if not self.original_node or not self.original_node.snapshot_node:
 			return False
 
-		bounding_box = getattr(self.original_node.snapshot_node, 'bounding_box', None)
-		if not bounding_box:
+		bbox = getattr(self.original_node.snapshot_node, 'bounding_box', None)
+		if not bbox:
 			return False
 
-		width = bounding_box.get('width', 0)
-		height = bounding_box.get('height', 0)
+		width = bbox.get('width', 0)
+		height = bbox.get('height', 0)
 
-		# Element should have reasonable size
-		return width > 10 and height > 10 and width < 2000 and height < 2000
+		# Must be large enough to interact with (but not too large)
+		return 1 <= width <= 2000 and 1 <= height <= 2000
 
 
 @dataclass(slots=True)
-class IFrameContextInfo:
-	"""Information about iframe context for selector map."""
-
-	iframe_xpath: str
-	iframe_src: str | None
-	is_cross_origin: bool
-	context_id: str
-
-
 class DOMTreeSerializer:
-	"""Serializes enhanced DOM trees to string format with comprehensive interaction detection."""
+	"""Optimized DOM tree serializer for LLM consumption with performance focus."""
 
-	def __init__(self, root_node: EnhancedDOMTreeNode, viewport_info: dict | None = None):
-		self.root_node = root_node
-		self.viewport_info = viewport_info or {}
-		self._interactive_counter = 1
-		self._selector_map: dict[int, EnhancedDOMTreeNode] = {}
-		self._iframe_contexts: Dict[str, IFrameContextInfo] = {}
-		self._shadow_contexts: Dict[str, str] = {}  # shadow_id -> parent_xpath
-		self._element_groups: Dict[str, List[SimplifiedNode]] = {}
-		self._cross_origin_iframes: List[str] = []
+	root_node: EnhancedDOMTreeNode
+	viewport_info: dict = field(default_factory=dict)
+	_interactive_counter: int = 1
+	_selector_map: dict[int, EnhancedDOMTreeNode] = field(default_factory=dict)
+	_visibility_cache: Dict[str, bool] = field(default_factory=dict)
+	_compressed_elements: List[CompressedElement] = field(default_factory=list)
+	_semantic_groups: List[SemanticGroup] = field(default_factory=list)
+	metrics: PerformanceMetrics = field(default_factory=PerformanceMetrics)
 
-		# Performance caches
-		self._visibility_cache: Dict[str, bool] = {}
-		self._interactivity_cache: Dict[str, bool] = {}
-		self._structural_cache: Dict[str, bool] = {}
-		self._analysis_cache: Dict[str, ElementAnalysis] = {}
-
-		# Performance metrics
-		self.metrics = PerformanceMetrics()
-
-		# Compressed serialization data
-		self._compressed_elements: List[CompressedElement] = []
-		self._semantic_groups: List[SemanticGroup] = []
+	def __post_init__(self):
+		# Initialize performance metrics
+		if not hasattr(self, 'metrics') or self.metrics is None:
+			self.metrics = PerformanceMetrics()
 
 	def serialize_accessible_elements(
 		self,
 		include_attributes: list[str] | None = None,
 	) -> tuple[str, dict[int, EnhancedDOMTreeNode]]:
-		"""Convert the enhanced DOM tree to string format with comprehensive detection and aggressive consolidation.
-
-		Args:
-			include_attributes: List of attributes to include
+		"""
+		Main entry point for serialization using optimized AX tree method.
 
 		Returns:
-			- Serialized string representation including iframe and shadow content
-			- Selector map mapping interactive indices to DOM nodes with context
+		- Serialized string representation
+		- Selector map for element identification
 		"""
-		if not include_attributes:
+		if include_attributes is None:
 			include_attributes = DEFAULT_INCLUDE_ATTRIBUTES
 
-		# Use only the fast optimized method
-		result = self._serialize_ax_tree_optimized(include_attributes)
-		self.metrics.finish()
-		self.metrics.log_summary()
-		return result
+		# Use only the optimized method
+		serialized, selector_map = self._serialize_ax_tree_optimized(include_attributes)
+
+		return serialized, selector_map
 
 	def _serialize_ax_tree_optimized(self, include_attributes: list[str]) -> tuple[str, dict[int, EnhancedDOMTreeNode]]:
-		"""OPTIMIZED: Use AX tree nodes directly for 10x speed improvement with ENHANCED post-processing."""
-		print('🚀 Starting AX tree-driven optimization with legacy enhancements')
-
+		"""OPTIMIZED serialization method using AX tree for speed with legacy enhancements."""
 		# Reset state
 		self._interactive_counter = 1
 		self._selector_map = {}
-		self._iframe_contexts = {}
-		self._shadow_contexts = {}
-		self._element_groups = {}
-		self._cross_origin_iframes = []
+		self._visibility_cache = {}
+		self._compressed_elements = []
+		self._semantic_groups = []
 
-		# Clear caches
-		self._visibility_cache.clear()
-		self._interactivity_cache.clear()
-		self._structural_cache.clear()
-		self._analysis_cache.clear()
+		self.metrics = PerformanceMetrics()
+		ax_start = time.time()
 
-		# Step 1: Collect interactive candidates from AX tree
-		step_start = time.time()
-		interactive_candidates = self._collect_ax_interactive_candidates_fast(self.root_node)
-		self.metrics.ax_collection_time = time.time() - step_start
-		self.metrics.ax_candidates = len([c for c in interactive_candidates if c[1] == 'ax'])
-		self.metrics.dom_candidates = len([c for c in interactive_candidates if c[1] == 'dom'])
-		print(f'  📊 Found {len(interactive_candidates)} candidates in {self.metrics.ax_collection_time:.3f}s')
-		print(f'     • AX candidates: {self.metrics.ax_candidates}')
-		print(f'     • DOM candidates: {self.metrics.dom_candidates}')
+		# **STEP 1: Fast AX + DOM candidate collection**
+		candidates = self._collect_ax_interactive_candidates_fast(self.root_node)
+		self.metrics.ax_collection_time = time.time() - ax_start
+		self.metrics.ax_candidates = len([c for c in candidates if len(c) >= 2 and c[1] == 'ax'])
+		self.metrics.dom_candidates = len([c for c in candidates if len(c) >= 2 and c[1] == 'dom'])
 
-		# Step 2: Resolve nested conflicts BEFORE filtering
-		step_start = time.time()
-		conflict_resolved = self.detect_and_resolve_nested_conflicts(interactive_candidates)
-		conflict_time = time.time() - step_start
-		print(f'  🔧 Resolved nested conflicts: {len(interactive_candidates)} → {len(conflict_resolved)} in {conflict_time:.3f}s')
+		filter_start = time.time()
 
-		# Step 3: Filter by viewport and deduplicate
-		step_start = time.time()
-		viewport_filtered = self._filter_by_viewport_and_deduplicate_fast(conflict_resolved)
-		self.metrics.filtering_time = time.time() - step_start + conflict_time
-		self.metrics.after_viewport_filter = len(viewport_filtered)
-		print(f'  🎯 Filtered to {len(viewport_filtered)} viewport-visible elements in {self.metrics.filtering_time:.3f}s')
+		# **STEP 2: Fast conflict resolution**
+		candidates = self.detect_and_resolve_nested_conflicts(candidates)
 
-		# Step 4: Build minimal simplified tree only for filtered elements
-		step_start = time.time()
-		simplified_elements = self._build_minimal_simplified_tree_fast(viewport_filtered)
-		self.metrics.tree_building_time = time.time() - step_start
-		print(f'  🔧 Built minimal tree with {len(simplified_elements)} elements in {self.metrics.tree_building_time:.3f}s')
+		# **STEP 3: Fast viewport filtering and deduplication**
+		filtered_nodes = self._filter_by_viewport_and_deduplicate_fast(candidates)
+		self.metrics.filtering_time = time.time() - filter_start
+		self.metrics.after_viewport_filter = len(filtered_nodes)
 
-		# **NEW STEP 4.5: Apply legacy wrapper container detection and smart consolidation**
-		step_start = time.time()
-		enhanced_elements = self._apply_legacy_enhancements_to_optimized_tree(simplified_elements)
-		enhancement_time = time.time() - step_start
-		print(
-			f'  🎯 Applied legacy enhancements: {len(simplified_elements)} → {len(enhanced_elements)} in {enhancement_time:.3f}s'
-		)
+		tree_start = time.time()
 
-		# Step 5: Assign interactive indices (no heavy consolidation needed)
-		step_start = time.time()
-		self._assign_indices_to_filtered_elements(enhanced_elements)
-		self.metrics.indexing_time = time.time() - step_start
-		self.metrics.final_interactive_count = len(self._selector_map)
-		print(f'  🏷️  Assigned {len(self._selector_map)} interactive indices in {self.metrics.indexing_time:.3f}s')
+		# **STEP 4: Build minimal simplified tree**
+		simplified_elements = self._build_minimal_simplified_tree_fast(filtered_nodes)
+		self.metrics.tree_building_time = time.time() - tree_start
 
-		# Step 6: Serialize minimal tree
-		step_start = time.time()
-		serialized = self._serialize_minimal_tree_fast(enhanced_elements, include_attributes)
-		self.metrics.serialization_time = time.time() - step_start
-		print(f'  📝 Serialized {len(serialized)} characters in {self.metrics.serialization_time:.3f}s')
+		# **STEP 5: Apply legacy enhancements for sophisticated processing**
+		simplified_elements = self._apply_legacy_enhancements_to_optimized_tree(simplified_elements)
+
+		indexing_start = time.time()
+
+		# **STEP 6: Assign indices**
+		self._assign_indices_to_filtered_elements(simplified_elements)
+		self.metrics.indexing_time = time.time() - indexing_start
+		self.metrics.final_interactive_count = len(simplified_elements)
+
+		serialization_start = time.time()
+
+		# **STEP 7: Generate compressed text**
+		serialized = self._serialize_minimal_tree_fast(simplified_elements, include_attributes)
+		self.metrics.serialization_time = time.time() - serialization_start
+
+		# Finalize metrics
+		self.metrics.finish()
 
 		return serialized, self._selector_map
 
 	def _apply_legacy_enhancements_to_optimized_tree(self, simplified_elements: List[SimplifiedNode]) -> List[SimplifiedNode]:
-		"""Apply clever legacy tricks to the optimized tree for better filtering and consolidation."""
-		print('    🔧 Applying legacy enhancements:')
+		"""Apply sophisticated enhancements from legacy method to the optimized tree."""
 
-		# Build a temporary tree structure from the flat list for processing
-		root_elements = self._build_temporary_tree_structure(simplified_elements)
+		if not simplified_elements:
+			return simplified_elements
 
-		enhanced_count = 0
-		for root in root_elements:
-			# Apply wrapper container detection
-			removed_wrappers = self._detect_and_remove_wrapper_containers_optimized(root)
-			enhanced_count += removed_wrappers
+		# Build temporary tree structure for analysis
+		tree_structure = self._build_temporary_tree_structure(simplified_elements)
 
-			# Apply same-action consolidation
-			consolidated = self._apply_same_action_consolidation_optimized(root)
-			enhanced_count += consolidated
+		# Apply sophisticated container filtering from legacy
+		removed_wrappers = 0
+		for root in tree_structure:
+			removed_wrappers += self._detect_and_remove_wrapper_containers_optimized(root)
 
-			# Apply smart parent-child consolidation
-			parent_child_consolidated = self._apply_smart_parent_child_consolidation_optimized(root)
-			enhanced_count += parent_child_consolidated
+		# Apply same-action consolidation from legacy
+		consolidated_elements = 0
+		for root in tree_structure:
+			consolidated_elements += self._apply_same_action_consolidation_optimized(root)
 
-		# Extract the enhanced flat list, filtering out consolidated elements
-		enhanced_elements = []
-		for root in root_elements:
-			self._collect_non_consolidated_elements(root, enhanced_elements)
+		# Apply smart parent-child consolidation from legacy
+		smart_consolidated = 0
+		for root in tree_structure:
+			smart_consolidated += self._apply_smart_parent_child_consolidation_optimized(root)
 
-		print(f'      ✅ Enhanced {enhanced_count} elements, final count: {len(enhanced_elements)}')
-		return enhanced_elements
+		# Collect all non-consolidated elements
+		final_elements = []
+		for root in tree_structure:
+			self._collect_non_consolidated_elements(root, final_elements)
+
+		return final_elements
 
 	def _build_temporary_tree_structure(self, simplified_elements: List[SimplifiedNode]) -> List[SimplifiedNode]:
-		"""Build a temporary parent-child tree structure from flat element list for processing."""
-		# For the optimized method, elements come as a flat list
-		# We need to reconstruct parent-child relationships for advanced processing
-
-		# Simple approach: treat all as root elements for now
-		# In a more sophisticated version, we could reconstruct actual DOM hierarchy
+		"""Build a temporary tree structure for legacy enhancement processing."""
+		# For now, treat all elements as root elements (flat structure)
+		# This can be enhanced later if true hierarchy is needed
 		return simplified_elements
 
 	def _detect_and_remove_wrapper_containers_optimized(self, root: SimplifiedNode) -> int:
-		"""Apply sophisticated wrapper container detection from legacy method."""
+		"""Remove wrapper containers that don't add interaction value (from legacy method)."""
 		removed_count = 0
 
-		# Apply the sophisticated wrapper detection logic from legacy
-		if self._is_wrapper_container_optimized(root):
-			# Mark as consolidated (remove from interactive detection)
-			root.is_consolidated = True
-			removed_count += 1
-			print(f'      🗑️  Removed wrapper: {root.original_node.node_name}')
-
-		# Process children recursively
+		children_to_remove = []
 		for child in root.children:
+			# Recursively process children
 			removed_count += self._detect_and_remove_wrapper_containers_optimized(child)
+
+			# Check if this child is a wrapper container
+			if self._is_wrapper_container_optimized(child):
+				children_to_remove.append(child)
+				child.is_consolidated = True
+				removed_count += 1
+
+		# Remove wrapper containers
+		for child in children_to_remove:
+			root.children.remove(child)
 
 		return removed_count
 
 	def _is_wrapper_container_optimized(self, node: SimplifiedNode) -> bool:
-		"""Optimized version of sophisticated wrapper container detection."""
-		node_name = node.original_node.node_name.upper()
-
-		# Only consider common container elements as potential wrappers
-		if node_name not in {'DIV', 'SPAN', 'SECTION', 'ARTICLE', 'HEADER', 'FOOTER', 'MAIN', 'NAV', 'ASIDE'}:
+		"""Enhanced wrapper container detection from legacy method."""
+		if not node.original_node:
 			return False
 
-		# If the node itself is interactive, don't treat as wrapper
-		if node.is_clickable():
+		original = node.original_node
+		node_name = original.node_name.upper()
+
+		# Only consider containers
+		if node_name not in {'DIV', 'SPAN', 'SECTION', 'ARTICLE'}:
 			return False
 
-		# Count interactive and non-interactive children
-		interactive_children = [child for child in node.children if child.is_clickable()]
-		total_children = len(node.children)
+		# Has meaningful attributes - not a wrapper
+		if original.attributes:
+			meaningful_attrs = {'onclick', 'data-action', 'role', 'tabindex', 'aria-label', 'href'}
+			if any(attr in original.attributes for attr in meaningful_attrs):
+				return False
 
-		# **AGGRESSIVE WRAPPER DETECTION**: If ALL children are interactive, this is likely a wrapper
-		if len(interactive_children) > 0 and len(interactive_children) == total_children:
+		# If has many clickable children, might be a wrapper
+		clickable_children = node.count_direct_clickable_children()
+		if clickable_children >= 3:  # Likely a wrapper around multiple interactive elements
 			return True
 
-		# **LARGE CONTAINER DETECTION**: Calendar/menu container detection
-		if len(interactive_children) >= 10:  # Calendar with many date buttons
+		# If has exactly one clickable child and this element has no meaningful interaction, it's a wrapper
+		if clickable_children == 1 and not node.is_clickable():
 			return True
 
-		# **MEDIUM CONTAINER WITH CLASS DETECTION**: Menu/calendar by class names
-		if len(interactive_children) >= 5 and total_children >= 8:
-			if node.original_node.attributes and 'class' in node.original_node.attributes:
-				classes = node.original_node.attributes['class'].lower()
-				calendar_menu_indicators = [
-					'calendar',
-					'menu',
-					'dropdown',
-					'picker',
-					'grid',
-					'table',
-					'list',
-					'items',
-					'options',
-					'choices',
-					'popup',
-					'datepicker',
-				]
-				if any(indicator in classes for indicator in calendar_menu_indicators):
+		# Check size - very large containers are likely layout wrappers
+		if original.snapshot_node and hasattr(original.snapshot_node, 'bounding_box'):
+			bbox = original.snapshot_node.bounding_box
+			if bbox:
+				width = bbox.get('width', 0)
+				height = bbox.get('height', 0)
+				if width > 1000 or height > 800:  # Very large, likely layout
 					return True
-			return True
-
-		# **SINGLE CHILD WRAPPER DETECTION**: Exactly one interactive child
-		if len(interactive_children) == 1 and total_children <= 3:
-			return True
-
-		# **HIGH RATIO WRAPPER DETECTION**: >70% children are interactive
-		if total_children > 1 and (len(interactive_children) / total_children) > 0.7:
-			return True
 
 		return False
 
 	def _apply_same_action_consolidation_optimized(self, root: SimplifiedNode) -> int:
-		"""Apply same-action detection and consolidation from legacy method."""
+		"""Consolidate elements that would perform the same action (from legacy method)."""
 		consolidated_count = 0
 
-		# Check parent-child same action scenarios
-		clickable_children = [child for child in root.children if child.is_clickable()]
+		children_to_remove = []
+		for child in root.children:
+			# Recursively process children
+			consolidated_count += self._apply_same_action_consolidation_optimized(child)
 
-		if len(clickable_children) == 1 and root.is_clickable():
-			child = clickable_children[0]
+			# Check if this child performs the same action as parent
 			if self._elements_would_do_same_action_optimized(root, child):
-				# Keep parent, consolidate child
+				children_to_remove.append(child)
 				child.is_consolidated = True
 				consolidated_count += 1
-				print(f'      🔗 Consolidated same-action: {child.original_node.node_name} into {root.original_node.node_name}')
 
-		# Process children recursively
-		for child in root.children:
-			consolidated_count += self._apply_same_action_consolidation_optimized(child)
+		# Remove consolidated children
+		for child in children_to_remove:
+			root.children.remove(child)
 
 		return consolidated_count
 
 	def _elements_would_do_same_action_optimized(self, parent: SimplifiedNode, child: SimplifiedNode) -> bool:
-		"""Optimized version of same-action detection."""
+		"""Check if parent and child would perform the same action (from legacy method)."""
+		if not parent.original_node or not child.original_node:
+			return False
+
 		parent_node = parent.original_node
 		child_node = child.original_node
 
-		# Check if both have the same href
-		parent_href = parent_node.attributes.get('href') if parent_node.attributes else None
-		child_href = child_node.attributes.get('href') if child_node.attributes else None
-		if parent_href and child_href and parent_href == child_href:
-			return True
-
-		# Check if both have the same onclick handler
-		parent_onclick = parent_node.attributes.get('onclick') if parent_node.attributes else None
-		child_onclick = child_node.attributes.get('onclick') if child_node.attributes else None
-		if parent_onclick and child_onclick and parent_onclick == child_onclick:
-			return True
-
-		# Check if both have the same data-action
-		parent_action = parent_node.attributes.get('data-action') if parent_node.attributes else None
-		child_action = child_node.attributes.get('data-action') if child_node.attributes else None
-		if parent_action and child_action and parent_action == child_action:
-			return True
-
-		# Wrapper around single meaningful child
+		# Both are links with same href
 		if (
-			parent_node.node_name.upper() == 'DIV'
-			and child_node.node_name.upper() in {'BUTTON', 'A', 'INPUT'}
+			parent_node.node_name.upper() == 'A'
+			and child_node.node_name.upper() == 'A'
+			and parent_node.attributes
+			and child_node.attributes
+			and parent_node.attributes.get('href') == child_node.attributes.get('href')
+		):
+			return True
+
+		# Both have same onclick handler
+		if (
+			parent_node.attributes
+			and child_node.attributes
+			and parent_node.attributes.get('onclick') == child_node.attributes.get('onclick')
+			and parent_node.attributes.get('onclick')
+		):
+			return True
+
+		# Both have same data-action
+		if (
+			parent_node.attributes
+			and child_node.attributes
+			and parent_node.attributes.get('data-action') == child_node.attributes.get('data-action')
+			and parent_node.attributes.get('data-action')
+		):
+			return True
+
+		# Parent wraps a single interactive child (common pattern)
+		if (
+			parent_node.node_name.upper() in {'DIV', 'SPAN'}
 			and len(parent.children) == 1
+			and child_node.node_name.upper() in {'A', 'BUTTON', 'INPUT'}
 		):
 			return True
 
 		return False
 
 	def _apply_smart_parent_child_consolidation_optimized(self, root: SimplifiedNode) -> int:
-		"""Apply smart parent-child consolidation from legacy method."""
+		"""Smart consolidation of parent-child relationships (from legacy method)."""
 		consolidated_count = 0
 
-		parent_name = root.original_node.node_name.upper()
+		# Check each child
+		children_to_process = list(root.children)  # Copy to avoid modification during iteration
 
-		# PRIMARY CONSOLIDATION: Elements that should always consolidate their children
-		primary_consolidating_elements = {'A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA'}
+		for child in children_to_process:
+			# Recursively process children first
+			consolidated_count += self._apply_smart_parent_child_consolidation_optimized(child)
 
-		if parent_name in primary_consolidating_elements:
-			# Remove interactive status from ALL descendants
-			for child in root.children:
-				if child.is_clickable():
+			# Smart consolidation logic
+			if child.original_node and root.original_node and not child.is_consolidated:
+				child_node = child.original_node
+				parent_node = root.original_node
+
+				# If child is a text node inside a clickable parent, consolidate
+				if (
+					child_node.node_name == '#text'
+					and parent_node.node_name.upper() in {'A', 'BUTTON', 'DIV', 'SPAN'}
+					and root.is_clickable()
+				):
 					child.is_consolidated = True
 					consolidated_count += 1
-			return consolidated_count
+					continue
 
-		# SECONDARY CONSOLIDATION: DIV/SPAN with interactive attributes
-		if parent_name in {'DIV', 'SPAN'} and root.original_node.attributes:
-			attrs = root.original_node.attributes
-			has_click_handler = any(attr in attrs for attr in ['onclick', 'data-action', 'data-toggle', 'data-href'])
-			has_role = attrs.get('role', '').lower() in {'button', 'link', 'menuitem', 'tab', 'option'}
+				# If parent and child have very similar bounding boxes, consolidate child
+				if (
+					child_node.snapshot_node
+					and parent_node.snapshot_node
+					and hasattr(child_node.snapshot_node, 'bounding_box')
+					and hasattr(parent_node.snapshot_node, 'bounding_box')
+				):
+					child_bbox = child_node.snapshot_node.bounding_box
+					parent_bbox = parent_node.snapshot_node.bounding_box
 
-			# Check for any interactive cursor
-			computed_styles_info = {}
-			if root.original_node.snapshot_node and hasattr(root.original_node.snapshot_node, 'computed_styles'):
-				computed_styles_info = root.original_node.snapshot_node.computed_styles or {}
-			has_interactive_cursor, _, _ = ElementAnalysis._has_any_interactive_cursor(root.original_node, computed_styles_info)
+					if child_bbox and parent_bbox:
+						# Check if bounding boxes are very similar (within 10 pixels)
+						x_diff = abs(child_bbox.get('x', 0) - parent_bbox.get('x', 0))
+						y_diff = abs(child_bbox.get('y', 0) - parent_bbox.get('y', 0))
+						w_diff = abs(child_bbox.get('width', 0) - parent_bbox.get('width', 0))
+						h_diff = abs(child_bbox.get('height', 0) - parent_bbox.get('height', 0))
 
-			if has_click_handler or has_role or has_interactive_cursor:
-				for child in root.children:
-					if child.is_clickable():
-						child.is_consolidated = True
-						consolidated_count += 1
-
-		# Process children recursively
-		for child in root.children:
-			consolidated_count += self._apply_smart_parent_child_consolidation_optimized(child)
+						if x_diff <= 10 and y_diff <= 10 and w_diff <= 10 and h_diff <= 10:
+							child.is_consolidated = True
+							consolidated_count += 1
 
 		return consolidated_count
 
 	def _collect_non_consolidated_elements(self, node: SimplifiedNode, result_list: List[SimplifiedNode]):
-		"""Collect all non-consolidated elements from the tree into a flat list."""
+		"""Collect all non-consolidated elements from the tree."""
 		if not node.is_consolidated:
 			result_list.append(node)
 
-		# Process children regardless of consolidation status
+		# Process children
 		for child in node.children:
 			self._collect_non_consolidated_elements(child, result_list)
 
 	def _collect_ax_interactive_candidates_fast(self, node: EnhancedDOMTreeNode) -> List:
-		"""Collect interactive candidates using optimized traversal with ENHANCED analysis and caching."""
+		"""Fast collection of interactive candidates using both AX tree and DOM analysis."""
 		candidates = []
-		node_count = 0
 
 		def collect_recursive_fast(current_node: EnhancedDOMTreeNode, depth: int = 0):
-			nonlocal node_count
-			node_count += 1
-
 			if depth > 50:  # Prevent infinite recursion
 				return
 
-			# Cache key for this node
-			node_key = f'{current_node.node_name}_{id(current_node)}'
+			self.metrics.total_dom_nodes += 1
 
-			# Skip obvious non-interactive structural elements immediately (cached)
-			if node_key not in self._structural_cache:
-				self._structural_cache[node_key] = self._is_structural_element_fast(current_node)
-
-			if self._structural_cache[node_key]:
+			# Check if this is a structural element but still process its children for container elements
+			is_structural = self._is_structural_element_fast(current_node)
+			if is_structural:
 				self.metrics.skipped_structural += 1
-				# Still process children, but don't consider this element
-				if current_node.children_nodes:
-					for child in current_node.children_nodes:
-						collect_recursive_fast(child, depth + 1)
-				return
 
-			# Use ENHANCED element analysis with comprehensive scoring
-			analysis_key = f'enhanced_analysis_{node_key}'
+				# For container elements like HTML, BODY, HEAD, still process children
+				container_elements = {'HTML', 'BODY', 'HEAD', 'MAIN', 'SECTION', 'ARTICLE', 'DIV', 'SPAN'}
+				if current_node.node_name.upper() in container_elements:
+					# Don't consider this element interactive, but process its children
+					pass
+				else:
+					# For other structural elements, skip completely
+					return
 
-			if analysis_key not in self._analysis_cache:
-				# Run the enhanced analysis
-				analysis = ElementAnalysis.analyze_element_interactivity(current_node)
-				self._analysis_cache[analysis_key] = analysis
+			# Only check for interactivity if not structural
+			if not is_structural:
+				# **FAST AX TREE CHECK**
+				is_ax_interactive = self._is_ax_interactive_fast(current_node)
+				if is_ax_interactive:
+					candidates.append((current_node, 'ax'))
 
-				# Consider element interactive if score meets enhanced threshold
-				is_interactive = analysis.score >= 20  # Slightly higher threshold for enhanced system
-				self._interactivity_cache[f'interactive_{node_key}'] = is_interactive
-			else:
-				analysis = self._analysis_cache[analysis_key]
-				is_interactive = self._interactivity_cache[f'interactive_{node_key}']
+				# **FAST DOM/SNAPSHOT CHECK** - Only if not already AX interactive
+				elif self._is_dom_interactive_fast(current_node):
+					candidates.append((current_node, 'dom'))
 
-			if is_interactive:
-				# Store enhanced analysis with the candidate
-				candidates.append((current_node, 'enhanced', analysis))
-				if depth <= 10:  # Only show debug for shallow elements to reduce noise
-					confidence_emoji = {
-						'DEFINITE': '🟢',
-						'LIKELY': '🟡',
-						'POSSIBLE': '🟠',
-						'QUESTIONABLE': '🔴',
-						'MINIMAL': '🟣',
-					}.get(analysis.confidence, '❓')
-
-					print(
-						f'    ✅ Interactive: {current_node.node_name} {confidence_emoji} {analysis.confidence} ({analysis.score}pts) - {analysis.primary_reason}'
-					)
-
-			# Process children
-			if current_node.children_nodes:
+			# Recurse to children
+			if hasattr(current_node, 'children_nodes') and current_node.children_nodes:
 				for child in current_node.children_nodes:
 					collect_recursive_fast(child, depth + 1)
 
-			# Skip iframe and shadow DOM processing for speed
-			# Removed: iframe and shadow DOM processing to eliminate CDP errors and improve performance
-
 		collect_recursive_fast(node)
-		self.metrics.total_dom_nodes = node_count
 		return candidates
-
-	def _register_iframe_context_enhanced(self, iframe_node: EnhancedDOMTreeNode) -> str:
-		"""Enhanced iframe context registration with sophisticated cross-origin detection from legacy."""
-		iframe_src = iframe_node.attributes.get('src') if iframe_node.attributes else None
-		iframe_xpath = iframe_node.x_path
-
-		# **ENHANCED CROSS-ORIGIN DETECTION** from legacy method
-		is_cross_origin = self._is_cross_origin_iframe_optimized(iframe_node)
-		if is_cross_origin and iframe_src:
-			self._cross_origin_iframes.append(iframe_src)
-			print(f'      🌐 Detected cross-origin iframe: {iframe_src}')
-
-		context_id = f'iframe_{len(self._iframe_contexts)}'
-		self._iframe_contexts[context_id] = IFrameContextInfo(
-			iframe_xpath=iframe_xpath, iframe_src=iframe_src, is_cross_origin=is_cross_origin, context_id=context_id
-		)
-		return context_id
-
-	def _is_cross_origin_iframe_optimized(self, iframe_node: EnhancedDOMTreeNode) -> bool:
-		"""Enhanced cross-origin detection from legacy method with sophisticated URL analysis."""
-		# Primary check: If we don't have content_document, it's likely cross-origin
-		if not iframe_node.content_document:
-			return True
-
-		# Secondary check: Analyze the src URL for cross-origin indicators
-		if iframe_node.attributes and 'src' in iframe_node.attributes:
-			src = iframe_node.attributes['src']
-
-			# Check for obvious cross-origin patterns (from legacy method)
-			cross_origin_patterns = [
-				'https://',  # Different protocol
-				'http://',  # Different protocol
-				'www.',  # Different subdomain
-				'.com/',
-				'.org/',
-				'.net/',
-				'.io/',  # Different domains
-				'google.com',
-				'facebook.com',
-				'twitter.com',
-				'youtube.com',
-				'mailerlite.com',
-				'typeform.com',
-				'hubspot.com',
-				'stripe.com',
-				'paypal.com',
-				'gravatar.com',
-				'calendly.com',
-				'intercom.com',
-			]
-
-			src_lower = src.lower()
-			if any(pattern in src_lower for pattern in cross_origin_patterns):
-				# Additional check: if it's a relative URL, it's same-origin
-				if not src.startswith(('http://', 'https://', '//')):
-					return False  # Relative URL = same origin
-				return True
-
-		# If we have content_document and no suspicious src, assume same-origin
-		return False
 
 	async def get_element_event_listeners_via_cdp(self, browser_session, node: EnhancedDOMTreeNode) -> List[str]:
 		"""Get actual event listeners attached to an element via CDP."""
@@ -1736,7 +1625,18 @@ class DOMTreeSerializer:
 
 	def detect_and_resolve_nested_conflicts(self, candidates) -> List:
 		"""Detect and resolve nested conflicts where elements would trigger the same action."""
-		# Build a map of analyses and nodes
+		# For simple candidates (node, 'ax') or (node, 'dom'), just return them as-is
+		# Conflict resolution is designed for more complex analysis data
+		if not candidates:
+			return candidates
+
+		# Check if we have simple candidates (from fast collection) vs analyzed candidates
+		first_candidate = candidates[0] if candidates else None
+		if not first_candidate or len(first_candidate) < 3 or first_candidate[1] in ['ax', 'dom']:
+			# These are simple candidates from fast collection, no conflict resolution needed
+			return candidates
+
+		# Original conflict resolution logic for analyzed candidates with ElementAnalysis
 		analyses_map = {}
 		nodes_map = {}
 
@@ -1746,6 +1646,10 @@ class DOMTreeSerializer:
 				node_id = id(node)
 				analyses_map[node_id] = analysis
 				nodes_map[node_id] = node
+
+		# If no analyzed candidates, return original list
+		if not analyses_map:
+			return candidates
 
 		# Detect conflicts
 		conflict_groups = {}
@@ -2133,13 +2037,9 @@ class DOMTreeSerializer:
 		return True
 
 	def _is_in_viewport_or_special_context_fast(self, node: EnhancedDOMTreeNode) -> bool:
-		"""Fast check if element is in viewport or is special context (iframe/shadow)."""
+		"""Fast check if element is in viewport."""
 		# If no viewport info, assume visible
 		if not self.viewport_info:
-			return True
-
-		# Fast check for iframe or shadow content (always include)
-		if self._iframe_contexts or self._shadow_contexts:
 			return True
 
 		# Fast viewport filtering for main page content
@@ -2176,18 +2076,11 @@ class DOMTreeSerializer:
 		)
 
 	def _build_minimal_simplified_tree_fast(self, filtered_nodes: List[EnhancedDOMTreeNode]) -> List[SimplifiedNode]:
-		"""Fast build minimal simplified tree for filtered nodes only."""
+		"""Build minimal simplified tree structure for fast processing."""
 		simplified_elements = []
 
 		for node in filtered_nodes:
 			simplified = SimplifiedNode(original_node=node)
-
-			# Fast context info setting
-			if self._iframe_contexts:
-				simplified.iframe_context = None
-			if self._shadow_contexts:
-				simplified.shadow_context = None
-
 			simplified_elements.append(simplified)
 
 		return simplified_elements
@@ -2586,10 +2479,7 @@ class DOMTreeSerializer:
 
 	def _determine_element_context(self, simplified: SimplifiedNode) -> Optional[str]:
 		"""Determine the semantic context of the element."""
-		if simplified.iframe_context:
-			return f'iframe:{simplified.iframe_context}'
-		if simplified.shadow_context:
-			return f'shadow:{simplified.shadow_context}'
+		# Context information removed - no iframe/shadow DOM processing
 		return None
 
 	def _detect_semantic_groups(self) -> None:
@@ -2785,17 +2675,6 @@ class DOMTreeSerializer:
 			lines.append(f'Found {total_elements} interactive elements on this page:')
 			lines.append('')
 
-		# Add context summary if present (for iframe/shadow content)
-		if self._iframe_contexts or self._shadow_contexts:
-			lines.append('=== ADDITIONAL CONTENT CONTEXTS ===')
-			for iframe_id, info in self._iframe_contexts.items():
-				cross_origin = ' (cross-origin - limited access)' if info.is_cross_origin else ''
-				src_info = f' from {info.iframe_src}' if info.iframe_src else ''
-				lines.append(f'• Iframe content{src_info}{cross_origin}')
-			for shadow_id, parent in self._shadow_contexts.items():
-				lines.append(f'• Shadow DOM content in {parent.split("/")[-1] if "/" in parent else parent}')
-			lines.append('')
-
 		# Generate semantic groups with improved descriptions
 		group_count = 0
 		for group in self._semantic_groups:
@@ -2913,12 +2792,7 @@ class DOMTreeSerializer:
 		if state_info:
 			parts.append(state_info)
 
-		# Add context if present (for iframe/shadow content)
-		if elem.context:
-			if 'iframe' in elem.context:
-				parts.append('(in iframe)')
-			elif 'shadow' in elem.context:
-				parts.append('(in shadow DOM)')
+		# Context information removed - no iframe/shadow DOM processing
 
 		return ' '.join(parts)
 
