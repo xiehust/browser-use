@@ -153,19 +153,30 @@ class ElementAnalysis:
 				score = max(25, score - 40)
 				warnings.append('Element is disabled but still detectable')
 
-		# **TIER 2: VERY HIGH PRIORITY (80-89 points) - Cursor pointer + interactive elements**
-		elif cls._has_cursor_pointer(node, computed_styles_info):
-			element_category = 'cursor_pointer'
-			score += 80  # MASSIVELY INCREASED from 15
-			evidence.append('VERY HIGH PRIORITY: Element has cursor: pointer')
+		# **TIER 2: VERY HIGH PRIORITY (Variable points) - ANY CURSOR STYLING**
+		# Check for cursor styling first before other elements
+		has_cursor, cursor_type, cursor_score = cls._has_any_interactive_cursor(node, computed_styles_info)
+		if has_cursor and element_category == 'unknown':
+			element_category = f'cursor_{cursor_type.replace("-", "_")}'
+			score += cursor_score
+			evidence.append(f'CURSOR DETECTED: Element has cursor: {cursor_type} (+{cursor_score} points)')
 
-			# Additional boost for meaningful elements with cursor pointer
-			if element_name in ['DIV', 'SPAN', 'A', 'LI', 'TD', 'TH']:
-				score += 5  # Total: 85 points
-				evidence.append('Meaningful element with cursor pointer')
+			# Additional boost for meaningful elements with interactive cursors
+			if element_name in ['DIV', 'SPAN', 'A', 'LI', 'TD', 'TH', 'SECTION', 'ARTICLE']:
+				meaningful_boost = min(15, cursor_score // 4)  # Scale boost based on cursor score
+				score += meaningful_boost
+				evidence.append(f'Meaningful element with {cursor_type} cursor (+{meaningful_boost})')
+
+			# Extra boost for highly interactive cursors on any element
+			if cursor_score >= 70:  # For grab, move, copy, etc.
+				score += 10
+				evidence.append(f'High-interaction cursor type: {cursor_type} (+10)')
+			elif cursor_score >= 50:  # For crosshair, zoom, etc.
+				score += 5
+				evidence.append(f'Medium-interaction cursor type: {cursor_type} (+5)')
 
 		# **TIER 3: HIGH PRIORITY (70-79 points) - Links and strong event indicators**
-		elif element_name == 'A':
+		if element_name == 'A':
 			element_category = 'link'
 			score += 70  # INCREASED from 60
 			if attributes.get('href'):
@@ -290,6 +301,11 @@ class ElementAnalysis:
 			context_info.append(f'Position: {computed_styles_info["position"]}')
 
 		# **ENHANCED INTERACTIVE INDICATORS**
+		# Get comprehensive cursor info for indicators
+		indicator_has_cursor, indicator_cursor_type, indicator_cursor_score = cls._has_any_interactive_cursor(
+			node, computed_styles_info
+		)
+
 		interactive_indicators = {
 			'has_onclick': 'onclick' in attributes,
 			'has_href': 'href' in attributes,
@@ -298,7 +314,10 @@ class ElementAnalysis:
 			'has_aria_label': 'aria-label' in attributes,
 			'has_data_attrs': any(k.startswith('data-') for k in attributes.keys()),
 			'has_button_classes': any(indicator in attributes.get('class', '').lower() for indicator in button_indicators),
-			'has_pointer_cursor': cls._has_cursor_pointer(node, computed_styles_info),
+			'has_pointer_cursor': cls._has_cursor_pointer(node, computed_styles_info),  # Keep for backwards compatibility
+			'has_any_interactive_cursor': indicator_has_cursor,  # NEW: Comprehensive cursor detection
+			'cursor_type': indicator_cursor_type if indicator_has_cursor else '',  # NEW: Specific cursor type
+			'cursor_score': indicator_cursor_score if indicator_has_cursor else 0,  # NEW: Cursor-based score
 			'has_event_handlers': any(k.startswith('on') for k in attributes.keys()),
 			'has_event_listeners': len(event_listeners) > 0,
 			'has_fixed_position': computed_styles_info.get('position') == 'fixed',
@@ -414,6 +433,98 @@ class ElementAnalysis:
 		return False
 
 	@classmethod
+	def _has_any_interactive_cursor(
+		cls, node: EnhancedDOMTreeNode, computed_styles_info: Dict[str, str]
+	) -> tuple[bool, str, int]:
+		"""Detect ANY cursor styling that indicates interactivity and return cursor type with score."""
+		# Define all interactive cursor styles with their scores
+		interactive_cursors = {
+			# Highest priority cursors (90+ points)
+			'pointer': 85,
+			'hand': 85,  # Legacy IE cursor for clickable elements
+			# High priority cursors (70+ points)
+			'grab': 75,  # For draggable elements
+			'grabbing': 75,  # For elements being dragged
+			'move': 70,  # For moveable elements
+			'copy': 70,  # For elements that can be copied
+			'alias': 70,  # For elements that create shortcuts/links
+			# Medium-high priority cursors (50+ points)
+			'crosshair': 60,  # For selection/drawing tools
+			'cell': 55,  # For table cells (often clickable)
+			'context-menu': 55,  # For elements that show context menu
+			'zoom-in': 50,  # For zoomable elements
+			'zoom-out': 50,  # For zoomable elements
+			# Medium priority cursors (30+ points) - resizing cursors
+			'col-resize': 35,  # Column resizing
+			'row-resize': 35,  # Row resizing
+			'n-resize': 30,  # North resizing
+			's-resize': 30,  # South resizing
+			'e-resize': 30,  # East resizing
+			'w-resize': 30,  # West resizing
+			'ne-resize': 30,  # Northeast resizing
+			'nw-resize': 30,  # Northwest resizing
+			'se-resize': 30,  # Southeast resizing
+			'sw-resize': 30,  # Southwest resizing
+			'ew-resize': 35,  # East-west resizing
+			'ns-resize': 35,  # North-south resizing
+			'nesw-resize': 35,  # Northeast-southwest resizing
+			'nwse-resize': 35,  # Northwest-southeast resizing
+			# Lower priority but still interactive cursors (20+ points)
+			'all-scroll': 25,  # For scrollable areas
+			'vertical-text': 20,  # For vertical text selection
+			'no-drop': 20,  # For drop targets (still interactive)
+			'not-allowed': 15,  # Disabled but still interactive context
+			# Text cursors (15+ points) - still indicate some interactivity
+			'text': 15,  # Text selection
+			'vertical-text': 15,  # Vertical text selection
+		}
+
+		def get_cursor_from_source(cursor_value: str | None) -> tuple[bool, str, int]:
+			"""Helper to check cursor value and return details."""
+			if not cursor_value:
+				return False, '', 0
+
+			cursor_lower = cursor_value.lower().strip()
+
+			# Check for exact matches first
+			if cursor_lower in interactive_cursors:
+				score = interactive_cursors[cursor_lower]
+				return True, cursor_lower, score
+
+			# Check for cursor values with fallbacks (e.g., "pointer, auto")
+			for cursor_type, score in interactive_cursors.items():
+				if cursor_type in cursor_lower:
+					return True, cursor_type, score
+
+			return False, cursor_lower, 0
+
+		# Check computed styles info first (cached)
+		cursor_value = computed_styles_info.get('cursor')
+		if cursor_value:
+			has_cursor, cursor_type, score = get_cursor_from_source(cursor_value)
+			if has_cursor:
+				return True, cursor_type, score
+
+		# Check snapshot node cursor_style attribute
+		if node.snapshot_node:
+			cursor_style = getattr(node.snapshot_node, 'cursor_style', None)
+			if cursor_style:
+				has_cursor, cursor_type, score = get_cursor_from_source(cursor_style)
+				if has_cursor:
+					return True, cursor_type, score
+
+			# Check snapshot node computed_styles
+			if hasattr(node.snapshot_node, 'computed_styles'):
+				styles = node.snapshot_node.computed_styles or {}
+				cursor_value = styles.get('cursor')
+				if cursor_value:
+					has_cursor, cursor_type, score = get_cursor_from_source(cursor_value)
+					if has_cursor:
+						return True, cursor_type, score
+
+		return False, '', 0
+
+	@classmethod
 	def _score_event_listeners(cls, event_listeners: List[str], evidence: List[str]) -> int:
 		"""Score based on detected event listeners."""
 		score = 0
@@ -455,10 +566,13 @@ class ElementAnalysis:
 
 		container_score += button_score_boost
 
-		# Check for cursor pointer (high value for containers)
-		if cls._has_cursor_pointer(node, computed_styles_info):
-			container_score += 50  # MAJOR boost for containers with pointer
-			evidence.append('Container with cursor pointer (+50)')
+		# Check for ANY interactive cursor (high value for containers)
+		has_cursor, cursor_type, cursor_score = cls._has_any_interactive_cursor(node, computed_styles_info)
+		if has_cursor:
+			# Scale the container boost based on cursor importance
+			container_cursor_boost = min(60, cursor_score + 20)  # Add 20 for container context
+			container_score += container_cursor_boost
+			evidence.append(f'Container with {cursor_type} cursor (+{container_cursor_boost})')
 
 		# Enhanced ARIA attribute detection
 		interactive_aria = [
@@ -756,20 +870,21 @@ class SimplifiedNode:
 			self.interaction_priority += 10
 			return True
 
-		# **CURSOR POINTER**: Include ALL elements with cursor pointer (user's request)
-		has_cursor_pointer = False
-		if node.snapshot_node:
-			if getattr(node.snapshot_node, 'cursor_style', None) == 'pointer':
-				has_cursor_pointer = True
-			elif node.snapshot_node.computed_styles and node.snapshot_node.computed_styles.get('cursor') == 'pointer':
-				has_cursor_pointer = True
+		# **ANY INTERACTIVE CURSOR**: Include ALL elements with interactive cursor styling (user's request)
+		computed_styles_info = {}
+		if node.snapshot_node and hasattr(node.snapshot_node, 'computed_styles'):
+			computed_styles_info = node.snapshot_node.computed_styles or {}
 
-		if has_cursor_pointer:
-			# Exclude obvious containers/wrappers but include most cursor pointer elements
+		has_cursor, cursor_type, cursor_score = ElementAnalysis._has_any_interactive_cursor(node, computed_styles_info)
+
+		if has_cursor:
+			# Exclude obvious containers/wrappers but include most cursor-styled elements
 			if node_name not in {'HTML', 'BODY', 'MAIN', 'SECTION', 'ARTICLE', 'ASIDE', 'NAV', 'HEADER', 'FOOTER'}:
 				if is_iframe_or_shadow:
-					print(f'    ✅ Cursor pointer {node_name}{context_debug} is clickable')
-				self.interaction_priority += 3  # Fixed: back to positive priority
+					print(f'    ✅ Interactive cursor {cursor_type} {node_name}{context_debug} is clickable')
+				# Higher priority for more interactive cursor types
+				priority_boost = max(1, cursor_score // 25)  # Scale priority with cursor importance
+				self.interaction_priority += priority_boost
 				return True
 
 		# **INTERACTIVE ARIA ROLES**: From both AX tree and role attribute
@@ -944,11 +1059,12 @@ class SimplifiedNode:
 			if has_data_attr:
 				# Additional requirements for DIV with data attributes
 				if node_name == 'DIV':
-					# Also need cursor pointer, tabindex, or role for DIVs
-					has_cursor = node.snapshot_node and (
-						getattr(node.snapshot_node, 'cursor_style', None) == 'pointer'
-						or (node.snapshot_node.computed_styles and node.snapshot_node.computed_styles.get('cursor') == 'pointer')
-					)
+					# Also need interactive cursor, tabindex, or role for DIVs
+					computed_styles_info = {}
+					if node.snapshot_node and hasattr(node.snapshot_node, 'computed_styles'):
+						computed_styles_info = node.snapshot_node.computed_styles or {}
+					has_cursor, _, _ = ElementAnalysis._has_any_interactive_cursor(node, computed_styles_info)
+
 					has_tabindex = 'tabindex' in attrs and attrs['tabindex'] != '-1'
 					has_role = 'role' in attrs
 
@@ -1546,11 +1662,14 @@ class DOMTreeSerializer:
 		if node.snapshot_node and getattr(node.snapshot_node, 'is_clickable', False):
 			return True
 
-		# Fast cursor pointer check
+		# Fast comprehensive cursor check
 		if node.snapshot_node:
-			if getattr(node.snapshot_node, 'cursor_style', None) == 'pointer':
-				return True
-			if node.snapshot_node.computed_styles and node.snapshot_node.computed_styles.get('cursor') == 'pointer':
+			computed_styles_info = {}
+			if hasattr(node.snapshot_node, 'computed_styles'):
+				computed_styles_info = node.snapshot_node.computed_styles or {}
+
+			has_cursor, _, _ = ElementAnalysis._has_any_interactive_cursor(node, computed_styles_info)
+			if has_cursor:
 				return True
 
 		# Fast attribute checks
@@ -2733,15 +2852,16 @@ class DOMTreeSerializer:
 			attrs = parent_node.original_node.attributes
 			has_click_handler = any(attr in attrs for attr in ['onclick', 'data-action', 'data-toggle', 'data-href'])
 			has_role = attrs.get('role', '').lower() in {'button', 'link', 'menuitem', 'tab', 'option'}
-			has_cursor_pointer = parent_node.original_node.snapshot_node and (
-				getattr(parent_node.original_node.snapshot_node, 'cursor_style', None) == 'pointer'
-				or (
-					parent_node.original_node.snapshot_node.computed_styles
-					and parent_node.original_node.snapshot_node.computed_styles.get('cursor') == 'pointer'
-				)
+
+			# Check for any interactive cursor
+			computed_styles_info = {}
+			if parent_node.original_node.snapshot_node and hasattr(parent_node.original_node.snapshot_node, 'computed_styles'):
+				computed_styles_info = parent_node.original_node.snapshot_node.computed_styles or {}
+			has_interactive_cursor, _, _ = ElementAnalysis._has_any_interactive_cursor(
+				parent_node.original_node, computed_styles_info
 			)
 
-			if has_click_handler or has_role or has_cursor_pointer:
+			if has_click_handler or has_role or has_interactive_cursor:
 				self._remove_interactive_status_recursive(parent_node)
 				return
 
@@ -3462,13 +3582,14 @@ class DOMTreeSerializer:
 			if attr in node.attributes and attr not in attributes_to_include:
 				attributes_to_include[attr] = str(node.attributes[attr]).strip()
 
-		# Add cursor style if pointer
-		if (
-			node.snapshot_node
-			and getattr(node.snapshot_node, 'cursor_style', None) == 'pointer'
-			and 'cursor' not in attributes_to_include
-		):
-			attributes_to_include['cursor'] = 'pointer'
+		# Add cursor style if interactive
+		computed_styles_info = {}
+		if node.snapshot_node and hasattr(node.snapshot_node, 'computed_styles'):
+			computed_styles_info = node.snapshot_node.computed_styles or {}
+
+		has_cursor, cursor_type, _ = ElementAnalysis._has_any_interactive_cursor(node, computed_styles_info)
+		if has_cursor and 'cursor' not in attributes_to_include:
+			attributes_to_include['cursor'] = cursor_type
 
 		# Remove duplicate values (but be more selective)
 		ordered_keys = []

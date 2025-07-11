@@ -188,10 +188,14 @@ async def save_comprehensive_dom_tree_json(
 		async with aiofiles.open(simplified_file, 'w', encoding='utf-8') as f:
 			await f.write(json.dumps(simplified_data, indent=2, ensure_ascii=False))
 
-		print(f'📁 Comprehensive DOM tree saved to: {dom_tree_file.name}')
-		print(f'📁 Simplified DOM tree saved to: {simplified_file.name}')
+		# Print absolute paths for easy access
+		abs_dom_tree_path = dom_tree_file.absolute()
+		abs_simplified_path = simplified_file.absolute()
 
-		return str(dom_tree_file)
+		print(f'📁 Comprehensive DOM tree saved to: {abs_dom_tree_path}')
+		print(f'📁 Simplified DOM tree saved to: {abs_simplified_path}')
+
+		return str(abs_dom_tree_path)
 
 	except Exception as e:
 		print(f'❌ Error saving comprehensive DOM tree JSON: {e}')
@@ -402,7 +406,8 @@ async def inject_highlighting_script(browser_session: BrowserSession, interactiv
 				showSerializedData: false,
 				showElementList: false,
 				currentWebsiteIndex: 0,
-				autoRefresh: false
+				autoRefresh: false,
+				scoreThreshold: 15  // Default minimum score threshold
 			};
 			
 			// Create container for all highlights
@@ -694,6 +699,110 @@ async def inject_highlighting_script(browser_session: BrowserSession, interactiv
 			
 			panelContent.appendChild(controlsSection);
 			
+			// Score threshold slider section
+			const scoreSection = document.createElement('div');
+			scoreSection.style.cssText = 'margin-bottom: 15px; padding: 10px; background: rgba(255,255,255,0.05); border-radius: 8px;';
+			
+			const scoreTitle = createTextElement('div', '🎯 Score Threshold Filter', 'color: #4a90e2; font-weight: bold; margin-bottom: 8px;');
+			scoreSection.appendChild(scoreTitle);
+			
+			// Score info display
+			const scoreInfo = document.createElement('div');
+			scoreInfo.style.cssText = 'font-size: 10px; margin-bottom: 8px; color: #ccc;';
+			scoreInfo.id = 'score-info';
+			scoreSection.appendChild(scoreInfo);
+			
+			// Score slider
+			const scoreSlider = document.createElement('input');
+			scoreSlider.type = 'range';
+			scoreSlider.min = '0';
+			scoreSlider.max = '100';
+			scoreSlider.value = state.scoreThreshold.toString();
+			scoreSlider.style.cssText = `
+				width: 100%; margin: 5px 0; height: 6px; border-radius: 3px;
+				background: linear-gradient(90deg, #dc3545 0%, #ffc107 25%, #28a745 75%, #007bff 100%);
+				outline: none; -webkit-appearance: none;
+			`;
+			
+			// Score slider styling
+			const sliderStyle = document.createElement('style');
+			sliderStyle.textContent = `
+				input[type="range"]::-webkit-slider-thumb {
+					-webkit-appearance: none; appearance: none;
+					width: 16px; height: 16px; border-radius: 50%;
+					background: #4a90e2; cursor: pointer;
+					box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+				}
+				input[type="range"]::-moz-range-thumb {
+					width: 16px; height: 16px; border-radius: 50%;
+					background: #4a90e2; cursor: pointer; border: none;
+					box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+				}
+			`;
+			document.head.appendChild(sliderStyle);
+			
+			// Score value display
+			const scoreValue = document.createElement('div');
+			scoreValue.style.cssText = 'text-align: center; font-size: 12px; font-weight: bold; margin-top: 5px;';
+			scoreValue.id = 'score-value';
+			scoreSection.appendChild(scoreValue);
+			
+			// Function to update score display and filter
+			function updateScoreThreshold() {
+				const threshold = parseInt(scoreSlider.value);
+				state.scoreThreshold = threshold;
+				
+				// Update displays
+				scoreValue.textContent = `Min Score: ${threshold} points`;
+				
+				// Count elements at current threshold
+				const visibleCount = applyScoreThreshold();
+				const totalCount = interactiveElements.length;
+				const percentage = totalCount > 0 ? ((visibleCount / totalCount) * 100).toFixed(1) : '0';
+				
+				scoreInfo.textContent = `Showing ${visibleCount} of ${totalCount} elements (${percentage}%)`;
+				
+				// Update element list if open
+				if (state.showElementList) {
+					updateElementList();
+				}
+				
+				console.log(`🎯 Score threshold updated: ${threshold} (showing ${visibleCount}/${totalCount} elements)`);
+			}
+			
+			// Function to apply score threshold filter
+			function applyScoreThreshold() {
+				const highlights = container.querySelectorAll('[data-browser-use-highlight="element"]');
+				let visibleCount = 0;
+				
+				highlights.forEach(highlight => {
+					const elementId = highlight.getAttribute('data-element-id');
+					const element = interactiveElements.find(el => el.interactive_index == elementId);
+					const score = element?.reasoning?.score || 0;
+					
+					if (score >= state.scoreThreshold) {
+						highlight.style.display = 'block';
+						visibleCount++;
+					} else {
+						highlight.style.display = 'none';
+					}
+				});
+				
+				return visibleCount;
+			}
+			
+			// Add slider event listener
+			scoreSlider.addEventListener('input', updateScoreThreshold);
+			
+			// Add slider and value to section
+			scoreSection.appendChild(scoreSlider);
+			scoreSection.appendChild(scoreValue);
+			
+			// Initialize score display
+			updateScoreThreshold();
+			
+			panelContent.appendChild(scoreSection);
+			
 			// Data view section
 			const dataView = document.createElement('div');
 			dataView.id = 'data-view';
@@ -814,9 +923,13 @@ async def inject_highlighting_script(browser_session: BrowserSession, interactiv
 			function updateElementList() {
 				if (state.showElementList) {
 					elementList.style.display = 'block';
-					const filteredElements = interactiveElements.filter(el => 
-						state.currentFilter === 'ALL' || (el.reasoning?.confidence === state.currentFilter)
-					);
+					const filteredElements = interactiveElements.filter(el => {
+						const confidence = el.reasoning?.confidence || 'MINIMAL';
+						const score = el.reasoning?.score || 0;
+						const passesConfidenceFilter = state.currentFilter === 'ALL' || confidence === state.currentFilter;
+						const passesScoreThreshold = score >= state.scoreThreshold;
+						return passesConfidenceFilter && passesScoreThreshold;
+					});
 					
 					// Clear existing content safely
 					while (elementList.firstChild) {
@@ -868,17 +981,34 @@ async def inject_highlighting_script(browser_session: BrowserSession, interactiv
 			
 			function applyFilter() {
 				const highlights = container.querySelectorAll('[data-browser-use-highlight="element"]');
+				let visibleCount = 0;
+				
 				highlights.forEach(highlight => {
 					const elementId = highlight.getAttribute('data-element-id');
 					const element = interactiveElements.find(el => el.interactive_index == elementId);
 					const confidence = element?.reasoning?.confidence || 'MINIMAL';
+					const score = element?.reasoning?.score || 0;
 					
-					if (state.currentFilter === 'ALL' || confidence === state.currentFilter) {
+					// Apply both confidence filter and score threshold
+					const passesConfidenceFilter = state.currentFilter === 'ALL' || confidence === state.currentFilter;
+					const passesScoreThreshold = score >= state.scoreThreshold;
+					
+					if (passesConfidenceFilter && passesScoreThreshold) {
 						highlight.style.display = 'block';
+						visibleCount++;
 					} else {
 						highlight.style.display = 'none';
 					}
 				});
+				
+				// Update score info display
+				const scoreInfoEl = document.getElementById('score-info');
+				if (scoreInfoEl) {
+					const totalCount = interactiveElements.length;
+					const percentage = totalCount > 0 ? ((visibleCount / totalCount) * 100).toFixed(1) : '0';
+					scoreInfoEl.textContent = `Showing ${visibleCount} of ${totalCount} elements (${percentage}%)`;
+				}
+				
 				updateElementList();
 			}
 			
@@ -1560,10 +1690,18 @@ async def save_outputs_to_files(serialized: str, selector_map: dict, interactive
 		async with aiofiles.open(selector_file, 'w', encoding='utf-8') as f:
 			await f.write(json.dumps(selector_data, indent=2, ensure_ascii=False))
 
-		print('📁 Files saved to tmp/ directory:')
-		print(f'   • {serialized_file.name} - Enhanced DOM serialization with reasoning')
-		print(f'   • {elements_file.name} - Interactive elements with detailed analysis')
-		print(f'   • {selector_file.name} - Selector map for debugging')
+		# Print absolute paths for easy access
+		abs_serialized_path = serialized_file.absolute()
+		abs_elements_path = elements_file.absolute()
+		abs_selector_path = selector_file.absolute()
+
+		print('📁 Files saved with full paths:')
+		print(f'   • {abs_serialized_path}')
+		print('     Enhanced DOM serialization with reasoning')
+		print(f'   • {abs_elements_path}')
+		print('     Interactive elements with detailed analysis')
+		print(f'   • {abs_selector_path}')
+		print('     Selector map for debugging')
 
 	except Exception as e:
 		print(f'❌ Error saving enhanced files: {e}')
@@ -1603,128 +1741,6 @@ def get_website_choice() -> str:
 		except (EOFError, KeyboardInterrupt):
 			print('\n👋 Exiting...')
 			return 'https://example.com'
-
-
-async def run_comprehensive_website_tests():
-	"""Run comprehensive tests on all major website types to validate serializer performance."""
-
-	# Test websites covering different complexity levels
-	test_websites = [
-		{
-			'name': 'Simple Static',
-			'url': 'https://example.com',
-			'expected_elements': (1, 10),  # min, max expected interactive elements
-			'complexity': 'low',
-		},
-		{'name': 'Modern Homepage', 'url': 'https://browser-use.com', 'expected_elements': (10, 50), 'complexity': 'medium'},
-		{'name': 'Complex Platform', 'url': 'https://github.com', 'expected_elements': (20, 100), 'complexity': 'high'},
-		{
-			'name': 'UI Components',
-			'url': 'https://semantic-ui.com/modules/dropdown.html',
-			'expected_elements': (15, 80),
-			'complexity': 'medium',
-		},
-		{
-			'name': 'Travel Application',
-			'url': 'https://www.google.com/travel/flights',
-			'expected_elements': (50, 300),
-			'complexity': 'very_high',
-		},
-		{
-			'name': 'Content Heavy',
-			'url': 'https://en.wikipedia.org/wiki/Internet',
-			'expected_elements': (30, 150),
-			'complexity': 'high',
-		},
-	]
-
-	# Create browser session
-	profile = BrowserProfile(headless=False, keep_alive=True)
-	browser_session = BrowserSession(browser_profile=profile)
-
-	try:
-		await browser_session.start()
-		dom_service = DOMService(browser_session)
-
-		print('🚀 COMPREHENSIVE DOM SERIALIZER TESTING SUITE')
-		print('=' * 80)
-		print(f'Testing {len(test_websites)} websites across different complexity levels')
-		print('=' * 80)
-
-		all_results = []
-
-		for i, website in enumerate(test_websites, 1):
-			print(f'\n🌐 TEST {i}/{len(test_websites)}: {website["name"]}')
-			print(f'URL: {website["url"]}')
-			print(f'Expected Complexity: {website["complexity"].upper()}')
-			print('-' * 60)
-
-			try:
-				# Navigate to website
-				print(f'📍 Navigating to {website["url"]}...')
-				await browser_session.navigate_to(website['url'])
-				await asyncio.sleep(4)  # Wait for page to load completely
-
-				# Extract interactive elements with performance metrics
-				interactive_elements, serialized, selector_map = await extract_interactive_elements_from_service(dom_service)
-
-				# Try to get metrics if available (metrics are printed in the extraction process)
-				metrics = None
-
-				# Analyze results
-				result = analyze_website_results(website, interactive_elements, serialized, selector_map, metrics)
-				all_results.append(result)
-
-				# Save detailed outputs
-				await save_detailed_test_outputs(website, interactive_elements, serialized, selector_map)
-
-				# Show sample elements
-				print('\n🎯 Sample Interactive Elements (showing first 5):')
-				for j, elem in enumerate(interactive_elements[:5], 1):
-					attrs_info = get_element_description(elem)
-					print(f'   [{elem["interactive_index"]}] {elem["element_name"]}{attrs_info}')
-
-				if len(interactive_elements) > 5:
-					print(f'   ... and {len(interactive_elements) - 5} more elements')
-
-				# Show serialized preview
-				print('\n📝 Serialized Output Preview (first 400 chars):')
-				print('-' * 40)
-				print(serialized[:400])
-				if len(serialized) > 400:
-					print('...[TRUNCATED]')
-				print('-' * 40)
-
-			except Exception as e:
-				print(f'❌ Error testing {website["name"]}: {e}')
-				traceback.print_exc()
-				result = {
-					'website': website,
-					'status': 'failed',
-					'error': str(e),
-					'interactive_count': 0,
-					'serialized_length': 0,
-					'performance_rating': 'FAILED',
-				}
-				all_results.append(result)
-
-			print(f'\n✅ Completed test {i}/{len(test_websites)}')
-
-		# Generate comprehensive summary report
-		print('\n' + '=' * 80)
-		print('📊 COMPREHENSIVE TEST RESULTS SUMMARY')
-		print('=' * 80)
-
-		generate_comprehensive_report(all_results)
-
-		# Save summary to file
-		await save_comprehensive_summary(all_results)
-
-	except Exception as e:
-		print(f'❌ Critical error in testing suite: {e}')
-		traceback.print_exc()
-	finally:
-		await browser_session.stop()
 
 
 def analyze_website_results(website_config, interactive_elements, serialized, selector_map, metrics):
@@ -1885,7 +1901,13 @@ async def save_detailed_test_outputs(website_config, interactive_elements, seria
 		async with aiofiles.open(elements_file, 'w', encoding='utf-8') as f:
 			await f.write(json.dumps(interactive_elements, indent=2, ensure_ascii=False))
 
-		print(f'📁 Saved test outputs: {serialized_file.name}, {elements_file.name}')
+		# Print absolute paths for easy access
+		abs_serialized_path = serialized_file.absolute()
+		abs_elements_path = elements_file.absolute()
+
+		print('📁 Test outputs saved:')
+		print(f'   • {abs_serialized_path}')
+		print(f'   • {abs_elements_path}')
 
 	except Exception as e:
 		print(f'❌ Error saving test outputs: {e}')
@@ -1975,7 +1997,9 @@ async def save_comprehensive_summary(all_results):
 		async with aiofiles.open(summary_file, 'w', encoding='utf-8') as f:
 			await f.write(json.dumps(summary_data, indent=2, ensure_ascii=False, default=str))
 
-		print(f'\n📁 Comprehensive summary saved: {summary_file.name}')
+		# Print absolute path for easy access
+		abs_summary_path = summary_file.absolute()
+		print(f'\n📁 Comprehensive summary saved: {abs_summary_path}')
 
 	except Exception as e:
 		print(f'❌ Error saving comprehensive summary: {e}')
@@ -2083,7 +2107,7 @@ async def interactive_testing_mode():
 						dom_service, interactive_elements, serialized, selector_map, url
 					)
 					if json_file_path:
-						print(f'📄 DOM tree JSON saved to: {json_file_path}')
+						print(f'📄 DOM tree JSON also available at: {json_file_path}')
 
 					# Print serialized output preview
 					print('\n📄 Serialized output preview (first 800 chars):')
@@ -2167,7 +2191,8 @@ async def test_website_direct(url: str) -> None:
 		print(f'🎯 Found {len(interactive_elements)} interactive elements')
 		print('🖥️  Browser will stay open for manual inspection')
 		print('🔄 Press Ctrl+R in browser to refresh highlighting after scrolling')
-		print('📁 Check tmp/ directory for saved analysis files')
+		tmp_dir_abs = Path('tmp').absolute()
+		print(f'📁 Check analysis files directory: {tmp_dir_abs}')
 		print('')
 		print('🚀 Ready to test another website!')
 
@@ -2460,368 +2485,6 @@ def cli_inspection_mode(interactive_elements: list[dict]) -> None:
 			print(f'❌ Error: {e}')
 
 
-async def test_comprehensive_detection(url: str | None = None) -> None:
-	"""Test comprehensive element detection with detailed output - no browser interaction needed."""
-	if url is None:
-		url = TEST_WEBSITES['google-flights']
-
-	print_section_header('🎯 COMPREHENSIVE ELEMENT DETECTION TEST')
-	print(f'🌐 URL: {url}')
-	print('📋 Features: ')
-	print('   • NEVER excludes elements - just scores them appropriately')
-	print('   • 5 confidence levels: DEFINITE → LIKELY → POSSIBLE → QUESTIONABLE → MINIMAL')
-	print('   • Comprehensive scoring considers all element types')
-	print('   • Enhanced debugging with detailed element analysis')
-	print('   • Fixed highlighting with improved hover tooltips')
-	print('   • Size-agnostic detection (small elements can be interactive)')
-	print('')
-
-	profile = BrowserProfile(headless=False, keep_alive=True)
-	browser_session = BrowserSession(browser_profile=profile)
-
-	try:
-		await browser_session.start()
-		dom_service = DOMService(browser_session)
-
-		# Navigate to website
-		print(f'📍 Navigating to: {url}')
-		await browser_session.navigate_to(url)
-		await asyncio.sleep(3)  # Wait for page to load
-
-		# Extract interactive elements with comprehensive detection
-		interactive_elements, serialized, selector_map = await extract_interactive_elements_from_service(dom_service)
-
-		# Inject fixed highlighting
-		await inject_highlighting_script(browser_session, interactive_elements)
-
-		# Show summary of comprehensive detection
-		print_section_header('📊 COMPREHENSIVE DETECTION RESULTS')
-		print(f'🎯 Total Elements Found: {len(interactive_elements)}')
-
-		# Show confidence distribution
-		confidence_dist = {'DEFINITE': 0, 'LIKELY': 0, 'POSSIBLE': 0, 'QUESTIONABLE': 0, 'MINIMAL': 0}
-		for elem in interactive_elements:
-			conf = elem.get('reasoning', {}).get('confidence', 'MINIMAL')
-			if conf in confidence_dist:
-				confidence_dist[conf] = confidence_dist.get(conf, 0) + 1
-			else:
-				confidence_dist['MINIMAL'] += 1
-
-		print('\n📈 Confidence Distribution:')
-		for conf_level, count in confidence_dist.items():
-			emoji = {'DEFINITE': '🟢', 'LIKELY': '🟡', 'POSSIBLE': '🟠', 'QUESTIONABLE': '🔴', 'MINIMAL': '🟣'}[conf_level]
-			pct = (count / len(interactive_elements) * 100) if interactive_elements else 0
-			print(f'   {emoji} {conf_level}: {count} elements ({pct:.1f}%)')
-
-		# Show element type distribution
-		type_dist = {}
-		for elem in interactive_elements:
-			elem_type = elem.get('reasoning', {}).get('element_type', 'UNKNOWN')
-			type_dist[elem_type] = type_dist.get(elem_type, 0) + 1
-
-		print('\n🏷️  Element Types Detected:')
-		for elem_type, count in sorted(type_dist.items(), key=lambda x: x[1], reverse=True):
-			print(f'   • {elem_type}: {count} elements')
-
-		# Show some sample elements from each confidence level
-		print('\n🎯 Sample Elements by Confidence:')
-		for conf_level in ['DEFINITE', 'LIKELY', 'POSSIBLE', 'QUESTIONABLE', 'MINIMAL']:
-			conf_elements = [e for e in interactive_elements if e.get('reasoning', {}).get('confidence') == conf_level]
-			if conf_elements:
-				emoji = {'DEFINITE': '🟢', 'LIKELY': '🟡', 'POSSIBLE': '🟠', 'QUESTIONABLE': '🔴', 'MINIMAL': '🟣'}[conf_level]
-				print(f'\n   {emoji} {conf_level} ({len(conf_elements)} total):')
-				for elem in conf_elements[:3]:  # Show first 3
-					reasoning = elem.get('reasoning', {})
-					score = reasoning.get('score', 0)
-					elem_type = reasoning.get('element_type', 'UNKNOWN')
-					attrs = elem.get('attributes', {})
-					context = []
-					if attrs.get('id'):
-						context.append(f"id='{attrs['id'][:15]}...'")
-					if attrs.get('class'):
-						context.append(f"class='{attrs['class'][:20]}...'")
-					context_str = f' ({", ".join(context)})' if context else ''
-					print(f'      [{elem["interactive_index"]}] {elem_type}{context_str} - {score} pts')
-				if len(conf_elements) > 3:
-					print(f'      ... and {len(conf_elements) - 3} more')
-
-		print('\n🎮 Interactive Features:')
-		print('   • Hover over highlighted elements to see detailed reasoning')
-		print('   • All elements are highlighted with color-coded confidence borders')
-		print('   • Fixed JavaScript highlighting (no more syntax errors)')
-		print('   • Press Ctrl+R in browser to refresh highlighting after scrolling')
-		print('   • Use CLI inspection mode to analyze specific elements')
-
-		print('\n📁 Analysis Files:')
-		print('   • Enhanced reasoning data saved to tmp/ directory')
-		print('   • Detailed element analysis with scoring breakdown')
-		print('   • All confidence levels preserved for comprehensive coverage')
-
-		print_section_header('✅ COMPREHENSIVE DETECTION COMPLETE')
-		print('🖥️  Browser will stay open for inspection')
-		print('🔍 Use the CLI inspection mode to analyze specific elements')
-		print('🎯 All elements are now detected and scored appropriately')
-
-	except Exception as e:
-		print(f'❌ Error in comprehensive detection test: {e}')
-		traceback.print_exc()
-	# Browser stays open for inspection
-
-
-async def quick_debug_test(url: str | None = None) -> None:
-	"""Super quick debugging test with enhanced logging and streamlined output."""
-	if url is None:
-		url = TEST_WEBSITES['google-flights']
-
-	print('🚀' * 20)
-	print(f'🎯 QUICK DEBUG TEST: {url}')
-	print('🚀' * 20)
-
-	profile = BrowserProfile(headless=False, keep_alive=True)
-	browser_session = BrowserSession(browser_profile=profile)
-
-	try:
-		start_time = time.time()
-		await browser_session.start()
-		dom_service = DOMService(browser_session)
-
-		# Navigate with timing
-		nav_start = time.time()
-		print(f'🌐 Navigating to: {url}')
-		await browser_session.navigate_to(url)
-		await asyncio.sleep(3)
-		nav_time = time.time() - nav_start
-		print(f'✅ Navigation completed in {nav_time:.2f}s')
-
-		# Extract with detailed timing
-		extract_start = time.time()
-		print('🔍 Extracting interactive elements...')
-		interactive_elements, serialized, selector_map = await extract_interactive_elements_from_service(dom_service)
-		extract_time = time.time() - extract_start
-
-		# Inject enhanced debugging UI
-		ui_start = time.time()
-		print('🎮 Injecting interactive debugging UI...')
-		await inject_highlighting_script(browser_session, interactive_elements)
-		ui_time = time.time() - ui_start
-
-		# Save comprehensive DOM tree JSON
-		json_start = time.time()
-		print('💾 Saving comprehensive DOM tree JSON...')
-		json_file_path = await save_comprehensive_dom_tree_json(dom_service, interactive_elements, serialized, selector_map, url)
-		if json_file_path:
-			print(f'📄 DOM tree JSON saved to: {json_file_path}')
-		json_time = time.time() - json_start
-
-		total_time = time.time() - start_time
-
-		# ENHANCED SUMMARY WITH GREAT LOGS FOR SHARING
-		print('\n' + '=' * 80)
-		print('🎯 QUICK DEBUG RESULTS SUMMARY')
-		print('=' * 80)
-
-		# Performance metrics
-		print('⚡ PERFORMANCE:')
-		print(f'   • Total Time: {total_time:.2f}s')
-		print(f'   • Navigation: {nav_time:.2f}s')
-		print(f'   • Extraction: {extract_time:.3f}s')
-		print(f'   • UI Injection: {ui_time:.3f}s')
-		print(f'   • JSON Saving: {json_time:.3f}s')
-
-		# Element distribution
-		confidence_dist = {'DEFINITE': 0, 'LIKELY': 0, 'POSSIBLE': 0, 'QUESTIONABLE': 0, 'MINIMAL': 0}
-		for elem in interactive_elements:
-			conf = elem.get('reasoning', {}).get('confidence', 'MINIMAL')
-			confidence_dist[conf] = confidence_dist.get(conf, 0) + 1
-
-		print('\n📊 ELEMENT DISTRIBUTION:')
-		for conf_level, count in confidence_dist.items():
-			emoji = {'DEFINITE': '🟢', 'LIKELY': '🟡', 'POSSIBLE': '🟠', 'QUESTIONABLE': '🔴', 'MINIMAL': '🟣'}[conf_level]
-			pct = (count / len(interactive_elements) * 100) if interactive_elements else 0
-			print(f'   {emoji} {conf_level}: {count:3d} elements ({pct:5.1f}%)')
-
-		# Element types
-		type_dist = {}
-		for elem in interactive_elements:
-			elem_type = elem.get('reasoning', {}).get('element_type', 'UNKNOWN')
-			type_dist[elem_type] = type_dist.get(elem_type, 0) + 1
-
-		print('\n🏷️  ELEMENT TYPES:')
-		for elem_type, count in sorted(type_dist.items(), key=lambda x: x[1], reverse=True)[:10]:
-			print(f'   • {elem_type}: {count}')
-
-		# Top scoring elements for debugging
-		top_elements = sorted(interactive_elements, key=lambda x: x.get('reasoning', {}).get('score', 0), reverse=True)[:5]
-		print('\n🏆 TOP SCORING ELEMENTS:')
-		for i, elem in enumerate(top_elements, 1):
-			reasoning = elem.get('reasoning', {})
-			score = reasoning.get('score', 0)
-			conf = reasoning.get('confidence', 'UNKNOWN')
-			elem_type = reasoning.get('element_type', 'UNKNOWN')
-			primary_reason = reasoning.get('primary_reason', 'unknown')
-
-			attrs = elem.get('attributes', {})
-			context = []
-			if attrs.get('id'):
-				context.append(f"id='{attrs['id'][:15]}...'")
-			if attrs.get('class'):
-				context.append(f"class='{attrs['class'][:20]}...'")
-			context_str = f' ({", ".join(context)})' if context else ''
-
-			print(f'   {i}. [{elem["interactive_index"]:3d}] {elem_type}{context_str}')
-			print(f'      Score: {score} pts | Confidence: {conf} | Reason: {primary_reason}')
-
-		# Quality metrics
-		high_quality = confidence_dist['DEFINITE'] + confidence_dist['LIKELY']
-		quality_pct = (high_quality / len(interactive_elements) * 100) if interactive_elements else 0
-		avg_score = (
-			sum(elem.get('reasoning', {}).get('score', 0) for elem in interactive_elements) / len(interactive_elements)
-			if interactive_elements
-			else 0
-		)
-
-		print('\n📈 QUALITY METRICS:')
-		print(f'   • Total Elements: {len(interactive_elements)}')
-		print(f'   • High Quality: {high_quality} ({quality_pct:.1f}%)')
-		print(f'   • Average Score: {avg_score:.1f} points')
-		print(f'   • Serialized Size: {len(serialized):,} chars')
-
-		# Website insights
-		print('\n🌐 WEBSITE INSIGHTS:')
-		print(f'   • URL: {url}')
-		print(f'   • Iframe Contexts: {serialized.count("=== IFRAME CONTENT")}')
-		print(f'   • Shadow DOM Contexts: {serialized.count("=== SHADOW DOM")}')
-		print(f'   • Cross-Origin: {serialized.count("[CROSS-ORIGIN]")}')
-
-		# Interactive features available
-		print('\n🎮 INTERACTIVE FEATURES READY:')
-		print('   • Hover elements for detailed tooltips')
-		print('   • Click elements for comprehensive logging')
-		print('   • Use debug panel controls (top-right)')
-		print('   • Search and filter elements')
-		print('   • Export analysis data')
-		print('   • Navigate between test websites')
-
-		# Keyboard shortcuts reminder
-		print('\n⌨️  KEYBOARD SHORTCUTS:')
-		print('   • Ctrl+R: Refresh | Ctrl+H: Toggle highlights')
-		print('   • Ctrl+D: Toggle debug panel | Ctrl+F: Focus search')
-
-		print('=' * 80)
-		print('🎯 Ready for debugging! Browser stays open for inspection.')
-		print('📋 Copy the above logs for sharing and analysis!')
-		print('=' * 80)
-
-	except Exception as e:
-		print(f'❌ Error in quick debug test: {e}')
-		traceback.print_exc()
-
-
-async def test_multiple_websites() -> None:
-	"""Test multiple websites quickly for comparison."""
-	websites_to_test = [
-		('Google Flights', TEST_WEBSITES['google-flights']),
-		('Example.com', TEST_WEBSITES['simple']),
-		('GitHub', TEST_WEBSITES['github']),
-		('Semantic UI', TEST_WEBSITES['semantic-ui']),
-	]
-
-	print('🚀' * 30)
-	print('🎯 MULTI-WEBSITE COMPARISON TEST')
-	print('🚀' * 30)
-
-	results = []
-	profile = BrowserProfile(headless=False, keep_alive=True)
-	browser_session = BrowserSession(browser_profile=profile)
-
-	try:
-		await browser_session.start()
-		dom_service = DOMService(browser_session)
-
-		for i, (name, url) in enumerate(websites_to_test, 1):
-			print(f'\n📍 Testing {i}/{len(websites_to_test)}: {name}')
-			print(f'🌐 URL: {url}')
-
-			start_time = time.time()
-
-			# Navigate
-			await browser_session.navigate_to(url)
-			await asyncio.sleep(3)
-
-			# Extract
-			interactive_elements, serialized, selector_map = await extract_interactive_elements_from_service(dom_service)
-
-			# Analyze
-			confidence_dist = {'DEFINITE': 0, 'LIKELY': 0, 'POSSIBLE': 0, 'QUESTIONABLE': 0, 'MINIMAL': 0}
-			for elem in interactive_elements:
-				conf = elem.get('reasoning', {}).get('confidence', 'MINIMAL')
-				confidence_dist[conf] = confidence_dist.get(conf, 0) + 1
-
-			type_dist = {}
-			for elem in interactive_elements:
-				elem_type = elem.get('reasoning', {}).get('element_type', 'UNKNOWN')
-				type_dist[elem_type] = type_dist.get(elem_type, 0) + 1
-
-			total_time = time.time() - start_time
-			high_quality = confidence_dist['DEFINITE'] + confidence_dist['LIKELY']
-			avg_score = (
-				sum(elem.get('reasoning', {}).get('score', 0) for elem in interactive_elements) / len(interactive_elements)
-				if interactive_elements
-				else 0
-			)
-
-			result = {
-				'name': name,
-				'url': url,
-				'total_elements': len(interactive_elements),
-				'confidence_dist': confidence_dist,
-				'type_dist': type_dist,
-				'high_quality': high_quality,
-				'avg_score': avg_score,
-				'total_time': total_time,
-				'serialized_size': len(serialized),
-			}
-			results.append(result)
-
-			print(f'✅ Completed in {total_time:.2f}s - {len(interactive_elements)} elements ({high_quality} high quality)')
-
-		# Final comparison report
-		print('\n' + '=' * 100)
-		print('🏆 MULTI-WEBSITE COMPARISON RESULTS')
-		print('=' * 100)
-
-		# Table header
-		print(f'{"Website":<20} {"Elements":<10} {"High Qual":<10} {"Avg Score":<10} {"Time":<8} {"Top Types"}')
-		print('-' * 100)
-
-		for result in results:
-			name = result['name'][:18]
-			elements = result['total_elements']
-			high_qual = (
-				f'{result["high_quality"]} ({result["high_quality"] / result["total_elements"] * 100:.0f}%)'
-				if result['total_elements'] > 0
-				else '0'
-			)
-			avg_score = f'{result["avg_score"]:.1f}'
-			time_str = f'{result["total_time"]:.2f}s'
-
-			# Top 3 element types
-			top_types = sorted(result['type_dist'].items(), key=lambda x: x[1], reverse=True)[:3]
-			top_types_str = ', '.join([f'{t[0]}({t[1]})' for t in top_types])[:30]
-
-			print(f'{name:<20} {elements:<10} {high_qual:<10} {avg_score:<10} {time_str:<8} {top_types_str}')
-
-		print('=' * 100)
-		print('🎯 Use quick_debug_test(url) to focus on a specific website!')
-		print('=' * 100)
-
-	except Exception as e:
-		print(f'❌ Error in multi-website test: {e}')
-		traceback.print_exc()
-	finally:
-		await browser_session.stop()
-
-
 # Enhanced TEST_WEBSITES with more options
 TEST_WEBSITES = {
 	'simple': 'https://example.com',
@@ -3078,7 +2741,7 @@ async def inject_highlighting_script_safe(browser_session: BrowserSession, inter
 				currentFilter: 'ALL',
 				lastHighlightTime: Date.now(),
 				currentWebsiteIndex: 0,
-				scoreThreshold: 10,
+				scoreThreshold: 15,  // Default minimum score threshold
 				isReextracting: false
 			}};
 			
@@ -3214,6 +2877,86 @@ async def inject_highlighting_script_safe(browser_session: BrowserSession, inter
 			
 			statsSection.appendChild(statsContent);
 			debugPanel.appendChild(statsSection);
+			
+			// Score threshold slider section
+			const scoreSection = document.createElement('div');
+			scoreSection.style.cssText = 'margin-bottom: 15px; padding: 10px; background: rgba(255,255,255,0.05); border-radius: 8px;';
+			
+			const scoreTitle = document.createElement('div');
+			scoreTitle.style.cssText = 'color: #4a90e2; font-weight: bold; margin-bottom: 8px; font-size: 11px;';
+			scoreTitle.textContent = '🎯 Score Threshold Filter';
+			scoreSection.appendChild(scoreTitle);
+			
+			// Score info display
+			const scoreInfo = document.createElement('div');
+			scoreInfo.style.cssText = 'font-size: 10px; margin-bottom: 8px; color: #ccc;';
+			scoreInfo.id = 'score-info-safe';
+			scoreSection.appendChild(scoreInfo);
+			
+			// Score slider
+			const scoreSlider = document.createElement('input');
+			scoreSlider.type = 'range';
+			scoreSlider.min = '0';
+			scoreSlider.max = '100';
+			scoreSlider.value = state.scoreThreshold.toString();
+			scoreSlider.style.cssText = `
+				width: 100%; margin: 5px 0; height: 6px; border-radius: 3px;
+				background: linear-gradient(90deg, #dc3545 0%, #ffc107 25%, #28a745 75%, #007bff 100%);
+				outline: none; -webkit-appearance: none;
+			`;
+			
+			// Score slider styling
+			const sliderStyleSafe = document.createElement('style');
+			sliderStyleSafe.textContent = `
+				input[type="range"]::-webkit-slider-thumb {{
+					-webkit-appearance: none; appearance: none;
+					width: 16px; height: 16px; border-radius: 50%;
+					background: #4a90e2; cursor: pointer;
+					box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+				}}
+				input[type="range"]::-moz-range-thumb {{
+					width: 16px; height: 16px; border-radius: 50%;
+					background: #4a90e2; cursor: pointer; border: none;
+					box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+				}}
+			`;
+			document.head.appendChild(sliderStyleSafe);
+			
+			// Score value display
+			const scoreValue = document.createElement('div');
+			scoreValue.style.cssText = 'text-align: center; font-size: 12px; font-weight: bold; margin-top: 5px; color: #4a90e2;';
+			scoreValue.id = 'score-value-safe';
+			scoreSection.appendChild(scoreValue);
+			
+			// Function to update score display and filter
+			function updateScoreThresholdSafe() {{
+				const threshold = parseInt(scoreSlider.value);
+				state.scoreThreshold = threshold;
+				
+				// Update displays
+				scoreValue.textContent = `Min Score: ${{threshold}} points`;
+				
+				// Count elements at current threshold
+				const visibleCount = applyScoreThreshold();
+				const totalCount = interactiveElements.length;
+				const percentage = totalCount > 0 ? ((visibleCount / totalCount) * 100).toFixed(1) : '0';
+				
+				scoreInfo.textContent = `Showing ${{visibleCount}} of ${{totalCount}} elements (${{percentage}}%)`;
+				
+				console.log(`🎯 Score threshold updated: ${{threshold}} (showing ${{visibleCount}}/${{totalCount}} elements)`);
+			}}
+			
+			// Add slider event listener
+			scoreSlider.addEventListener('input', updateScoreThresholdSafe);
+			
+			// Add slider and value to section
+			scoreSection.appendChild(scoreSlider);
+			scoreSection.appendChild(scoreValue);
+			
+			// Initialize score display
+			updateScoreThresholdSafe();
+			
+			debugPanel.appendChild(scoreSection);
 			
 			console.log('✅ Enhanced debugging UI injected successfully');
 		}})();
