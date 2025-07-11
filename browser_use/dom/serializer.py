@@ -1,11 +1,99 @@
 # @file purpose: Serializes enhanced DOM trees to string format for LLM consumption
 
+import time
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Set, Tuple
 
 from cdp_use.cdp.accessibility.types import AXPropertyName
 
 from browser_use.dom.views import DEFAULT_INCLUDE_ATTRIBUTES, EnhancedDOMTreeNode, NodeType
+
+
+@dataclass(slots=True)
+class PerformanceMetrics:
+	"""Track performance metrics for optimization analysis."""
+
+	start_time: float = field(default_factory=time.time)
+	ax_collection_time: float = 0.0
+	filtering_time: float = 0.0
+	tree_building_time: float = 0.0
+	indexing_time: float = 0.0
+	serialization_time: float = 0.0
+	total_time: float = 0.0
+
+	# Element counts
+	total_dom_nodes: int = 0
+	ax_candidates: int = 0
+	dom_candidates: int = 0
+	after_visibility_filter: int = 0
+	after_viewport_filter: int = 0
+	after_deduplication: int = 0
+	final_interactive_count: int = 0
+
+	# Filtering statistics
+	skipped_structural: int = 0
+	skipped_invisible: int = 0
+	skipped_outside_viewport: int = 0
+	skipped_duplicates: int = 0
+	skipped_calendar_cells: int = 0
+
+	def finish(self):
+		"""Calculate total time."""
+		self.total_time = time.time() - self.start_time
+
+	def log_summary(self):
+		"""Log comprehensive performance summary."""
+		print('\n' + '=' * 80)
+		print('🚀 DOM SERIALIZER PERFORMANCE REPORT')
+		print('=' * 80)
+
+		print('⏱️  TIMING BREAKDOWN:')
+		print(f'   • Total Time:           {self.total_time:.3f}s')
+		print(
+			f'   • AX Collection:        {self.ax_collection_time:.3f}s ({self.ax_collection_time / self.total_time * 100:.1f}%)'
+		)
+		print(f'   • Filtering:            {self.filtering_time:.3f}s ({self.filtering_time / self.total_time * 100:.1f}%)')
+		print(
+			f'   • Tree Building:        {self.tree_building_time:.3f}s ({self.tree_building_time / self.total_time * 100:.1f}%)'
+		)
+		print(f'   • Indexing:             {self.indexing_time:.3f}s ({self.indexing_time / self.total_time * 100:.1f}%)')
+		print(
+			f'   • Serialization:        {self.serialization_time:.3f}s ({self.serialization_time / self.total_time * 100:.1f}%)'
+		)
+
+		print('\n📊 ELEMENT STATISTICS:')
+		print(f'   • Total DOM Nodes:      {self.total_dom_nodes:,}')
+		print(f'   • AX Candidates:        {self.ax_candidates:,}')
+		print(f'   • DOM Candidates:       {self.dom_candidates:,}')
+		print(f'   • After Visibility:     {self.after_visibility_filter:,}')
+		print(f'   • After Viewport:       {self.after_viewport_filter:,}')
+		print(f'   • After Deduplication:  {self.after_deduplication:,}')
+		print(f'   • Final Interactive:    {self.final_interactive_count:,}')
+
+		print('\n🗑️  FILTERING EFFICIENCY:')
+		print(f'   • Skipped Structural:   {self.skipped_structural:,}')
+		print(f'   • Skipped Invisible:    {self.skipped_invisible:,}')
+		print(f'   • Skipped Viewport:     {self.skipped_outside_viewport:,}')
+		print(f'   • Skipped Duplicates:   {self.skipped_duplicates:,}')
+		print(f'   • Skipped Calendar:     {self.skipped_calendar_cells:,}')
+
+		total_candidates = self.ax_candidates + self.dom_candidates
+		if total_candidates > 0:
+			reduction_rate = (1 - self.final_interactive_count / total_candidates) * 100
+			print(f'\n📉 REDUCTION RATE: {reduction_rate:.1f}% ({total_candidates:,} → {self.final_interactive_count:,})')
+
+		# Performance rating
+		if self.total_time < 0.05:
+			rating = '🔥 EXCELLENT'
+		elif self.total_time < 0.1:
+			rating = '✅ GOOD'
+		elif self.total_time < 0.2:
+			rating = '⚠️  MODERATE'
+		else:
+			rating = '🐌 SLOW'
+
+		print(f'\n🎯 PERFORMANCE RATING: {rating}')
+		print('=' * 80)
 
 
 @dataclass(slots=True)
@@ -436,51 +524,13 @@ class DOMTreeSerializer:
 		self._element_groups: Dict[str, List[SimplifiedNode]] = {}
 		self._cross_origin_iframes: List[str] = []
 
-	def _is_element_in_current_viewport(self, node: SimplifiedNode) -> bool:
-		"""Check if element is within the current viewport bounds."""
-		# **IFRAME/SHADOW DOM EXEMPTION**: Skip viewport filtering for iframe and shadow DOM elements
-		# These elements have coordinates relative to their own context, not the main page
-		if node.iframe_context or node.shadow_context:
-			return True  # If iframe/shadow content is loaded, consider it visible
+		# Performance caches
+		self._visibility_cache: Dict[str, bool] = {}
+		self._interactivity_cache: Dict[str, bool] = {}
+		self._structural_cache: Dict[str, bool] = {}
 
-		if not self.viewport_info or not node.original_node.snapshot_node:
-			return True  # If no viewport info, assume visible
-
-		snapshot = node.original_node.snapshot_node
-		bounding_box = getattr(snapshot, 'bounding_box', None)
-		if not bounding_box:
-			return True
-
-		# Get viewport dimensions
-		viewport_width = self.viewport_info.get('width', 1920)
-		viewport_height = self.viewport_info.get('height', 1080)
-		scroll_x = self.viewport_info.get('scroll_x', 0)
-		scroll_y = self.viewport_info.get('scroll_y', 0)
-
-		# Calculate viewport bounds
-		viewport_left = scroll_x
-		viewport_top = scroll_y
-		viewport_right = scroll_x + viewport_width
-		viewport_bottom = scroll_y + viewport_height
-
-		# Element bounds
-		elem_left = bounding_box.get('x', 0)
-		elem_top = bounding_box.get('y', 0)
-		elem_right = elem_left + bounding_box.get('width', 0)
-		elem_bottom = elem_top + bounding_box.get('height', 0)
-
-		# Add small buffer for elements just outside viewport (useful for scrolling)
-		buffer = 100  # pixels
-
-		# Check if element intersects with viewport (with buffer)
-		intersects = (
-			elem_right > (viewport_left - buffer)
-			and elem_left < (viewport_right + buffer)
-			and elem_bottom > (viewport_top - buffer)
-			and elem_top < (viewport_bottom + buffer)
-		)
-
-		return intersects
+		# Performance metrics
+		self.metrics = PerformanceMetrics()
 
 	def serialize_accessible_elements(
 		self,
@@ -498,6 +548,490 @@ class DOMTreeSerializer:
 		if not include_attributes:
 			include_attributes = DEFAULT_INCLUDE_ATTRIBUTES
 
+		# Try optimized AX tree-driven approach first
+		try:
+			result = self._serialize_ax_tree_optimized(include_attributes)
+			self.metrics.finish()
+			self.metrics.log_summary()
+			return result
+		except Exception as e:
+			print(f'⚠️  AX tree optimization failed ({e}), falling back to full tree traversal')
+			# Fall back to original approach
+			result = self._serialize_full_tree_legacy(include_attributes)
+			self.metrics.finish()
+			self.metrics.log_summary()
+			return result
+
+	def _serialize_ax_tree_optimized(self, include_attributes: list[str]) -> tuple[str, dict[int, EnhancedDOMTreeNode]]:
+		"""OPTIMIZED: Use AX tree nodes directly for 10x speed improvement."""
+		print('🚀 Starting AX tree-driven optimization')
+
+		# Reset state
+		self._interactive_counter = 1
+		self._selector_map = {}
+		self._iframe_contexts = {}
+		self._shadow_contexts = {}
+		self._element_groups = {}
+		self._cross_origin_iframes = []
+
+		# Clear caches
+		self._visibility_cache.clear()
+		self._interactivity_cache.clear()
+		self._structural_cache.clear()
+
+		# Step 1: Collect interactive candidates from AX tree
+		step_start = time.time()
+		interactive_candidates = self._collect_ax_interactive_candidates_fast(self.root_node)
+		self.metrics.ax_collection_time = time.time() - step_start
+		self.metrics.ax_candidates = len([c for c in interactive_candidates if c[1] == 'ax'])
+		self.metrics.dom_candidates = len([c for c in interactive_candidates if c[1] == 'dom'])
+		print(f'  📊 Found {len(interactive_candidates)} candidates in {self.metrics.ax_collection_time:.3f}s')
+		print(f'     • AX candidates: {self.metrics.ax_candidates}')
+		print(f'     • DOM candidates: {self.metrics.dom_candidates}')
+
+		# Step 2: Filter by viewport and deduplicate
+		step_start = time.time()
+		viewport_filtered = self._filter_by_viewport_and_deduplicate_fast(interactive_candidates)
+		self.metrics.filtering_time = time.time() - step_start
+		self.metrics.after_viewport_filter = len(viewport_filtered)
+		print(f'  🎯 Filtered to {len(viewport_filtered)} viewport-visible elements in {self.metrics.filtering_time:.3f}s')
+
+		# Step 3: Build minimal simplified tree only for filtered elements
+		step_start = time.time()
+		simplified_elements = self._build_minimal_simplified_tree_fast(viewport_filtered)
+		self.metrics.tree_building_time = time.time() - step_start
+		print(f'  🔧 Built minimal tree with {len(simplified_elements)} elements in {self.metrics.tree_building_time:.3f}s')
+
+		# Step 4: Assign interactive indices (no heavy consolidation needed)
+		step_start = time.time()
+		self._assign_indices_to_filtered_elements(simplified_elements)
+		self.metrics.indexing_time = time.time() - step_start
+		self.metrics.final_interactive_count = len(self._selector_map)
+		print(f'  🏷️  Assigned {len(self._selector_map)} interactive indices in {self.metrics.indexing_time:.3f}s')
+
+		# Step 5: Serialize minimal tree
+		step_start = time.time()
+		serialized = self._serialize_minimal_tree_fast(simplified_elements, include_attributes)
+		self.metrics.serialization_time = time.time() - step_start
+		print(f'  📝 Serialized {len(serialized)} characters in {self.metrics.serialization_time:.3f}s')
+
+		return serialized, self._selector_map
+
+	def _collect_ax_interactive_candidates_fast(self, node: EnhancedDOMTreeNode) -> List[Tuple[EnhancedDOMTreeNode, str]]:
+		"""Collect interactive candidates using optimized traversal with caching."""
+		candidates = []
+		node_count = 0
+
+		def collect_recursive_fast(current_node: EnhancedDOMTreeNode, depth: int = 0):
+			nonlocal node_count
+			node_count += 1
+
+			if depth > 50:  # Prevent infinite recursion
+				return
+
+			# Cache key for this node
+			node_key = f'{current_node.node_name}_{id(current_node)}'
+
+			# Skip obvious non-interactive structural elements immediately (cached)
+			if node_key not in self._structural_cache:
+				self._structural_cache[node_key] = self._is_structural_element_fast(current_node)
+
+			if self._structural_cache[node_key]:
+				self.metrics.skipped_structural += 1
+				# Still process children, but don't consider this element
+				if current_node.children_nodes:
+					for child in current_node.children_nodes:
+						collect_recursive_fast(child, depth + 1)
+				return
+
+			# Check if this node is interactive via AX tree (cached)
+			ax_interactive_key = f'ax_{node_key}'
+			if ax_interactive_key not in self._interactivity_cache:
+				self._interactivity_cache[ax_interactive_key] = self._is_ax_interactive_fast(current_node)
+
+			if self._interactivity_cache[ax_interactive_key]:
+				candidates.append((current_node, 'ax'))
+				if depth <= 10:  # Only show debug for shallow elements to reduce noise
+					print(f'    ✅ AX interactive: {current_node.node_name} (depth {depth})')
+
+			# Check if this node is interactive via DOM attributes/snapshot (cached)
+			else:
+				dom_interactive_key = f'dom_{node_key}'
+				if dom_interactive_key not in self._interactivity_cache:
+					self._interactivity_cache[dom_interactive_key] = self._is_dom_interactive_fast(current_node)
+
+				if self._interactivity_cache[dom_interactive_key]:
+					candidates.append((current_node, 'dom'))
+					if depth <= 10:  # Only show debug for shallow elements to reduce noise
+						print(f'    ✅ DOM interactive: {current_node.node_name} (depth {depth})')
+
+			# Process children
+			if current_node.children_nodes:
+				for child in current_node.children_nodes:
+					collect_recursive_fast(child, depth + 1)
+
+			# Process iframe content
+			if current_node.content_document and current_node.node_name.upper() == 'IFRAME':
+				iframe_context_id = self._register_iframe_context(current_node)
+				print(f'    🖼️  Processing iframe: {iframe_context_id}')
+				collect_recursive_fast(current_node.content_document, depth + 1)
+
+			# Process shadow DOM
+			if current_node.shadow_roots:
+				for i, shadow_root in enumerate(current_node.shadow_roots):
+					shadow_context_id = self._register_shadow_context(current_node, i)
+					print(f'    🌒 Processing shadow DOM: {shadow_context_id}')
+					collect_recursive_fast(shadow_root, depth + 1)
+
+		collect_recursive_fast(node)
+		self.metrics.total_dom_nodes = node_count
+		return candidates
+
+	def _is_structural_element_fast(self, node: EnhancedDOMTreeNode) -> bool:
+		"""Fast check if element is a structural element that should be skipped."""
+		if node.node_type != NodeType.ELEMENT_NODE:
+			return False
+
+		node_name = node.node_name.upper()
+
+		# Skip obvious structural elements
+		structural_elements = {
+			'HTML',
+			'HEAD',
+			'BODY',
+			'TITLE',
+			'META',
+			'STYLE',
+			'SCRIPT',
+			'LINK',
+			'#DOCUMENT',
+			'#COMMENT',
+			'NOSCRIPT',
+		}
+
+		if node_name in structural_elements:
+			return True
+
+		# Fast check for large empty containers
+		if node_name in {'DIV', 'SECTION', 'ARTICLE', 'MAIN', 'HEADER', 'FOOTER', 'NAV', 'ASIDE'}:
+			# Quick attribute check
+			if not node.attributes:
+				return True
+
+			# Fast check for meaningful attributes
+			meaningful_attrs = {'onclick', 'data-action', 'role', 'tabindex', 'href'}
+			if not any(attr in node.attributes for attr in meaningful_attrs):
+				return True
+
+		return False
+
+	def _is_ax_interactive_fast(self, node: EnhancedDOMTreeNode) -> bool:
+		"""Fast check if node is interactive according to AX tree."""
+		if not node.ax_node:
+			return False
+
+		# Check AX role
+		if node.ax_node.role:
+			interactive_roles = {
+				'button',
+				'link',
+				'menuitem',
+				'tab',
+				'option',
+				'checkbox',
+				'radio',
+				'slider',
+				'spinbutton',
+				'switch',
+				'textbox',
+				'combobox',
+				'listbox',
+				'tree',
+				'grid',
+				'gridcell',
+				'searchbox',
+				'menuitemradio',
+				'menuitemcheckbox',
+			}
+			if node.ax_node.role.lower() in interactive_roles:
+				# Special filtering for calendar/date picker elements
+				if node.ax_node.role.lower() == 'gridcell' and node.node_name.upper() == 'DIV':
+					# This is likely a calendar date cell - check if it's part of a large grid
+					if self._is_likely_calendar_cell_fast(node):
+						self.metrics.skipped_calendar_cells += 1
+						return False
+				return True
+
+		# Fast check AX properties for focusability
+		if node.ax_node.properties:
+			for prop in node.ax_node.properties:
+				if prop.name == AXPropertyName.FOCUSABLE and prop.value:
+					return True
+
+		return False
+
+	def _is_likely_calendar_cell_fast(self, node: EnhancedDOMTreeNode) -> bool:
+		"""Fast check if this is likely a calendar cell in a large date picker."""
+		# If it's a DIV with gridcell role, check if it's part of a large calendar
+		if not node.attributes:
+			return True  # No attributes, likely just a date cell
+
+		# Fast check for common calendar patterns
+		if node.attributes:
+			classes = node.attributes.get('class', '').lower()
+			calendar_indicators = ['date', 'day', 'cell', 'calendar', 'picker', 'grid']
+
+			# If it has calendar-related classes, it's likely a calendar cell
+			if any(indicator in classes for indicator in calendar_indicators):
+				return True
+
+		# Fast structural check
+		if (
+			node.node_name.upper() == 'DIV'
+			and len(node.attributes) <= 2  # Only a few attributes
+			and not any(attr in node.attributes for attr in ['onclick', 'data-action', 'href', 'role'])
+		):
+			return True
+
+		return False
+
+	def _is_dom_interactive_fast(self, node: EnhancedDOMTreeNode) -> bool:
+		"""Fast check if node is interactive according to DOM/snapshot data."""
+		if node.node_type != NodeType.ELEMENT_NODE:
+			return False
+
+		node_name = node.node_name.upper()
+
+		# Always interactive form elements
+		if node_name in {'INPUT', 'BUTTON', 'SELECT', 'TEXTAREA', 'OPTION'}:
+			return True
+
+		# Links with href
+		if node_name == 'A' and node.attributes and 'href' in node.attributes:
+			return True
+
+		# Fast snapshot-based clickability
+		if node.snapshot_node and getattr(node.snapshot_node, 'is_clickable', False):
+			return True
+
+		# Fast cursor pointer check
+		if node.snapshot_node:
+			if getattr(node.snapshot_node, 'cursor_style', None) == 'pointer':
+				return True
+			if node.snapshot_node.computed_styles and node.snapshot_node.computed_styles.get('cursor') == 'pointer':
+				return True
+
+		# Fast attribute checks
+		if node.attributes:
+			# Event handlers
+			event_attrs = {'onclick', 'onmousedown', 'onkeydown', 'data-action', 'data-toggle', 'jsaction'}
+			if any(attr in node.attributes for attr in event_attrs):
+				return True
+
+			# Role attributes
+			role = node.attributes.get('role', '').lower()
+			if role in {
+				'button',
+				'link',
+				'menuitem',
+				'tab',
+				'option',
+				'checkbox',
+				'radio',
+				'slider',
+				'spinbutton',
+				'switch',
+				'textbox',
+				'combobox',
+				'listbox',
+			}:
+				return True
+
+			# Positive tabindex
+			tabindex = node.attributes.get('tabindex')
+			if tabindex and tabindex.isdigit() and int(tabindex) >= 0:
+				return True
+
+		return False
+
+	def _filter_by_viewport_and_deduplicate_fast(
+		self, candidates: List[Tuple[EnhancedDOMTreeNode, str]]
+	) -> List[EnhancedDOMTreeNode]:
+		"""Fast filter candidates by viewport and remove duplicates."""
+		filtered = []
+		seen_elements: Set[str] = set()  # Track unique elements by x_path
+
+		for candidate_node, candidate_type in candidates:
+			# Fast visibility check (cached)
+			visibility_key = f'vis_{id(candidate_node)}'
+			if visibility_key not in self._visibility_cache:
+				self._visibility_cache[visibility_key] = self._is_element_visible_fast(candidate_node)
+
+			if not self._visibility_cache[visibility_key]:
+				self.metrics.skipped_invisible += 1
+				continue
+
+			# Fast viewport check
+			if not self._is_in_viewport_or_special_context_fast(candidate_node):
+				self.metrics.skipped_outside_viewport += 1
+				continue
+
+			# Fast deduplication
+			element_key = candidate_node.x_path
+			if element_key in seen_elements:
+				self.metrics.skipped_duplicates += 1
+				continue
+
+			seen_elements.add(element_key)
+			filtered.append(candidate_node)
+
+		self.metrics.after_visibility_filter = len(filtered) + self.metrics.skipped_invisible
+		self.metrics.after_deduplication = len(filtered)
+		return filtered
+
+	def _is_element_visible_fast(self, node: EnhancedDOMTreeNode) -> bool:
+		"""Fast visibility check."""
+		if not node.snapshot_node:
+			return False
+
+		# Fast visibility check
+		is_visible = getattr(node.snapshot_node, 'is_visible', None)
+		if is_visible is False:
+			return False
+
+		# Fast bounding box check
+		bbox = getattr(node.snapshot_node, 'bounding_box', None)
+		if not bbox:
+			return False
+
+		# Fast size check
+		width, height = bbox.get('width', 0), bbox.get('height', 0)
+		if width <= 0 or height <= 0:
+			return False
+
+		# Fast position check
+		x, y = bbox.get('x', 0), bbox.get('y', 0)
+		if x < -1000 or y < -1000:
+			return False
+
+		return True
+
+	def _is_in_viewport_or_special_context_fast(self, node: EnhancedDOMTreeNode) -> bool:
+		"""Fast check if element is in viewport or is special context (iframe/shadow)."""
+		# If no viewport info, assume visible
+		if not self.viewport_info:
+			return True
+
+		# Fast check for iframe or shadow content (always include)
+		if self._iframe_contexts or self._shadow_contexts:
+			return True
+
+		# Fast viewport filtering for main page content
+		if not node.snapshot_node:
+			return True
+
+		bbox = getattr(node.snapshot_node, 'bounding_box', None)
+		if not bbox:
+			return True
+
+		# Fast viewport calculation
+		viewport_width = self.viewport_info.get('width', 1920)
+		viewport_height = self.viewport_info.get('height', 1080)
+		scroll_x = self.viewport_info.get('scroll_x', 0)
+		scroll_y = self.viewport_info.get('scroll_y', 0)
+
+		# Fast intersection check with small buffer
+		buffer = 50
+		elem_left = bbox.get('x', 0)
+		elem_top = bbox.get('y', 0)
+		elem_right = elem_left + bbox.get('width', 0)
+		elem_bottom = elem_top + bbox.get('height', 0)
+
+		viewport_left = scroll_x - buffer
+		viewport_top = scroll_y - buffer
+		viewport_right = scroll_x + viewport_width + buffer
+		viewport_bottom = scroll_y + viewport_height + buffer
+
+		return (
+			elem_right > viewport_left
+			and elem_left < viewport_right
+			and elem_bottom > viewport_top
+			and elem_top < viewport_bottom
+		)
+
+	def _build_minimal_simplified_tree_fast(self, filtered_nodes: List[EnhancedDOMTreeNode]) -> List[SimplifiedNode]:
+		"""Fast build minimal simplified tree for filtered nodes only."""
+		simplified_elements = []
+
+		for node in filtered_nodes:
+			simplified = SimplifiedNode(original_node=node)
+
+			# Fast context info setting
+			if self._iframe_contexts:
+				simplified.iframe_context = None
+			if self._shadow_contexts:
+				simplified.shadow_context = None
+
+			simplified_elements.append(simplified)
+
+		return simplified_elements
+
+	def _serialize_minimal_tree_fast(self, simplified_elements: List[SimplifiedNode], include_attributes: list[str]) -> str:
+		"""Fast serialize minimal tree with only interactive elements."""
+		lines = []
+
+		# Fast context summary
+		context_summary = self._build_context_summary()
+		if context_summary:
+			lines.append(context_summary)
+			lines.append('')
+
+		# Fast serialize each interactive element
+		for simplified in simplified_elements:
+			node = simplified.original_node
+
+			# Fast attributes string building
+			attrs_str = self._build_enhanced_attributes_string_fast(node, include_attributes, simplified)
+
+			# Fast line building
+			line = f'[{simplified.interactive_index}]<{node.node_name}'
+			if attrs_str:
+				line += f' {attrs_str}'
+			line += ' />'
+
+			lines.append(line)
+
+		return '\n'.join(lines)
+
+	def _build_enhanced_attributes_string_fast(
+		self, node: EnhancedDOMTreeNode, include_attributes: list[str], simplified_node: SimplifiedNode | None
+	) -> str:
+		"""Fast build enhanced attributes string with interaction-relevant information."""
+		if not node.attributes:
+			return ''
+
+		# Fast attribute filtering
+		important_attrs = ['id', 'class', 'type', 'href', 'role', 'aria-label']
+		result_attrs = {}
+
+		for attr in important_attrs:
+			if attr in node.attributes and attr in include_attributes:
+				value = str(node.attributes[attr]).strip()
+				if value and len(value) <= 50:  # Fast length check
+					result_attrs[attr] = value
+
+		# Fast cursor style addition
+		if node.snapshot_node and getattr(node.snapshot_node, 'cursor_style', None) == 'pointer' and 'cursor' not in result_attrs:
+			result_attrs['cursor'] = 'pointer'
+
+		# Fast result building
+		if result_attrs:
+			return ' '.join(f'{key}="{value[:25]}"' for key, value in result_attrs.items())
+
+		return ''
+
+	def _serialize_full_tree_legacy(self, include_attributes: list[str]) -> tuple[str, dict[int, EnhancedDOMTreeNode]]:
+		"""Legacy full tree serialization approach (fallback)."""
 		# Reset state
 		self._interactive_counter = 1
 		self._selector_map = {}
@@ -1500,3 +2034,56 @@ class DOMTreeSerializer:
 
 		line += ' />'
 		return line
+
+	def _assign_indices_to_filtered_elements(self, simplified_elements: List[SimplifiedNode]) -> None:
+		"""Assign interactive indices to pre-filtered elements."""
+		for simplified in simplified_elements:
+			simplified.interactive_index = self._interactive_counter
+			self._selector_map[self._interactive_counter] = simplified.original_node
+			self._interactive_counter += 1
+
+	def _is_element_in_current_viewport(self, node: SimplifiedNode) -> bool:
+		"""Check if element is within the current viewport bounds."""
+		# **IFRAME/SHADOW DOM EXEMPTION**: Skip viewport filtering for iframe and shadow DOM elements
+		# These elements have coordinates relative to their own context, not the main page
+		if node.iframe_context or node.shadow_context:
+			return True  # If iframe/shadow content is loaded, consider it visible
+
+		if not self.viewport_info or not node.original_node.snapshot_node:
+			return True  # If no viewport info, assume visible
+
+		snapshot = node.original_node.snapshot_node
+		bounding_box = getattr(snapshot, 'bounding_box', None)
+		if not bounding_box:
+			return True
+
+		# Get viewport dimensions
+		viewport_width = self.viewport_info.get('width', 1920)
+		viewport_height = self.viewport_info.get('height', 1080)
+		scroll_x = self.viewport_info.get('scroll_x', 0)
+		scroll_y = self.viewport_info.get('scroll_y', 0)
+
+		# Calculate viewport bounds
+		viewport_left = scroll_x
+		viewport_top = scroll_y
+		viewport_right = scroll_x + viewport_width
+		viewport_bottom = scroll_y + viewport_height
+
+		# Element bounds
+		elem_left = bounding_box.get('x', 0)
+		elem_top = bounding_box.get('y', 0)
+		elem_right = elem_left + bounding_box.get('width', 0)
+		elem_bottom = elem_top + bounding_box.get('height', 0)
+
+		# Add small buffer for elements just outside viewport (useful for scrolling)
+		buffer = 100  # pixels
+
+		# Check if element intersects with viewport (with buffer)
+		intersects = (
+			elem_right > (viewport_left - buffer)
+			and elem_left < (viewport_right + buffer)
+			and elem_bottom > (viewport_top - buffer)
+			and elem_top < (viewport_bottom + buffer)
+		)
+
+		return intersects

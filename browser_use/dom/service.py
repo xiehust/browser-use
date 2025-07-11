@@ -14,7 +14,6 @@ from browser_use.dom.enhanced_snapshot import (
 	build_snapshot_lookup,
 )
 from browser_use.dom.serializer import DOMTreeSerializer
-from browser_use.dom.serializer_enhanced import serialize_with_enhanced_filtering
 from browser_use.dom.views import EnhancedAXNode, EnhancedAXProperty, EnhancedDOMTreeNode, NodeType
 
 
@@ -613,14 +612,10 @@ class DOMService:
 
 		start = time.time()
 
-		if use_enhanced_filtering:
-			# Use enhanced serializer with aggressive container filtering
-			serialized, selector_map = serialize_with_enhanced_filtering(enhanced_dom_tree, include_attributes)
-			serialization_method = 'enhanced filtering'
-		else:
-			# Use legacy serializer
-			serialized, selector_map = DOMTreeSerializer(enhanced_dom_tree).serialize_accessible_elements(include_attributes)
-			serialization_method = 'legacy'
+		# Use the optimized DOMTreeSerializer with enhanced filtering
+		serializer = DOMTreeSerializer(enhanced_dom_tree)
+		serialized, selector_map = serializer.serialize_accessible_elements(include_attributes)
+		serialization_method = 'optimized enhanced filtering' if use_enhanced_filtering else 'standard'
 
 		end = time.time()
 
