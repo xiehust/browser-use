@@ -32,6 +32,7 @@ async def test_focus_vs_all_elements():
 
 	# 10 Sample websites with various interactive elements
 	sample_websites = [
+		'https://v0-simple-landing-page-seven-xi.vercel.app/',
 		'https://www.google.com/travel/flights',
 		'https://www.amazon.com/s?k=laptop',
 		'https://github.com/trending',
