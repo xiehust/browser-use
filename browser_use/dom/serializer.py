@@ -5,8 +5,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from cdp_use.cdp.accessibility.types import AXPropertyName
-
 from browser_use.dom.views import DEFAULT_INCLUDE_ATTRIBUTES, EnhancedDOMTreeNode, NodeType
 
 
@@ -135,23 +133,30 @@ class ElementAnalysis:
 		# **TIER 1: HIGHEST PRIORITY (90-100 points) - Core interactive elements**
 		if element_name in ['INPUT', 'BUTTON', 'SELECT', 'TEXTAREA']:
 			element_category = 'form_control'
-			score += 120  # BOOSTED from 90 to 120
-			evidence.append(f'HIGH PRIORITY: Core form element: {element_name}')
+			base_boost = 120  # BOOSTED from 90 to 120
+			score += base_boost
+			evidence.append(f'BOOST: Core form element: {element_name} (+{base_boost} points)')
 
 			if attributes.get('type'):
 				input_type = attributes['type'].lower()
-				evidence.append(f'Input type: {input_type}')
+				evidence.append(f'Input type detected: {input_type}')
 				if input_type in ['submit', 'button', 'reset']:
-					score += 15  # BOOSTED from 10 to 15, Total: 135 points
+					type_boost = 15  # BOOSTED from 10 to 15
+					score += type_boost
+					evidence.append(f'BOOST: Interactive input type: {input_type} (+{type_boost} points)')
 				elif input_type in ['text', 'email', 'password', 'search', 'tel', 'url']:
-					score += 12  # BOOSTED from 8 to 12, Total: 132 points
+					type_boost = 12  # BOOSTED from 8 to 12
+					score += type_boost
+					evidence.append(f'BOOST: Text input type: {input_type} (+{type_boost} points)')
 				elif input_type in ['checkbox', 'radio']:
-					score += 10  # BOOSTED from 6 to 10, Total: 130 points
+					type_boost = 10  # BOOSTED from 6 to 10
+					score += type_boost
+					evidence.append(f'BOOST: Selection input type: {input_type} (+{type_boost} points)')
 
-			# Don't exclude disabled elements, just score them lower
+			# Handle disabled elements (this will be processed later in penalties section)
 			if attributes.get('disabled') == 'true':
-				score = max(40, score - 50)  # BOOSTED minimum from 25 to 40
-				warnings.append('Element is disabled but still detectable')
+				# Don't apply penalty here, it will be handled in the penalties section
+				pass
 
 		# **COLLECT ALL INTERACTIVE INDICATORS FIRST**
 		interactive_indicators = cls._collect_all_interactive_indicators(
@@ -172,6 +177,40 @@ class ElementAnalysis:
 			node, positioning_info, computed_styles_info, evidence, warnings
 		)
 		score += positioning_boost
+
+		# **APPLY PENALTIES AND SHOW IN EVIDENCE**
+		original_score = score
+
+		# Penalty for disabled elements
+		if attributes.get('disabled') == 'true':
+			penalty = 50
+			score = max(40, score - penalty)
+			evidence.append(f'PENALTY: Element is disabled (-{penalty} points, {original_score} → {score})')
+			warnings.append('Element is disabled but still detectable')
+
+		# Penalty for hidden elements (if detectable)
+		if computed_styles_info.get('visibility') == 'hidden':
+			penalty = 30
+			score = max(10, score - penalty)
+			evidence.append(f'PENALTY: Element is hidden (-{penalty} points, {original_score} → {score})')
+			warnings.append('Element is hidden but still detectable')
+
+		# Penalty for very low opacity
+		try:
+			opacity = float(computed_styles_info.get('opacity', '1'))
+			if opacity <= 0.1:
+				penalty = 20
+				score = max(5, score - penalty)
+				evidence.append(f'PENALTY: Very low opacity ({opacity}) (-{penalty} points, {original_score} → {score})')
+		except (ValueError, TypeError):
+			pass
+
+		# Penalty for pointer-events: none
+		if computed_styles_info.get('pointer-events') == 'none':
+			penalty = 40
+			score = max(5, score - penalty)
+			evidence.append(f'PENALTY: Pointer events disabled (-{penalty} points, {original_score} → {score})')
+			warnings.append('Element has pointer-events: none')
 
 		# **DETERMINE FINAL CONFIDENCE** - Adjusted thresholds for boosted scoring
 		if score >= 110:  # BOOSTED from 85 to 110
@@ -501,11 +540,11 @@ class ElementAnalysis:
 			# Extract AX properties
 			if node.ax_node.properties:
 				for prop in node.ax_node.properties:
-					if prop.name == AXPropertyName.FOCUSABLE:
+					if prop.name == 'focusable':
 						accessibility_info['focusable'] = str(prop.value)
-					elif prop.name == AXPropertyName.FOCUSED:
+					elif prop.name == 'focused':
 						accessibility_info['focused'] = str(prop.value)
-					elif prop.name == AXPropertyName.DISABLED:
+					elif prop.name == 'disabled':
 						accessibility_info['disabled'] = str(prop.value)
 
 		# **EXTRACT POSITIONING INFORMATION**
@@ -670,16 +709,20 @@ class ElementAnalysis:
 	) -> int:
 		"""Analyze container elements for interactivity with enhanced detection."""
 		container_score = 10  # Base score
+		evidence.append('BOOST: Container element base score (+10 points)')
 
 		# Enhanced CSS class analysis
 		css_classes = attributes.get('class', '').lower()
 		button_score_boost = 0
+		found_indicators = []
 		for indicator in button_indicators:
 			if indicator in css_classes:
 				button_score_boost += 20  # INCREASED from 15
-				evidence.append(f'Button-like class: {indicator}')
+				found_indicators.append(indicator)
 
-		container_score += button_score_boost
+		if found_indicators:
+			container_score += button_score_boost
+			evidence.append(f'BOOST: Button-like classes: {", ".join(found_indicators)} (+{button_score_boost} points)')
 
 		# Check for ANY interactive cursor (high value for containers)
 		has_cursor, cursor_type, cursor_score = cls._has_any_interactive_cursor(node, computed_styles_info)
@@ -687,7 +730,7 @@ class ElementAnalysis:
 			# Scale the container boost based on cursor importance
 			container_cursor_boost = min(60, cursor_score + 20)  # Add 20 for container context
 			container_score += container_cursor_boost
-			evidence.append(f'Container with {cursor_type} cursor (+{container_cursor_boost})')
+			evidence.append(f'BOOST: Container with {cursor_type} cursor (+{container_cursor_boost} points)')
 
 		# Enhanced ARIA attribute detection
 		interactive_aria = [
@@ -705,7 +748,7 @@ class ElementAnalysis:
 		if found_aria:
 			aria_boost = len(found_aria) * 8  # INCREASED from 5
 			container_score += aria_boost
-			evidence.append(f'Interactive ARIA attributes: {", ".join(found_aria)} (+{aria_boost})')
+			evidence.append(f'BOOST: Interactive ARIA attributes: {", ".join(found_aria)} (+{aria_boost} points)')
 
 		return container_score
 
@@ -724,18 +767,22 @@ class ElementAnalysis:
 		# Fixed/absolute positioned elements are often interactive overlays
 		position = computed_styles_info.get('position', '')
 		if position in ['fixed', 'absolute']:
-			score_boost += 15
-			evidence.append(f'Positioned element ({position}) likely interactive (+15)')
+			boost = 15
+			score_boost += boost
+			evidence.append(f'BOOST: Positioned element ({position}) likely interactive (+{boost} points)')
 
 		# High z-index elements are often interactive overlays
 		if cls._has_high_z_index(computed_styles_info):
-			score_boost += 10
-			evidence.append('High z-index element (+10)')
+			boost = 10
+			score_boost += boost
+			evidence.append(f'BOOST: High z-index element (+{boost} points)')
 
-		# Check for interactive styling
+		# Check for interactive styling penalties
 		if computed_styles_info.get('pointer-events') == 'none':
-			score_boost -= 20
-			warnings.append('Element has pointer-events: none (-20)')
+			penalty = 20
+			score_boost -= penalty
+			evidence.append(f'PENALTY: Pointer events disabled (-{penalty} points)')
+			warnings.append('Element has pointer-events: none')
 
 		return score_boost
 
@@ -747,8 +794,9 @@ class ElementAnalysis:
 		score_boost = 0
 
 		if accessibility_info.get('focusable') == 'true':
-			score_boost += 70  # MUCH HIGHER - focusable elements are definitely interactive
-			evidence.append('Accessibility tree marked as focusable (+70)')
+			boost = 70  # MUCH HIGHER - focusable elements are definitely interactive
+			score_boost += boost
+			evidence.append(f'BOOST: Accessibility tree marked as focusable (+{boost} points)')
 
 		if accessibility_info.get('role'):
 			role = accessibility_info['role'].lower()
@@ -765,7 +813,13 @@ class ElementAnalysis:
 			if role in interactive_ax_roles:
 				boost = interactive_ax_roles[role]
 				score_boost += boost
-				evidence.append(f'Interactive AX role: {role} (+{boost})')
+				evidence.append(f'BOOST: Interactive AX role: {role} (+{boost} points)')
+
+		# Check for accessibility penalties
+		if accessibility_info.get('disabled') == 'true':
+			penalty = 30
+			score_boost -= penalty
+			evidence.append(f'PENALTY: Element disabled in accessibility tree (-{penalty} points)')
 
 		return score_boost
 
@@ -1013,7 +1067,7 @@ class SimplifiedNode:
 			# Check for focusable AX properties
 			if node.ax_node.properties:
 				for prop in node.ax_node.properties:
-					if prop.name == AXPropertyName.FOCUSABLE and prop.value:
+					if prop.name == 'focusable' and prop.value:
 						return True
 
 			# Check AX role for interactivity
@@ -1328,7 +1382,6 @@ class DOMTreeSerializer:
 	_compressed_elements: List[CompressedElement] = field(default_factory=list)
 	_semantic_groups: List[SemanticGroup] = field(default_factory=list)
 	metrics: PerformanceMetrics = field(default_factory=PerformanceMetrics)
-	_include_all_ax_elements: bool = False  # NEW: Flag to include ALL AX elements when threshold=0
 
 	def __post_init__(self):
 		# Initialize performance metrics
@@ -1375,11 +1428,7 @@ class DOMTreeSerializer:
 		filter_start = time.time()
 
 		# **STEP 2: Fast conflict resolution**
-		# Skip conflict resolution when including all AX elements (threshold = 0)
-		if not getattr(self, '_include_all_ax_elements', False):
-			candidates = self.detect_and_resolve_nested_conflicts(candidates)
-		else:
-			print(f'🎯 SKIPPING CONFLICT RESOLUTION: Including all {len(candidates)} AX elements')
+		candidates = self.detect_and_resolve_nested_conflicts(candidates)
 
 		# **STEP 3: Fast viewport filtering and deduplication**
 		filtered_nodes = self._filter_by_viewport_and_deduplicate_fast(candidates)
@@ -1635,7 +1684,7 @@ class DOMTreeSerializer:
 			self._collect_non_consolidated_elements(child, result_list)
 
 	def _collect_ax_interactive_candidates_fast(self, node: EnhancedDOMTreeNode) -> List:
-		"""Fast collection of interactive candidates using both AX tree and DOM analysis."""
+		"""Fast collection of interactive candidates - now with tree already viewport-filtered."""
 		candidates = []
 
 		def collect_recursive_fast(current_node: EnhancedDOMTreeNode, depth: int = 0):
@@ -1644,30 +1693,7 @@ class DOMTreeSerializer:
 
 			self.metrics.total_dom_nodes += 1
 
-			# **ENHANCED: Check if we should include ALL AX elements (when threshold = 0)**
-			should_include_all_ax = getattr(self, '_include_all_ax_elements', False)
-
-			if should_include_all_ax:
-				# **SCORE THRESHOLD = 0 MODE: Include ALL elements with AX nodes, bypass ALL filtering**
-				if current_node.ax_node:
-					# Include EVERY element that has an AX node, no matter what
-					candidates.append((current_node, 'ax_all'))
-					print(
-						f'🎯 INCLUDED AX ELEMENT: {current_node.node_name} (AX role: {current_node.ax_node.role if current_node.ax_node.role else "no role"})'
-					)
-
-				# Also include basic interactive elements even without AX nodes
-				elif current_node.node_name.upper() in ['INPUT', 'BUTTON', 'SELECT', 'TEXTAREA', 'A']:
-					candidates.append((current_node, 'dom_basic'))
-					print(f'🎯 INCLUDED BASIC ELEMENT: {current_node.node_name}')
-
-				# In this mode, ALWAYS traverse children regardless of element type
-				if hasattr(current_node, 'children_nodes') and current_node.children_nodes:
-					for child in current_node.children_nodes:
-						collect_recursive_fast(child, depth + 1)
-				return  # Exit early, don't do normal processing
-
-			# **NORMAL MODE: Apply structural filtering**
+			# **SIMPLIFIED: Since viewport filtering already happened in tree construction, focus on interactivity**
 			# Check if this is a structural element but still process its children for container elements
 			is_structural = self._is_structural_element_fast(current_node)
 			if is_structural:
@@ -1701,10 +1727,9 @@ class DOMTreeSerializer:
 
 		collect_recursive_fast(node)
 
-		if getattr(self, '_include_all_ax_elements', False):
-			print(f'🎯 TOTAL AX ELEMENTS COLLECTED: {len([c for c in candidates if len(c) >= 2 and c[1] == "ax_all"])}')
-			print(f'🎯 TOTAL BASIC ELEMENTS COLLECTED: {len([c for c in candidates if len(c) >= 2 and c[1] == "dom_basic"])}')
-
+		print(
+			f'📍 TREE-LEVEL VIEWPORT FILTERING: Processed {self.metrics.total_dom_nodes} pre-filtered nodes (viewport filtering already applied in tree construction)'
+		)
 		return candidates
 
 	def _is_dom_interactive_comprehensive(self, node: EnhancedDOMTreeNode) -> bool:
@@ -2045,30 +2070,42 @@ class DOMTreeSerializer:
 			if len(group) > 1:
 				print(f'🔗 Same-action conflict detected: {action} ({len(group)} elements)')
 
-				# Sort by element size (largest first), then by element type priority
-				group.sort(key=lambda x: (-self._get_element_size(x[2]), self._get_element_priority(x[2])))
+				# Sort by z-index (highest first), then by element size, then by element type priority
+				group.sort(
+					key=lambda x: (
+						-self._get_element_z_index(x[2]),
+						-self._get_element_size(x[2]),
+						self._get_element_priority(x[2]),
+					)
+				)
 
-				# Keep the largest/best element with full score
+				# Keep ONLY the largest/best element - completely remove smaller ones
 				best_idx, best_candidate, best_node = group[0]
 				best_with_analysis = self._add_conflict_analysis(best_candidate, best_node, action, is_winner=True)
 				conflict_resolved_candidates.append(best_with_analysis)
 				processed_indices.add(best_idx)
 
-				print(f'    🏆 Selected best for "{action}": {best_node.node_name} (size: {self._get_element_size(best_node)})')
+				print(
+					f'    🏆 Selected best for "{action}": {best_node.node_name} (z-index: {self._get_element_z_index(best_node)}, size: {self._get_element_size(best_node)})'
+				)
 
-				# Add other elements with reduced scores (so they appear when threshold=0)
+				# COMPLETELY REMOVE other elements (don't add them to results)
 				for idx, candidate, node in group[1:]:
-					reduced_candidate = self._add_conflict_analysis(candidate, node, action, is_winner=False)
-					conflict_resolved_candidates.append(reduced_candidate)
 					processed_indices.add(idx)
-					print(f'      {idx + 1}. {node.node_name} (size: {self._get_element_size(node)})')
+					print(
+						f'      ❌ REMOVED: {node.node_name} (z-index: {self._get_element_z_index(node)}, size: {self._get_element_size(node)}) - same action as higher z-index element'
+					)
 
 				print(f'  🔗 Deduplicated {len(group)} → 1 for action: {action}')
 
-				# Show kept vs removed
-				print(f'    ✅ Kept: {best_node.node_name} (xpath: {best_node.x_path[:30]}...)')
+				# Show kept vs removed with z-index info
+				print(
+					f'    ✅ Kept: {best_node.node_name} (z-index: {self._get_element_z_index(best_node)}, xpath: {best_node.x_path[:30]}...)'
+				)
 				for idx, candidate, node in group[1:]:
-					print(f'    ❌ Reduced score: {node.node_name} (xpath: {node.x_path[:30]}...)')
+					print(
+						f'    ❌ COMPLETELY REMOVED: {node.node_name} (z-index: {self._get_element_z_index(node)}, xpath: {node.x_path[:30]}...)'
+					)
 
 		# Add non-conflicting elements as-is
 		for i, candidate in enumerate(candidates):
@@ -2078,8 +2115,9 @@ class DOMTreeSerializer:
 				analyzed_candidate = self._add_conflict_analysis(candidate, node, None, is_winner=True)
 				conflict_resolved_candidates.append(analyzed_candidate)
 
+		removed_count = len(candidates) - len(conflict_resolved_candidates)
 		print(
-			f'✅ Action-based conflict resolution complete: {len(candidates)} → {len([c for c in conflict_resolved_candidates if not c[2].warnings])} (-{len(candidates) - len([c for c in conflict_resolved_candidates if not c[2].warnings])} reduced scores)'
+			f'✅ Action-based conflict resolution complete: {len(candidates)} → {len(conflict_resolved_candidates)} (-{removed_count} completely removed)'
 		)
 
 		# Then apply spatial deduplication to the remaining elements
@@ -2156,6 +2194,33 @@ class DOMTreeSerializer:
 		height = bbox.get('height', 0)
 		return int(width * height)
 
+	def _get_element_z_index(self, node: EnhancedDOMTreeNode) -> int:
+		"""Get element z-index value for prioritization (higher z-index = on top)."""
+		if not node.snapshot_node:
+			return 0
+
+		# Check computed styles for z-index
+		computed_styles_info = {}
+		if hasattr(node.snapshot_node, 'computed_styles'):
+			computed_styles_info = node.snapshot_node.computed_styles or {}
+
+		z_index_str = computed_styles_info.get('z-index', 'auto')
+
+		# Handle special z-index values
+		if z_index_str == 'auto':
+			return 0
+		elif z_index_str == 'inherit':
+			return 0
+		elif z_index_str == 'initial':
+			return 0
+
+		# Try to parse numeric z-index
+		try:
+			z_index = int(z_index_str)
+			return z_index
+		except (ValueError, TypeError):
+			return 0
+
 	def _get_element_priority(self, node: EnhancedDOMTreeNode) -> int:
 		"""Get element type priority (lower number = higher priority)."""
 		element_type = node.node_name.upper()
@@ -2182,16 +2247,24 @@ class DOMTreeSerializer:
 		analysis = ElementAnalysis.analyze_element_interactivity(node)
 
 		if not is_winner and action:
-			# Reduce score for non-winning elements but keep them detectable at threshold 0
+			# This branch should not be used anymore since we completely remove non-winners
+			# But keeping for backward compatibility
 			original_score = analysis.score
-			analysis.score = max(5, analysis.score - 40)  # Reduce significantly but keep above 0
-			analysis.warnings.append(
-				f'Same-action conflict with larger element (action: {action[:30]}) - score reduced from {original_score} to {analysis.score}'
+			penalty = 40
+			analysis.score = max(5, analysis.score - penalty)
+			analysis.evidence.append(
+				f'PENALTY: Same-action conflict with larger element (-{penalty} points, {original_score} → {analysis.score})'
 			)
+			analysis.warnings.append(f'Same-action conflict with larger element (action: {action[:30]})')
 			analysis.context_info.append(f'Conflicting action: {action[:50]}')
 		elif is_winner and action:
 			# Winner gets a small boost and context info
-			analysis.score += 5
+			boost = 5
+			original_score = analysis.score
+			analysis.score += boost
+			analysis.evidence.append(
+				f'BOOST: Preferred element for same-action group (+{boost} points, {original_score} → {analysis.score})'
+			)
 			analysis.context_info.append(f'Preferred element for action: {action[:50]}')
 
 		# Return enhanced candidate tuple
@@ -2226,25 +2299,41 @@ class DOMTreeSerializer:
 
 			spatial_groups.append(current_group)
 
-		# Resolve spatial conflicts by keeping highest scoring element
+		# Resolve spatial conflicts by keeping highest scoring element and removing others
 		final_candidates = []
+		total_removed = 0
+
 		for group in spatial_groups:
 			if len(group) == 1:
 				final_candidates.append(group[0])
 			else:
-				# Sort by analysis score (highest first), then by element size
-				group.sort(key=lambda x: (-x[2].score, -self._get_element_size(x[0])))
+				# Sort by analysis score (highest first), then by z-index (highest first), then by element size
+				group.sort(key=lambda x: (-x[2].score, -self._get_element_z_index(x[0]), -self._get_element_size(x[0])))
 
-				# Keep the best element
+				# Keep ONLY the best element - completely remove overlapping ones
 				best_candidate = group[0]
+				best_node, best_type, best_analysis = best_candidate
+
+				# Add boost evidence for the winner
+				boost = 3
+				original_score = best_analysis.score
+				best_analysis.score += boost
+				best_analysis.evidence.append(
+					f'BOOST: Won spatial conflict against {len(group) - 1} overlapping elements (+{boost} points, {original_score} → {best_analysis.score})'
+				)
+
 				final_candidates.append(best_candidate)
 
-				# Reduce scores of spatially overlapping elements but keep them
+				# COMPLETELY REMOVE spatially overlapping elements (don't add them to results)
 				for candidate in group[1:]:
 					node, candidate_type, analysis = candidate
-					analysis.score = max(3, analysis.score - 25)
-					analysis.warnings.append('Spatially overlapping with higher-scoring element - score reduced')
-					final_candidates.append(candidate)
+					total_removed += 1
+					print(
+						f'      ❌ SPATIAL REMOVAL: {node.node_name} (z-index: {self._get_element_z_index(node)}, overlaps with higher-scoring element)'
+					)
+
+		if total_removed > 0:
+			print(f'✅ Spatial deduplication: removed {total_removed} overlapping elements')
 
 		return final_candidates
 
@@ -2528,7 +2617,7 @@ class DOMTreeSerializer:
 		# Fast check AX properties for focusability
 		if node.ax_node.properties:
 			for prop in node.ax_node.properties:
-				if prop.name == AXPropertyName.FOCUSABLE and prop.value:
+				if prop.name == 'focusable' and prop.value:
 					return True
 
 		return False
@@ -2596,56 +2685,32 @@ class DOMTreeSerializer:
 		return False
 
 	def _filter_by_viewport_and_deduplicate_fast(self, candidates) -> List[EnhancedDOMTreeNode]:
-		"""Fast filter candidates by viewport and remove duplicates."""
+		"""Fast filter candidates - viewport filtering already done in tree construction."""
 		filtered = []
 		seen_elements: Set[str] = set()  # Track unique elements by x_path
 
-		# **ENHANCED: Check if we should include ALL AX elements (when threshold = 0)**
-		should_include_all_ax = getattr(self, '_include_all_ax_elements', False)
-
 		for candidate_tuple in candidates:
 			candidate_node = candidate_tuple[0]  # First element is always the node
-			# candidate_tuple could be (node, 'analyzed', analysis) or (node, 'type')
 
-			if should_include_all_ax:
-				# **SCORE THRESHOLD = 0 MODE: NO filtering - include EVERYTHING with AX nodes**
-				print(
-					f'🎯 PROCESSING AX ELEMENT: {candidate_node.node_name} (type: {candidate_tuple[1] if len(candidate_tuple) > 1 else "unknown"})'
-				)
+			# **SIMPLIFIED: Viewport filtering already done, just do basic visibility and dedup**
 
-				# NO filtering whatsoever - include everything
-				# NO text node filtering
-				# NO visibility filtering
-				# NO viewport filtering
-				# NO spatial deduplication
-				# NO xpath deduplication
+			# Fast visibility check (cached)
+			visibility_key = f'vis_{id(candidate_node)}'
+			if visibility_key not in self._visibility_cache:
+				self._visibility_cache[visibility_key] = self._is_element_visible_fast(candidate_node)
 
-				# Just add everything to filtered list
-				print(f'🎯 ADDING TO FILTERED LIST: {candidate_node.node_name}')
-				filtered.append(candidate_node)
+			if not self._visibility_cache[visibility_key]:
+				self.metrics.skipped_invisible += 1
 				continue
-			else:
-				# **NORMAL MODE: Standard filtering**
 
-				# Fast visibility check (cached)
-				visibility_key = f'vis_{id(candidate_node)}'
-				if visibility_key not in self._visibility_cache:
-					self._visibility_cache[visibility_key] = self._is_element_visible_fast(candidate_node)
+			# **NOTE: Viewport filtering already done in tree construction**
+			# No need to re-check viewport here
 
-				if not self._visibility_cache[visibility_key]:
-					self.metrics.skipped_invisible += 1
-					continue
-
-				# Fast viewport check
-				if not self._is_in_viewport_or_special_context_fast(candidate_node):
-					self.metrics.skipped_outside_viewport += 1
-					continue
-
-				# Fast deduplication
-				element_key = candidate_node.x_path
-				if element_key in seen_elements:
-					self.metrics.skipped_duplicates += 1
-					continue
+			# Fast deduplication
+			element_key = candidate_node.x_path
+			if element_key in seen_elements:
+				self.metrics.skipped_duplicates += 1
+				continue
 
 			seen_elements.add(element_key)
 			filtered.append(candidate_node)
@@ -2681,8 +2746,56 @@ class DOMTreeSerializer:
 
 		return True
 
+	def _is_in_viewport_fast_early(self, node: EnhancedDOMTreeNode) -> bool:
+		"""EARLY viewport check - very fast filtering at collection time."""
+		# If no viewport info, assume visible (don't filter out)
+		if not self.viewport_info:
+			return True
+
+		# If no snapshot node, can't determine position - assume visible to be safe
+		if not node.snapshot_node:
+			return True
+
+		bbox = getattr(node.snapshot_node, 'bounding_box', None)
+		if not bbox:
+			return True
+
+		# Get element position and size
+		elem_x = bbox.get('x', 0)
+		elem_y = bbox.get('y', 0)
+		elem_width = bbox.get('width', 0)
+		elem_height = bbox.get('height', 0)
+
+		# Skip elements with zero size (can't be interacted with anyway)
+		if elem_width <= 0 or elem_height <= 0:
+			return False
+
+		# Get viewport bounds
+		viewport_width = self.viewport_info.get('width', 1920)
+		viewport_height = self.viewport_info.get('height', 1080)
+		scroll_x = self.viewport_info.get('scroll_x', 0)
+		scroll_y = self.viewport_info.get('scroll_y', 0)
+
+		# Use larger buffer for early filtering to be less aggressive
+		buffer = 100  # Larger buffer than later filtering
+
+		elem_right = elem_x + elem_width
+		elem_bottom = elem_y + elem_height
+
+		viewport_left = scroll_x - buffer
+		viewport_top = scroll_y - buffer
+		viewport_right = scroll_x + viewport_width + buffer
+		viewport_bottom = scroll_y + viewport_height + buffer
+
+		# Element is in viewport if it overlaps with the viewport area
+		is_in_viewport = (
+			elem_right > viewport_left and elem_x < viewport_right and elem_bottom > viewport_top and elem_y < viewport_bottom
+		)
+
+		return is_in_viewport
+
 	def _is_in_viewport_or_special_context_fast(self, node: EnhancedDOMTreeNode) -> bool:
-		"""Fast check if element is in viewport."""
+		"""Fast check if element is in viewport (more precise than early check)."""
 		# If no viewport info, assume visible
 		if not self.viewport_info:
 			return True

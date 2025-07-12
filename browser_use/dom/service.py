@@ -3,9 +3,9 @@ import time
 
 from cdp_use import CDPClient
 from cdp_use.cdp.accessibility.commands import GetFullAXTreeReturns
-from cdp_use.cdp.accessibility.types import AXNode, AXPropertyName
+from cdp_use.cdp.accessibility.types import AXNode
 from cdp_use.cdp.dom.commands import GetDocumentReturns
-from cdp_use.cdp.dom.types import Node, ShadowRootType
+from cdp_use.cdp.dom.types import Node
 from cdp_use.cdp.domsnapshot.commands import CaptureSnapshotReturns
 
 from browser_use.browser.session import BrowserSession
@@ -176,7 +176,6 @@ class DOMService:
 			for property in ax_node['properties']:
 				try:
 					# test whether property name can go into the enum (sometimes Chrome returns some random properties)
-					AXPropertyName(property['name'])
 					properties.append(
 						EnhancedAXProperty(
 							name=property['name'],
@@ -372,7 +371,7 @@ class DOMService:
 			shadow_root_type = None
 			if 'shadowRootType' in node and node['shadowRootType']:
 				try:
-					shadow_root_type = ShadowRootType(node['shadowRootType'])
+					shadow_root_type = node['shadowRootType']
 				except ValueError:
 					pass
 
@@ -618,15 +617,11 @@ class DOMService:
 	async def get_serialized_dom_tree(
 		self,
 		include_attributes: list[str] | None = None,
-		use_enhanced_filtering: bool = True,
-		include_all_ax_elements: bool = False,
 	) -> tuple[str, dict[int, EnhancedDOMTreeNode]]:
 		"""Get the serialized DOM tree representation for LLM consumption.
 
 		Args:
 			include_attributes: List of attributes to include
-			use_enhanced_filtering: Whether to use enhanced filtering to remove non-interactive containers
-			include_all_ax_elements: Whether to include ALL AX tree elements (when score threshold = 0)
 
 		Returns:
 			Tuple of (serialized_dom_string, selector_map)
@@ -635,17 +630,13 @@ class DOMService:
 
 		start = time.time()
 
-		# Use the optimized DOMTreeSerializer with enhanced filtering
+		# Use the optimized DOMTreeSerializer
 		serializer = DOMTreeSerializer(enhanced_dom_tree)
-
-		# **NEW: Set flag to include all AX elements if requested**
-		serializer._include_all_ax_elements = include_all_ax_elements
 
 		# Store reference for external access (for tree.py)
 		self.dom_tree_serializer = serializer
 
 		serialized, selector_map = serializer.serialize_accessible_elements(include_attributes)
-		serialization_method = 'optimized enhanced filtering' if use_enhanced_filtering else 'standard'
 
 		end = time.time()
 
@@ -654,7 +645,7 @@ class DOMService:
 		page_info = f"tab '{current_page.url}'"
 
 		print(f'Time taken to serialize DOM tree for {page_info}: {end - start:.2f} seconds')
-		print(f'🎯 Detected {len(selector_map)} interactive elements in {page_info} (using {serialization_method})')
+		print(f'🎯 Detected {len(selector_map)} interactive elements in {page_info}')
 
 		return serialized, selector_map
 

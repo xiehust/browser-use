@@ -215,21 +215,8 @@ async def extract_interactive_elements_from_service(
 		print(f'   • Score Threshold: {score_threshold} points (elements below this will be excluded)')
 		print('   • Logging: Enhanced with reasoning tracking (reduced noise)')
 
-		# **ENHANCED: Set flag to include ALL AX elements when score threshold is 0**
-		if score_threshold == 0:
-			print('   🎯 SPECIAL MODE: Score threshold 0 - including ALL AX tree elements!')
-			# Pass flag through the DOM service call instead of trying to set it on serializer
-			print('   ✅ Will use include_all_ax_elements=True in DOM service call')
-		else:
-			# Make sure flag is not set for normal operation
-			print('   📊 Normal filtering mode - selective element detection')
-
 		# Use the main DOMTreeSerializer which is already highly optimized
-		# Pass the flag to include all AX elements when threshold = 0
-		include_all_ax = score_threshold == 0
-		serialized, selector_map = await dom_service.get_serialized_dom_tree(
-			use_enhanced_filtering=False, include_all_ax_elements=include_all_ax
-		)
+		serialized, selector_map = await dom_service.get_serialized_dom_tree()
 
 		interactive_elements = []
 		reasoning_summary = {
@@ -254,31 +241,19 @@ async def extract_interactive_elements_from_service(
 		for interactive_index, node in selector_map.items():
 			total_processed += 1
 
-			# **ENHANCED: For score threshold = 0, include ALL elements even without bounding boxes**
-			if score_threshold == 0:
-				# Include ALL elements when threshold=0, create fake bounding box if needed
-				if node.snapshot_node and hasattr(node.snapshot_node, 'bounding_box') and node.snapshot_node.bounding_box:
-					bbox = node.snapshot_node.bounding_box
-					if bbox.get('width', 0) <= 0 or bbox.get('height', 0) <= 0:
-						# Create fake bounding box for elements without valid dimensions
-						bbox = {'x': 0, 'y': 0, 'width': 10, 'height': 10}
-				else:
-					# Create fake bounding box for elements without snapshot or bounding box
-					bbox = {'x': 0, 'y': 0, 'width': 10, 'height': 10}
-			else:
-				# **NORMAL MODE: Only include elements with valid bounding boxes**
-				if not (node.snapshot_node and hasattr(node.snapshot_node, 'bounding_box') and node.snapshot_node.bounding_box):
-					continue
-				bbox = node.snapshot_node.bounding_box
-				# Only include elements with valid bounding boxes
-				if bbox.get('width', 0) <= 0 or bbox.get('height', 0) <= 0:
-					continue
+			# Only include elements with valid bounding boxes
+			if not (node.snapshot_node and hasattr(node.snapshot_node, 'bounding_box') and node.snapshot_node.bounding_box):
+				continue
+			bbox = node.snapshot_node.bounding_box
+			# Only include elements with valid bounding boxes
+			if bbox.get('width', 0) <= 0 or bbox.get('height', 0) <= 0:
+				continue
 
 			# Use ElementAnalysis from serializer for enhanced element analysis
 			reasoning = ElementAnalysis.analyze_element_interactivity(node)
 
-			# Apply score threshold filter (bypass for threshold=0 to include ALL AX elements)
-			if score_threshold == 0 or reasoning.score >= score_threshold:
+			# Apply score threshold filter
+			if reasoning.score >= score_threshold:
 				element = {
 					'x': bbox['x'],
 					'y': bbox['y'],
@@ -345,19 +320,8 @@ async def extract_interactive_elements_from_service(
 			else:
 				filtered_count += 1
 
-		# Now regenerate the serialized string using only the filtered elements
-		print(f'🎯 Regenerating serialized output with {len(filtered_selector_map)} filtered elements...')
-
-		# Use the DOM service to regenerate serialized output with filtered selector map
-		try:
-			# Create a filtered version of the serialized output
-			# We'll manually rebuild the serialized string using only the filtered elements
-			filtered_serialized = await regenerate_serialized_with_threshold(dom_service, filtered_selector_map, score_threshold)
-
-		except Exception as e:
-			print(f'⚠️ Could not regenerate filtered serialized output: {e}')
-			print('Using original serialized output (all elements)')
-			filtered_serialized = serialized
+		# Use the original serialized output - no need to regenerate
+		filtered_serialized = serialized
 
 		# Print detailed statistics
 		print('📊 SCORE-FILTERED EXTRACTION RESULTS:')
@@ -423,181 +387,6 @@ async def extract_interactive_elements_from_service(
 		print('Traceback:')
 		traceback.print_exc()
 		return [], '', {}
-
-
-async def regenerate_serialized_with_threshold(dom_service: DOMService, filtered_selector_map: dict, score_threshold: int) -> str:
-	"""Regenerate serialized DOM output using only elements above the score threshold."""
-	try:
-		print(f'🔄 Regenerating serialized output with score threshold {score_threshold}...')
-
-		# We need to create a new serialized representation using only the filtered elements
-		# This is a simplified approach - we'll build the string manually from the filtered elements
-
-		# Group elements by type for better organization
-		grouped_elements = {}
-
-		for idx, node in filtered_selector_map.items():
-			# Analyze the element again to get its reasoning
-			from browser_use.dom.serializer import ElementAnalysis
-
-			reasoning = ElementAnalysis.analyze_element_interactivity(node)
-
-			element_type = reasoning.element_type
-			confidence = reasoning.confidence
-			score = reasoning.score
-
-			# Create clean categories without technical confidence levels
-			if element_type in ['BUTTON', 'INPUT', 'SELECT', 'TEXTAREA']:
-				category = 'FORM ELEMENTS'
-			elif element_type in ['A']:
-				category = 'NAVIGATION'
-			else:
-				category = 'INTERACTIVE CONTENT'
-
-			if category not in grouped_elements:
-				grouped_elements[category] = []
-
-				# Create clean element description with comprehensive text extraction
-			attrs = node.attributes or {}
-
-			# Determine clean element type
-			if element_type == 'BUTTON':
-				clean_type = 'Button'
-			elif element_type == 'A':
-				clean_type = 'Link'
-			elif element_type in ['INPUT', 'TEXTAREA']:
-				clean_type = 'Input'
-			elif element_type == 'SELECT':
-				clean_type = 'Dropdown'
-			else:
-				clean_type = element_type.title()
-
-			element_desc = f'[{idx}] {clean_type}'
-
-			# EXTRACT TEXT CONTENT USING PROPER DOM NODE METHODS
-			meaningful_text = ''
-
-			# Method 1: Try visible text from children (most comprehensive)
-			if hasattr(node, 'children_nodes') and node.children_nodes:
-				text_parts = []
-				for child in node.children_nodes:
-					if hasattr(child, 'node_value') and child.node_value:
-						child_text = child.node_value.strip()
-						if child_text and len(child_text) > 1:
-							text_parts.append(child_text)
-				if text_parts:
-					combined_text = ' '.join(text_parts).strip()
-					# Clean up whitespace
-					import re
-
-					meaningful_text = re.sub(r'\s+', ' ', combined_text)[:80]
-
-			# Method 2: Try AX node text (accessibility tree)
-			if not meaningful_text and hasattr(node, 'ax_node') and node.ax_node:
-				if hasattr(node.ax_node, 'name') and node.ax_node.name:
-					meaningful_text = node.ax_node.name.strip()[:80]
-
-			# Method 3: Try snapshot node text content
-			if not meaningful_text and hasattr(node, 'snapshot_node') and node.snapshot_node:
-				snapshot = node.snapshot_node
-				for text_attr in ['text_content', 'inner_text']:
-					if hasattr(snapshot, text_attr):
-						text_val = getattr(snapshot, text_attr)
-						if text_val and len(text_val.strip()) > 1:
-							meaningful_text = text_val.strip()[:80]
-							break
-
-			# Method 4: Extract from attributes with priority
-			if not meaningful_text:
-				# Priority order for attribute text extraction
-				text_attrs = [
-					('aria-label', ''),
-					('title', 'title: '),
-					('placeholder', 'placeholder: '),
-					('value', ''),
-					('alt', 'alt: '),
-				]
-
-				for attr_name, prefix in text_attrs:
-					if attrs.get(attr_name):
-						attr_text = attrs[attr_name].strip()
-						if attr_text and len(attr_text) > 1:
-							meaningful_text = f'{prefix}{attr_text}'[:80]
-							break
-
-			# Add the meaningful text if we found any
-			if meaningful_text:
-				element_desc += f' "{meaningful_text}"'
-
-			# Add href information for links
-			if element_type == 'A' and attrs.get('href'):
-				href = attrs['href']
-				if href.startswith('#'):
-					element_desc += f' (jumps to: {href[1:20]})'
-				elif href.startswith('mailto:'):
-					element_desc += f' (email: {href[7:30]})'
-				elif href.startswith('tel:'):
-					element_desc += f' (phone: {href[4:20]})'
-				elif len(href) > 1 and not href.startswith('javascript:'):
-					if len(href) > 40:
-						element_desc += f' (goes to: {href[:40]}...)'
-					else:
-						element_desc += f' (goes to: {href})'
-
-			# Add role information if available and meaningful
-			if attrs.get('role'):
-				role = attrs['role'].strip()
-				if role and role not in ['generic', 'presentation']:
-					element_desc += f' role: {role}'
-
-			# 9. State information for form elements
-			state_info = []
-			if 'checked' in attrs:
-				state_info.append('checked')
-			if 'disabled' in attrs:
-				state_info.append('disabled')
-			if 'required' in attrs:
-				state_info.append('required')
-			if 'selected' in attrs:
-				state_info.append('selected')
-			if 'readonly' in attrs:
-				state_info.append('readonly')
-
-			if state_info:
-				element_desc += f' ({", ".join(state_info)})'
-
-			grouped_elements[category].append(element_desc)
-
-		# Build the clean serialized string
-		serialized_parts = []
-
-		for category, elements in grouped_elements.items():
-			if elements:
-				serialized_parts.append(f'{category}:')
-				for element in elements:
-					serialized_parts.append(f'  {element}')
-				serialized_parts.append('')  # Empty line between categories
-
-		# Remove trailing empty line
-		if serialized_parts and serialized_parts[-1] == '':
-			serialized_parts.pop()
-
-		filtered_serialized = '\n'.join(serialized_parts)
-
-		print(f'✅ Generated filtered serialized output: {len(filtered_serialized)} characters')
-		print(f'📊 Categories: {len(grouped_elements)}, Total elements: {len(filtered_selector_map)}')
-
-		return filtered_serialized
-
-	except Exception as e:
-		print(f'❌ Error regenerating serialized output: {e}')
-		# Fallback to simple representation
-		fallback = f'FILTERED ELEMENTS ({len(filtered_selector_map)}): ' + ', '.join(
-			[f'[{idx}] {node.node_name}' for idx, node in list(filtered_selector_map.items())[:10]]
-		)
-		if len(filtered_selector_map) > 10:
-			fallback += f' ... and {len(filtered_selector_map) - 10} more'
-		return fallback
 
 
 async def inject_highlighting_script(browser_session: BrowserSession, interactive_elements: list[dict]) -> None:
@@ -2636,7 +2425,7 @@ async def inject_highlighting_script_safe(browser_session: BrowserSession, inter
 			# Get serialized data from the most recent extraction
 			page = await browser_session.get_current_page()
 			dom_service = DOMService(browser_session)
-			current_serialized, _ = await dom_service.get_serialized_dom_tree(use_enhanced_filtering=False)
+			current_serialized, _ = await dom_service.get_serialized_dom_tree()
 			serialized_json = json.dumps(current_serialized)
 		except Exception as e:
 			print(f'⚠️ Could not get current serialized data: {e}')
