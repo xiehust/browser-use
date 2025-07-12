@@ -363,11 +363,11 @@ class ElementAnalysis:
 				category = 'event_driven'
 				evidence.append('TIER 3: Event listeners detected (+80)')
 
-		# **TIER 4: MEDIUM-HIGH PRIORITY (60-79 points) - ARIA roles and interactive cursors**
+		# **TIER 4: MEDIUM-HIGH PRIORITY (60-100 points) - ARIA roles and interactive cursors**
 		elif indicators['has_role'] and indicators['role_value']:
 			role = indicators['role_value']
 			interactive_roles = {
-				'button': 78,  # BOOSTED from 65 to 78
+				'button': 100,  # BOOSTED to 100 per user request
 				'link': 78,  # BOOSTED from 65 to 78
 				'menuitem': 72,  # BOOSTED from 60 to 72
 				'tab': 72,  # BOOSTED from 60 to 72
@@ -387,9 +387,13 @@ class ElementAnalysis:
 				evidence.append(f'TIER 4: ARIA role: {role} (+{max_score})')
 
 		elif indicators['has_cursor'] and indicators['cursor_score'] >= 50:
-			max_score = min(
-				78, indicators['cursor_score'] + 15
-			)  # BOOSTED from min(65, cursor_score) to min(78, cursor_score + 15)
+			# Special handling for pointer cursor to give it 100 points
+			if indicators['cursor_type'] == 'pointer':
+				max_score = 100  # BOOSTED to 100 per user request
+			else:
+				max_score = min(
+					78, indicators['cursor_score'] + 15
+				)  # BOOSTED from min(65, cursor_score) to min(78, cursor_score + 15)
 			primary_reason = 'interactive_cursor'
 			category = f'cursor_{indicators["cursor_type"].replace("-", "_")}'
 			evidence.append(f'TIER 4: Interactive cursor: {indicators["cursor_type"]} (+{max_score})')
@@ -550,8 +554,8 @@ class ElementAnalysis:
 		"""Detect ANY cursor styling that indicates interactivity and return cursor type with score."""
 		# Define all interactive cursor styles with their scores
 		interactive_cursors = {
-			# Highest priority cursors (90+ points)
-			'pointer': 85,
+			# Highest priority cursors (100+ points)
+			'pointer': 100,  # BOOSTED to 100 per user request
 			'hand': 85,  # Legacy IE cursor for clickable elements
 			# High priority cursors (70+ points)
 			'grab': 75,  # For draggable elements
