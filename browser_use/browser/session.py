@@ -2017,8 +2017,8 @@ class BrowserSession(BaseModel):
 		await page.wait_for_selector(selector, state='visible', timeout=timeout)
 
 	@observe_debug(name='inject_highlights', ignore_output=True, ignore_input=True)
-	@require_initialization
 	@time_execution_async('--inject_highlights')
+	@require_healthy_browser(usable_page=True, reopen_page=True)
 	@retry(timeout=10, retries=0)
 	async def inject_highlights(self, dom_service: DomService, selector_map: DOMSelectorMap):
 		"""Inject highlights into the page."""
