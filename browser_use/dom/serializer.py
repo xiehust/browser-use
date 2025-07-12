@@ -3,7 +3,7 @@
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from cdp_use.cdp.accessibility.types import AXPropertyName
 
@@ -135,151 +135,55 @@ class ElementAnalysis:
 		# **TIER 1: HIGHEST PRIORITY (90-100 points) - Core interactive elements**
 		if element_name in ['INPUT', 'BUTTON', 'SELECT', 'TEXTAREA']:
 			element_category = 'form_control'
-			score += 90  # INCREASED from 70
+			score += 120  # BOOSTED from 90 to 120
 			evidence.append(f'HIGH PRIORITY: Core form element: {element_name}')
 
 			if attributes.get('type'):
 				input_type = attributes['type'].lower()
 				evidence.append(f'Input type: {input_type}')
 				if input_type in ['submit', 'button', 'reset']:
-					score += 10  # Total: 100 points
+					score += 15  # BOOSTED from 10 to 15, Total: 135 points
 				elif input_type in ['text', 'email', 'password', 'search', 'tel', 'url']:
-					score += 8  # Total: 98 points
+					score += 12  # BOOSTED from 8 to 12, Total: 132 points
 				elif input_type in ['checkbox', 'radio']:
-					score += 6  # Total: 96 points
+					score += 10  # BOOSTED from 6 to 10, Total: 130 points
 
 			# Don't exclude disabled elements, just score them lower
 			if attributes.get('disabled') == 'true':
-				score = max(25, score - 40)
+				score = max(40, score - 50)  # BOOSTED minimum from 25 to 40
 				warnings.append('Element is disabled but still detectable')
 
-		# **TIER 2: VERY HIGH PRIORITY (Variable points) - ANY CURSOR STYLING**
-		# Check for cursor styling first before other elements
-		has_cursor, cursor_type, cursor_score = cls._has_any_interactive_cursor(node, computed_styles_info)
-		if has_cursor and element_category == 'unknown':
-			element_category = f'cursor_{cursor_type.replace("-", "_")}'
-			score += cursor_score
-			evidence.append(f'CURSOR DETECTED: Element has cursor: {cursor_type} (+{cursor_score} points)')
+		# **COLLECT ALL INTERACTIVE INDICATORS FIRST**
+		interactive_indicators = cls._collect_all_interactive_indicators(
+			node, attributes, computed_styles_info, accessibility_info, event_listeners, button_indicators
+		)
 
-			# Additional boost for meaningful elements with interactive cursors
-			if element_name in ['DIV', 'SPAN', 'A', 'LI', 'TD', 'TH', 'SECTION', 'ARTICLE']:
-				meaningful_boost = min(15, cursor_score // 4)  # Scale boost based on cursor score
-				score += meaningful_boost
-				evidence.append(f'Meaningful element with {cursor_type} cursor (+{meaningful_boost})')
+		# **ASSIGN SINGLE SCORE BASED ON STRONGEST INDICATOR**
+		primary_score, primary_reason_found, category_found = cls._calculate_primary_interactive_score(
+			element_name, attributes, interactive_indicators, evidence
+		)
 
-			# Extra boost for highly interactive cursors on any element
-			if cursor_score >= 70:  # For grab, move, copy, etc.
-				score += 10
-				evidence.append(f'High-interaction cursor type: {cursor_type} (+10)')
-			elif cursor_score >= 50:  # For crosshair, zoom, etc.
-				score += 5
-				evidence.append(f'Medium-interaction cursor type: {cursor_type} (+5)')
+		score += primary_score
+		if element_category == 'unknown':
+			element_category = category_found
 
-		# **TIER 3: HIGH PRIORITY (70-79 points) - Links and strong event indicators**
-		if element_name == 'A':
-			element_category = 'link'
-			score += 70  # INCREASED from 60
-			if attributes.get('href'):
-				href = attributes['href']
-				score += 10  # Total: 80 points
-				evidence.append(f'HIGH PRIORITY: Link with href: {href[:50]}...' if len(href) > 50 else f'Link with href: {href}')
-
-				# Analyze href quality
-				if href.startswith(('http://', 'https://')):
-					score += 5  # Total: 85 points
-					evidence.append('External link')
-				elif href.startswith('/'):
-					score += 4  # Total: 84 points
-					evidence.append('Internal absolute link')
-			else:
-				score += 8  # Total: 78 points
-				evidence.append('Link element without href (likely interactive)')
-
-		# **ENHANCED EVENT LISTENER DETECTION** - TIER 2/3 priority
-		elif event_listeners:
-			element_category = 'event_driven'
-			listener_score = cls._score_event_listeners(event_listeners, evidence)
-			score += listener_score
-			if listener_score >= 70:
-				evidence.append('VERY HIGH PRIORITY: Strong event listeners detected')
-			elif listener_score >= 50:
-				evidence.append('HIGH PRIORITY: Event listeners detected')
-
-		# **ENHANCED ONCLICK DETECTION** - TIER 3 priority
-		elif 'onclick' in attributes:
-			element_category = 'onclick_handler'
-			score += 75  # INCREASED from 45
-			evidence.append('HIGH PRIORITY: Has onclick event handler')
-
-		# **TIER 4: MEDIUM-HIGH PRIORITY (50-69 points) - ARIA roles and containers**
-		elif attributes.get('role'):
-			if element_category == 'unknown':
-				element_category = 'aria_role'
-			role = attributes['role'].lower()
-			interactive_roles = {
-				'button': 65,
-				'link': 65,
-				'menuitem': 60,
-				'tab': 60,
-				'option': 55,
-				'checkbox': 55,
-				'radio': 55,
-				'switch': 55,
-				'slider': 50,
-				'spinbutton': 50,
-				'combobox': 50,
-				'textbox': 50,
-			}
-
-			if role in interactive_roles:
-				role_score = interactive_roles[role]
-				score += role_score
-				evidence.append(f'MEDIUM-HIGH PRIORITY: ARIA role: {role} (+{role_score})')
-
-		# **ENHANCED BUTTON DETECTION IN CONTAINERS** - TIER 4-5 priority
-		elif element_name in ['DIV', 'SPAN', 'LI', 'TD', 'TH', 'SECTION', 'ARTICLE']:
-			if element_category == 'unknown':
-				element_category = 'container'
-
-			container_score = cls._analyze_container_interactivity(
-				node, attributes, button_indicators, computed_styles_info, evidence
-			)
-			score += container_score
-
-		# **ENHANCED POSITIONING AND VISIBILITY ANALYSIS**
+		# **ENHANCED POSITIONING AND VISIBILITY ANALYSIS** - Only add minor boosts here
 		positioning_boost = cls._analyze_positioning_and_visibility(
 			node, positioning_info, computed_styles_info, evidence, warnings
 		)
 		score += positioning_boost
 
-		# **ENHANCED TABINDEX ANALYSIS**
-		if 'tabindex' in attributes:
-			try:
-				tabindex = int(attributes['tabindex'])
-				if tabindex >= 0:
-					score += 25  # INCREASED from 20
-					evidence.append(f'ENHANCED: Focusable (tabindex: {tabindex}) (+25)')
-				elif tabindex == -1:
-					score += 15
-					evidence.append('Programmatically focusable (tabindex: -1) (+15)')
-			except ValueError:
-				warnings.append(f'Invalid tabindex: {attributes["tabindex"]}')
-
-		# **ACCESSIBILITY TREE ENHANCEMENTS**
-		accessibility_boost = cls._analyze_accessibility_properties(node, accessibility_info, evidence)
-		score += accessibility_boost
-
-		# **DETERMINE FINAL CONFIDENCE** - Adjusted thresholds for new scoring
-		if score >= 85:
+		# **DETERMINE FINAL CONFIDENCE** - Adjusted thresholds for boosted scoring
+		if score >= 110:  # BOOSTED from 85 to 110
 			confidence = 'DEFINITE'
 			confidence_description = 'Very likely interactive (high confidence)'
-		elif score >= 65:
+		elif score >= 80:  # BOOSTED from 65 to 80
 			confidence = 'LIKELY'
 			confidence_description = 'Probably interactive (good confidence)'
-		elif score >= 40:
+		elif score >= 50:  # BOOSTED from 40 to 50
 			confidence = 'POSSIBLE'
 			confidence_description = 'Possibly interactive (moderate confidence)'
-		elif score >= 20:
+		elif score >= 25:  # BOOSTED from 20 to 25
 			confidence = 'QUESTIONABLE'
 			confidence_description = 'Questionable interactivity (low confidence)'
 		else:
@@ -341,6 +245,213 @@ class ElementAnalysis:
 			accessibility_info=accessibility_info,
 			positioning_info=positioning_info,
 		)
+
+	@classmethod
+	def _collect_all_interactive_indicators(
+		cls,
+		node: EnhancedDOMTreeNode,
+		attributes: Dict[str, str],
+		computed_styles_info: Dict[str, str],
+		accessibility_info: Dict[str, str],
+		event_listeners: List[str],
+		button_indicators: List[str],
+	) -> Dict[str, Any]:
+		"""Collect all interactive indicators without scoring to avoid double-counting."""
+		indicators = {}
+
+		# Check cursor styling
+		has_cursor, cursor_type, cursor_score = cls._has_any_interactive_cursor(node, computed_styles_info)
+		indicators['has_cursor'] = has_cursor
+		indicators['cursor_type'] = cursor_type
+		indicators['cursor_score'] = cursor_score
+
+		# Check accessibility tree focusable
+		indicators['is_focusable'] = accessibility_info.get('focusable') == 'true'
+
+		# Check tabindex
+		indicators['has_tabindex'] = 'tabindex' in attributes
+		indicators['tabindex_value'] = None
+		if indicators['has_tabindex']:
+			try:
+				indicators['tabindex_value'] = int(attributes['tabindex'])
+			except ValueError:
+				pass
+
+		# Check event listeners
+		indicators['has_event_listeners'] = len(event_listeners) > 0
+		indicators['event_listeners'] = event_listeners
+
+		# Check onclick
+		indicators['has_onclick'] = 'onclick' in attributes
+
+		# Check href
+		indicators['has_href'] = 'href' in attributes
+		indicators['href_value'] = attributes.get('href', '')
+
+		# Check role
+		indicators['has_role'] = 'role' in attributes
+		indicators['role_value'] = attributes.get('role', '').lower()
+
+		# Check button-like classes
+		indicators['has_button_classes'] = False
+		if attributes.get('class'):
+			classes = attributes['class'].lower()
+			indicators['has_button_classes'] = any(indicator in classes for indicator in button_indicators)
+
+		# Check AX role
+		indicators['ax_role'] = accessibility_info.get('role', '').lower()
+
+		return indicators
+
+	@classmethod
+	def _calculate_primary_interactive_score(
+		cls, element_name: str, attributes: Dict[str, str], indicators: Dict[str, Any], evidence: List[str]
+	) -> tuple[int, str, str]:
+		"""Calculate a single primary score based on the strongest interactive indicator."""
+		max_score = 0
+		primary_reason = 'unknown'
+		category = 'unknown'
+
+		# **TIER 1: HIGHEST PRIORITY (120-140 points) - Core form elements**
+		if element_name in ['INPUT', 'BUTTON', 'SELECT', 'TEXTAREA']:
+			max_score = 120  # BOOSTED from 90 to 120
+			primary_reason = 'core_form_element'
+			category = 'form_control'
+			evidence.append(f'TIER 1: Core form element: {element_name} (+120)')
+
+			# Additional scoring for input types
+			if attributes.get('type'):
+				input_type = attributes['type'].lower()
+				if input_type in ['submit', 'button', 'reset']:
+					max_score = 135  # BOOSTED from 100 to 135
+					evidence.append(f'Enhanced form element: {input_type} (+15)')
+
+		# **TIER 2: VERY HIGH PRIORITY (100-115 points) - Focusable elements**
+		elif indicators['is_focusable']:
+			max_score = 110  # BOOSTED from 85 to 110
+			primary_reason = 'ax_focusable'
+			category = 'focusable'
+			evidence.append('TIER 2: Accessibility tree marked as focusable (+110)')
+
+		# **TIER 3: HIGH PRIORITY (85-99 points) - Links and explicit handlers**
+		elif element_name == 'A':
+			max_score = 85  # BOOSTED from 70 to 85
+			primary_reason = 'link_element'
+			category = 'link'
+			if indicators['has_href']:
+				max_score = 95  # BOOSTED from 80 to 95
+				evidence.append('TIER 3: Link with href (+95)')
+			else:
+				evidence.append('TIER 3: Link element without href (+85)')
+
+		elif indicators['has_onclick']:
+			max_score = 90  # BOOSTED from 75 to 90
+			primary_reason = 'onclick_handler'
+			category = 'onclick_handler'
+			evidence.append('TIER 3: Has onclick event handler (+90)')
+
+		elif indicators['has_event_listeners']:
+			listener_score = cls._score_event_listeners_simple(indicators['event_listeners'])
+			if listener_score >= 70:
+				max_score = 90  # BOOSTED from 75 to 90
+				primary_reason = 'strong_event_listeners'
+				category = 'event_driven'
+				evidence.append('TIER 3: Strong event listeners detected (+90)')
+			elif listener_score >= 50:
+				max_score = 80  # BOOSTED from 65 to 80
+				primary_reason = 'event_listeners'
+				category = 'event_driven'
+				evidence.append('TIER 3: Event listeners detected (+80)')
+
+		# **TIER 4: MEDIUM-HIGH PRIORITY (60-79 points) - ARIA roles and interactive cursors**
+		elif indicators['has_role'] and indicators['role_value']:
+			role = indicators['role_value']
+			interactive_roles = {
+				'button': 78,  # BOOSTED from 65 to 78
+				'link': 78,  # BOOSTED from 65 to 78
+				'menuitem': 72,  # BOOSTED from 60 to 72
+				'tab': 72,  # BOOSTED from 60 to 72
+				'option': 67,  # BOOSTED from 55 to 67
+				'checkbox': 67,  # BOOSTED from 55 to 67
+				'radio': 67,  # BOOSTED from 55 to 67
+				'switch': 67,  # BOOSTED from 55 to 67
+				'slider': 62,  # BOOSTED from 50 to 62
+				'spinbutton': 62,  # BOOSTED from 50 to 62
+				'combobox': 62,  # BOOSTED from 50 to 62
+				'textbox': 62,  # BOOSTED from 50 to 62
+			}
+			if role in interactive_roles:
+				max_score = interactive_roles[role]
+				primary_reason = 'aria_role'
+				category = 'aria_role'
+				evidence.append(f'TIER 4: ARIA role: {role} (+{max_score})')
+
+		elif indicators['has_cursor'] and indicators['cursor_score'] >= 50:
+			max_score = min(
+				78, indicators['cursor_score'] + 15
+			)  # BOOSTED from min(65, cursor_score) to min(78, cursor_score + 15)
+			primary_reason = 'interactive_cursor'
+			category = f'cursor_{indicators["cursor_type"].replace("-", "_")}'
+			evidence.append(f'TIER 4: Interactive cursor: {indicators["cursor_type"]} (+{max_score})')
+
+		# **TIER 5: MEDIUM PRIORITY (40-59 points) - Tabindex and weaker cursors**
+		elif indicators['has_tabindex'] and indicators['tabindex_value'] is not None:
+			if indicators['tabindex_value'] >= 0:
+				max_score = 55  # BOOSTED from 45 to 55
+				primary_reason = 'positive_tabindex'
+				category = 'focusable'
+				evidence.append(f'TIER 5: Focusable (tabindex: {indicators["tabindex_value"]}) (+55)')
+			elif indicators['tabindex_value'] == -1:
+				max_score = 45  # BOOSTED from 35 to 45
+				primary_reason = 'programmatic_tabindex'
+				category = 'focusable'
+				evidence.append('TIER 5: Programmatically focusable (tabindex: -1) (+45)')
+
+		elif indicators['has_cursor'] and indicators['cursor_score'] >= 30:
+			max_score = min(
+				55, indicators['cursor_score'] + 15
+			)  # BOOSTED from min(45, cursor_score) to min(55, cursor_score + 15)
+			primary_reason = 'weak_cursor'
+			category = f'cursor_{indicators["cursor_type"].replace("-", "_")}'
+			evidence.append(f'TIER 5: Weak interactive cursor: {indicators["cursor_type"]} (+{max_score})')
+
+		# **TIER 6: LOW PRIORITY (15-39 points) - Container elements with hints**
+		elif element_name in ['DIV', 'SPAN', 'LI', 'TD', 'TH', 'SECTION', 'ARTICLE']:
+			container_score = 15  # BOOSTED from 10 to 15
+
+			# Check for button-like classes
+			if indicators['has_button_classes']:
+				container_score += 25  # BOOSTED from 20 to 25
+				evidence.append('Container with button-like classes (+25)')
+
+			# Check for any cursor hint
+			if indicators['has_cursor']:
+				container_score += 15  # BOOSTED from 10 to 15
+				evidence.append(f'Container with cursor hint: {indicators["cursor_type"]} (+15)')
+
+			if container_score > 15:
+				max_score = container_score
+				primary_reason = 'interactive_container'
+				category = 'container'
+
+		return max_score, primary_reason, category
+
+	@classmethod
+	def _score_event_listeners_simple(cls, event_listeners: List[str]) -> int:
+		"""Simple scoring for event listeners without adding to evidence."""
+		score = 0
+		high_value_events = ['onclick', 'onmousedown', 'onkeydown', '@click', '(click)']
+		medium_value_events = ['onchange', 'oninput', 'onsubmit', 'onfocus', 'onblur']
+
+		for listener in event_listeners:
+			if any(high_event in listener.lower() for high_event in high_value_events):
+				score += 70
+			elif any(med_event in listener.lower() for med_event in medium_value_events):
+				score += 40
+			else:
+				score += 20
+
+		return min(score, 80)  # Cap at 80 points
 
 	@classmethod
 	def _extract_enhanced_dom_data(
@@ -632,8 +743,8 @@ class ElementAnalysis:
 		score_boost = 0
 
 		if accessibility_info.get('focusable') == 'true':
-			score_boost += 30  # INCREASED from implied 20
-			evidence.append('Accessibility tree marked as focusable (+30)')
+			score_boost += 70  # MUCH HIGHER - focusable elements are definitely interactive
+			evidence.append('Accessibility tree marked as focusable (+70)')
 
 		if accessibility_info.get('role'):
 			role = accessibility_info['role'].lower()
@@ -1213,6 +1324,7 @@ class DOMTreeSerializer:
 	_compressed_elements: List[CompressedElement] = field(default_factory=list)
 	_semantic_groups: List[SemanticGroup] = field(default_factory=list)
 	metrics: PerformanceMetrics = field(default_factory=PerformanceMetrics)
+	_include_all_ax_elements: bool = False  # NEW: Flag to include ALL AX elements when threshold=0
 
 	def __post_init__(self):
 		# Initialize performance metrics
@@ -1259,7 +1371,11 @@ class DOMTreeSerializer:
 		filter_start = time.time()
 
 		# **STEP 2: Fast conflict resolution**
-		candidates = self.detect_and_resolve_nested_conflicts(candidates)
+		# Skip conflict resolution when including all AX elements (threshold = 0)
+		if not getattr(self, '_include_all_ax_elements', False):
+			candidates = self.detect_and_resolve_nested_conflicts(candidates)
+		else:
+			print(f'🎯 SKIPPING CONFLICT RESOLUTION: Including all {len(candidates)} AX elements')
 
 		# **STEP 3: Fast viewport filtering and deduplication**
 		filtered_nodes = self._filter_by_viewport_and_deduplicate_fast(candidates)
@@ -1524,6 +1640,30 @@ class DOMTreeSerializer:
 
 			self.metrics.total_dom_nodes += 1
 
+			# **ENHANCED: Check if we should include ALL AX elements (when threshold = 0)**
+			should_include_all_ax = getattr(self, '_include_all_ax_elements', False)
+
+			if should_include_all_ax:
+				# **SCORE THRESHOLD = 0 MODE: Include ALL elements with AX nodes, bypass ALL filtering**
+				if current_node.ax_node:
+					# Include EVERY element that has an AX node, no matter what
+					candidates.append((current_node, 'ax_all'))
+					print(
+						f'🎯 INCLUDED AX ELEMENT: {current_node.node_name} (AX role: {current_node.ax_node.role if current_node.ax_node.role else "no role"})'
+					)
+
+				# Also include basic interactive elements even without AX nodes
+				elif current_node.node_name.upper() in ['INPUT', 'BUTTON', 'SELECT', 'TEXTAREA', 'A']:
+					candidates.append((current_node, 'dom_basic'))
+					print(f'🎯 INCLUDED BASIC ELEMENT: {current_node.node_name}')
+
+				# In this mode, ALWAYS traverse children regardless of element type
+				if hasattr(current_node, 'children_nodes') and current_node.children_nodes:
+					for child in current_node.children_nodes:
+						collect_recursive_fast(child, depth + 1)
+				return  # Exit early, don't do normal processing
+
+			# **NORMAL MODE: Apply structural filtering**
 			# Check if this is a structural element but still process its children for container elements
 			is_structural = self._is_structural_element_fast(current_node)
 			if is_structural:
@@ -1536,16 +1676,17 @@ class DOMTreeSerializer:
 					pass
 				else:
 					# For other structural elements, skip completely
+					if hasattr(current_node, 'children_nodes') and current_node.children_nodes:
+						for child in current_node.children_nodes:
+							collect_recursive_fast(child, depth + 1)
 					return
 
 			# Only check for interactivity if not structural
 			if not is_structural:
-				# **FAST AX TREE CHECK**
-				is_ax_interactive = self._is_ax_interactive_fast(current_node)
+				# Normal mode: AX first, then DOM fallback
+				is_ax_interactive = self._is_ax_interactive_fast(current_node, include_all=False)
 				if is_ax_interactive:
 					candidates.append((current_node, 'ax'))
-
-				# **FAST DOM/SNAPSHOT CHECK** - Only if not already AX interactive
 				elif self._is_dom_interactive_fast(current_node):
 					candidates.append((current_node, 'dom'))
 
@@ -1555,7 +1696,153 @@ class DOMTreeSerializer:
 					collect_recursive_fast(child, depth + 1)
 
 		collect_recursive_fast(node)
+
+		if getattr(self, '_include_all_ax_elements', False):
+			print(f'🎯 TOTAL AX ELEMENTS COLLECTED: {len([c for c in candidates if len(c) >= 2 and c[1] == "ax_all"])}')
+			print(f'🎯 TOTAL BASIC ELEMENTS COLLECTED: {len([c for c in candidates if len(c) >= 2 and c[1] == "dom_basic"])}')
+
 		return candidates
+
+	def _is_dom_interactive_comprehensive(self, node: EnhancedDOMTreeNode) -> bool:
+		"""Comprehensive DOM detection that includes ALL potentially interactive elements (for score=0)."""
+		if node.node_type != NodeType.ELEMENT_NODE:
+			return False
+
+		node_name = node.node_name.upper()
+
+		# **TIER 1: Always interactive elements**
+		if node_name in {'INPUT', 'BUTTON', 'SELECT', 'TEXTAREA', 'OPTION', 'A'}:
+			return True
+
+		# **TIER 2: Elements with explicit interaction indicators**
+		if node.attributes:
+			# Event handlers
+			interactive_attrs = {
+				'onclick',
+				'onmousedown',
+				'onkeydown',
+				'onchange',
+				'oninput',
+				'onsubmit',
+				'onfocus',
+				'onblur',
+				'onhover',
+				'data-action',
+				'data-toggle',
+				'jsaction',
+				'ng-click',
+				'@click',
+				'v-on:',
+				'(click)',
+			}
+			if any(attr in node.attributes for attr in interactive_attrs):
+				return True
+
+			# ARIA roles (comprehensive list)
+			role = node.attributes.get('role', '').lower()
+			if role in {
+				'button',
+				'link',
+				'menuitem',
+				'tab',
+				'option',
+				'checkbox',
+				'radio',
+				'slider',
+				'spinbutton',
+				'switch',
+				'textbox',
+				'combobox',
+				'listbox',
+				'tree',
+				'grid',
+				'gridcell',
+				'searchbox',
+				'menuitemradio',
+				'menuitemcheckbox',
+				'application',
+				'dialog',
+				'alertdialog',
+				'banner',
+				'navigation',
+				'main',
+				'complementary',
+				'contentinfo',
+				'toolbar',
+				'tooltip',
+			}:
+				return True
+
+			# Positive tabindex
+			tabindex = node.attributes.get('tabindex')
+			if tabindex and tabindex.lstrip('-').isdigit() and int(tabindex) >= 0:
+				return True
+
+		# **TIER 3: AX tree elements (if present)**
+		if node.ax_node:
+			# Any element with AX role
+			if node.ax_node.role:
+				return True
+
+			# Any element with AX properties
+			if node.ax_node.properties:
+				return True
+
+			# Any element with AX name (often interactive)
+			if node.ax_node.name:
+				return True
+
+		# **TIER 4: CSS-based interaction indicators**
+		if node.snapshot_node:
+			# Comprehensive cursor check
+			computed_styles_info = {}
+			if hasattr(node.snapshot_node, 'computed_styles'):
+				computed_styles_info = node.snapshot_node.computed_styles or {}
+
+			# Use our comprehensive cursor detection
+			has_cursor, _, _ = ElementAnalysis._has_any_interactive_cursor(node, computed_styles_info)
+			if has_cursor:
+				return True
+
+			# Clickable from snapshot
+			if getattr(node.snapshot_node, 'is_clickable', False):
+				return True
+
+		# **TIER 5: Container elements with meaningful attributes**
+		if node_name in {'DIV', 'SPAN', 'SECTION', 'ARTICLE', 'LI', 'TD', 'TH', 'NAV'}:
+			if node.attributes and len(node.attributes) > 0:
+				# Has any attributes beyond basic structural ones
+				meaningful_attrs = set(node.attributes.keys()) - {'class', 'id', 'style'}
+				if meaningful_attrs:
+					return True
+
+				# Has interactive-looking classes
+				classes = node.attributes.get('class', '').lower()
+				interactive_class_patterns = [
+					'btn',
+					'button',
+					'clickable',
+					'interactive',
+					'link',
+					'tab',
+					'menu',
+					'dropdown',
+					'toggle',
+					'accordion',
+					'modal',
+					'popup',
+					'trigger',
+					'control',
+					'widget',
+					'component',
+					'card',
+					'item',
+					'option',
+				]
+				if any(pattern in classes for pattern in interactive_class_patterns):
+					return True
+
+		return False
 
 	async def get_element_event_listeners_via_cdp(self, browser_session, node: EnhancedDOMTreeNode) -> List[str]:
 		"""Get actual event listeners attached to an element via CDP."""
@@ -1624,17 +1911,16 @@ class DOMTreeSerializer:
 			return listeners
 
 	def detect_and_resolve_nested_conflicts(self, candidates) -> List:
-		"""Detect and resolve nested conflicts where elements would trigger the same action."""
-		# For simple candidates (node, 'ax') or (node, 'dom'), just return them as-is
-		# Conflict resolution is designed for more complex analysis data
+		"""Detect and resolve nested conflicts where elements would trigger the same action or are spatially overlapping."""
+		# For simple candidates (node, 'ax') or (node, 'dom'), apply enhanced conflict resolution
 		if not candidates:
 			return candidates
 
 		# Check if we have simple candidates (from fast collection) vs analyzed candidates
 		first_candidate = candidates[0] if candidates else None
-		if not first_candidate or len(first_candidate) < 3 or first_candidate[1] in ['ax', 'dom']:
-			# These are simple candidates from fast collection, no conflict resolution needed
-			return candidates
+		if not first_candidate or len(first_candidate) < 3 or first_candidate[1] in ['ax', 'dom', 'ax_all', 'dom_basic']:
+			# Apply enhanced conflict resolution for simple candidates
+			return self._detect_and_resolve_same_action_conflicts_simple(candidates)
 
 		# Original conflict resolution logic for analyzed candidates with ElementAnalysis
 		analyses_map = {}
@@ -1651,7 +1937,7 @@ class DOMTreeSerializer:
 		if not analyses_map:
 			return candidates
 
-		# Detect conflicts
+		# Detect action-based conflicts
 		conflict_groups = {}
 
 		for node_id, analysis in analyses_map.items():
@@ -1663,10 +1949,16 @@ class DOMTreeSerializer:
 					conflict_groups[current_action] = []
 				conflict_groups[current_action].append((node_id, node, analysis))
 
+		# Detect spatial overlaps
+		spatial_groups = self._detect_spatial_overlaps(
+			[(node_id, node, analysis) for node_id, analysis in analyses_map.items() for node in [nodes_map[node_id]]]
+		)
+
 		# Resolve conflicts - prefer parent elements or highest scoring
 		resolved_candidates = []
 		processed_nodes = set()
 
+		# Handle action-based conflicts first
 		for action, group in conflict_groups.items():
 			if len(group) > 1:
 				# Multiple elements would trigger the same action
@@ -1686,6 +1978,28 @@ class DOMTreeSerializer:
 					resolved_candidates.append((node, 'enhanced', analysis))
 					processed_nodes.add(node_id)
 
+		# Handle spatial conflicts
+		for spatial_group in spatial_groups:
+			if len(spatial_group) > 1:
+				group_node_ids = [x[0] for x in spatial_group]
+				unprocessed_in_group = [x for x in spatial_group if x[0] not in processed_nodes]
+
+				if len(unprocessed_in_group) > 1:
+					# Sort by score to keep the best one
+					unprocessed_in_group.sort(key=lambda x: (-x[2].score, self._get_element_depth(x[1])))
+
+					# Keep the best one
+					best_node_id, best_node, best_analysis = unprocessed_in_group[0]
+					resolved_candidates.append((best_node, 'enhanced', best_analysis))
+					processed_nodes.add(best_node_id)
+
+					# Mark others as spatially conflicted
+					for node_id, node, analysis in unprocessed_in_group[1:]:
+						analysis.score = max(5, analysis.score - 30)
+						analysis.warnings.append('Spatially overlapping with higher-scoring element - score reduced')
+						resolved_candidates.append((node, 'enhanced', analysis))
+						processed_nodes.add(node_id)
+
 		# Add non-conflicting elements
 		for candidate_tuple in candidates:
 			if len(candidate_tuple) >= 3 and candidate_tuple[1] == 'enhanced':
@@ -1695,6 +2009,386 @@ class DOMTreeSerializer:
 					resolved_candidates.append(candidate_tuple)
 
 		return resolved_candidates
+
+	def _detect_and_resolve_same_action_conflicts_simple(self, candidates) -> List:
+		"""Enhanced conflict resolution for simple candidates that detects same-action conflicts and prioritizes largest elements."""
+		if not candidates:
+			return candidates
+
+		print(f'🔍 CONFLICT RESOLUTION: Processing {len(candidates)} candidates')
+
+		# First, detect same-action conflicts (much more important than spatial overlap)
+		action_groups = {}
+		processed_for_actions = set()
+
+		for i, candidate in enumerate(candidates):
+			if i in processed_for_actions:
+				continue
+
+			node = candidate[0]
+			action = self._get_element_action_simple(node)
+
+			if action:
+				if action not in action_groups:
+					action_groups[action] = []
+				action_groups[action].append((i, candidate, node))
+
+		# Resolve action-based conflicts by keeping the largest element and reducing scores of others
+		conflict_resolved_candidates = []
+		processed_indices = set()
+
+		for action, group in action_groups.items():
+			if len(group) > 1:
+				print(f'🔗 Same-action conflict detected: {action} ({len(group)} elements)')
+
+				# Sort by element size (largest first), then by element type priority
+				group.sort(key=lambda x: (-self._get_element_size(x[2]), self._get_element_priority(x[2])))
+
+				# Keep the largest/best element with full score
+				best_idx, best_candidate, best_node = group[0]
+				best_with_analysis = self._add_conflict_analysis(best_candidate, best_node, action, is_winner=True)
+				conflict_resolved_candidates.append(best_with_analysis)
+				processed_indices.add(best_idx)
+
+				print(f'    🏆 Selected best for "{action}": {best_node.node_name} (size: {self._get_element_size(best_node)})')
+
+				# Add other elements with reduced scores (so they appear when threshold=0)
+				for idx, candidate, node in group[1:]:
+					reduced_candidate = self._add_conflict_analysis(candidate, node, action, is_winner=False)
+					conflict_resolved_candidates.append(reduced_candidate)
+					processed_indices.add(idx)
+					print(f'      {idx + 1}. {node.node_name} (size: {self._get_element_size(node)})')
+
+				print(f'  🔗 Deduplicated {len(group)} → 1 for action: {action}')
+
+				# Show kept vs removed
+				print(f'    ✅ Kept: {best_node.node_name} (xpath: {best_node.x_path[:30]}...)')
+				for idx, candidate, node in group[1:]:
+					print(f'    ❌ Reduced score: {node.node_name} (xpath: {node.x_path[:30]}...)')
+
+		# Add non-conflicting elements as-is
+		for i, candidate in enumerate(candidates):
+			if i not in processed_indices:
+				# Still add conflict analysis with normal score
+				node = candidate[0]
+				analyzed_candidate = self._add_conflict_analysis(candidate, node, None, is_winner=True)
+				conflict_resolved_candidates.append(analyzed_candidate)
+
+		print(
+			f'✅ Action-based conflict resolution complete: {len(candidates)} → {len([c for c in conflict_resolved_candidates if not c[2].warnings])} (-{len(candidates) - len([c for c in conflict_resolved_candidates if not c[2].warnings])} reduced scores)'
+		)
+
+		# Then apply spatial deduplication to the remaining elements
+		return self._apply_spatial_deduplication_with_analysis(conflict_resolved_candidates)
+
+	def _get_element_action_simple(self, node: EnhancedDOMTreeNode) -> str | None:
+		"""Extract the action that an element would perform (simplified version for conflict detection)."""
+		if not node or not node.attributes:
+			return None
+
+		attrs = node.attributes
+
+		# Check various action indicators in priority order
+		if 'href' in attrs and attrs['href']:
+			href = attrs['href'].strip()
+			if href and href != '#':
+				return f'navigate:{href}'
+
+		if 'onclick' in attrs and attrs['onclick']:
+			# Normalize onclick content for comparison
+			onclick = attrs['onclick'].strip()
+			return f'onclick:{onclick[:50]}'  # Truncate for comparison
+
+		if 'data-action' in attrs and attrs['data-action']:
+			return f'data-action:{attrs["data-action"]}'
+
+		if 'jsaction' in attrs and attrs['jsaction']:
+			return f'jsaction:{attrs["jsaction"]}'
+
+		# Framework-specific actions
+		for attr in attrs:
+			if attr.lower() in ['@click', 'ng-click', '(click)', 'v-on:click']:
+				return f'framework:{attr}:{attrs[attr]}'
+
+		# Check for elements that would likely have the same spatial action
+		# (e.g., nested divs that all cover the same clickable area)
+		if node.snapshot_node and hasattr(node.snapshot_node, 'bounding_box'):
+			bbox = node.snapshot_node.bounding_box
+			if bbox:
+				x = int(bbox.get('x', 0))
+				y = int(bbox.get('y', 0))
+				w = int(bbox.get('width', 0))
+				h = int(bbox.get('height', 0))
+
+				# Create spatial action identifier for elements with similar classes or positions
+				classes = attrs.get('class', '').strip()
+				if classes:
+					# Group by class patterns for common UI components
+					class_tokens = classes.lower().split()
+					significant_classes = [
+						c
+						for c in class_tokens
+						if any(pattern in c for pattern in ['btn', 'button', 'card', 'item', 'cell', 'tile'])
+					]
+					if significant_classes:
+						return f'element_classes:{" ".join(significant_classes)}'
+
+				# Group by spatial location for generic containers
+				if node.node_name.upper() in ['DIV', 'SPAN', 'SECTION']:
+					return f'spatial:{node.node_name}:{x}:{y}:{w}:{h}'
+
+		return None
+
+	def _get_element_size(self, node: EnhancedDOMTreeNode) -> int:
+		"""Calculate element size (area) for prioritization."""
+		if not node.snapshot_node or not hasattr(node.snapshot_node, 'bounding_box'):
+			return 0
+
+		bbox = node.snapshot_node.bounding_box
+		if not bbox:
+			return 0
+
+		width = bbox.get('width', 0)
+		height = bbox.get('height', 0)
+		return int(width * height)
+
+	def _get_element_priority(self, node: EnhancedDOMTreeNode) -> int:
+		"""Get element type priority (lower number = higher priority)."""
+		element_type = node.node_name.upper()
+
+		# Priority order: prefer actual interactive elements over containers
+		priority_map = {
+			'BUTTON': 1,
+			'A': 2,
+			'INPUT': 3,
+			'SELECT': 4,
+			'TEXTAREA': 5,
+			'LABEL': 6,
+			'SPAN': 10,
+			'DIV': 11,
+			'SECTION': 12,
+			'ARTICLE': 13,
+		}
+
+		return priority_map.get(element_type, 15)
+
+	def _add_conflict_analysis(self, candidate: tuple, node: EnhancedDOMTreeNode, action: str | None, is_winner: bool) -> tuple:
+		"""Add ElementAnalysis to a simple candidate with appropriate scoring for conflict resolution."""
+		# Create a basic ElementAnalysis for the candidate
+		analysis = ElementAnalysis.analyze_element_interactivity(node)
+
+		if not is_winner and action:
+			# Reduce score for non-winning elements but keep them detectable at threshold 0
+			original_score = analysis.score
+			analysis.score = max(5, analysis.score - 40)  # Reduce significantly but keep above 0
+			analysis.warnings.append(
+				f'Same-action conflict with larger element (action: {action[:30]}) - score reduced from {original_score} to {analysis.score}'
+			)
+			analysis.context_info.append(f'Conflicting action: {action[:50]}')
+		elif is_winner and action:
+			# Winner gets a small boost and context info
+			analysis.score += 5
+			analysis.context_info.append(f'Preferred element for action: {action[:50]}')
+
+		# Return enhanced candidate tuple
+		return (node, 'enhanced', analysis)
+
+	def _apply_spatial_deduplication_with_analysis(self, analyzed_candidates) -> List:
+		"""Apply spatial deduplication to candidates that already have ElementAnalysis."""
+		if not analyzed_candidates:
+			return analyzed_candidates
+
+		# Group by spatial overlap
+		spatial_groups = []
+		processed = set()
+
+		for i, candidate_a in enumerate(analyzed_candidates):
+			if i in processed:
+				continue
+
+			node_a = candidate_a[0]
+			current_group = [candidate_a]
+			processed.add(i)
+
+			# Find spatially overlapping elements
+			for j, candidate_b in enumerate(analyzed_candidates[i + 1 :], i + 1):
+				if j in processed:
+					continue
+
+				node_b = candidate_b[0]
+				if self._elements_spatially_overlap(node_a, node_b):
+					current_group.append(candidate_b)
+					processed.add(j)
+
+			spatial_groups.append(current_group)
+
+		# Resolve spatial conflicts by keeping highest scoring element
+		final_candidates = []
+		for group in spatial_groups:
+			if len(group) == 1:
+				final_candidates.append(group[0])
+			else:
+				# Sort by analysis score (highest first), then by element size
+				group.sort(key=lambda x: (-x[2].score, -self._get_element_size(x[0])))
+
+				# Keep the best element
+				best_candidate = group[0]
+				final_candidates.append(best_candidate)
+
+				# Reduce scores of spatially overlapping elements but keep them
+				for candidate in group[1:]:
+					node, candidate_type, analysis = candidate
+					analysis.score = max(3, analysis.score - 25)
+					analysis.warnings.append('Spatially overlapping with higher-scoring element - score reduced')
+					final_candidates.append(candidate)
+
+		return final_candidates
+
+	def _apply_spatial_deduplication_simple(self, candidates) -> List:
+		"""Apply spatial deduplication for simple candidates."""
+		if not candidates:
+			return candidates
+
+		# Group candidates by spatial overlap
+		spatial_groups = []
+		processed = set()
+
+		for i, candidate_a in enumerate(candidates):
+			if i in processed:
+				continue
+
+			node_a = candidate_a[0]
+			current_group = [candidate_a]
+			processed.add(i)
+
+			# Find overlapping elements
+			for j, candidate_b in enumerate(candidates[i + 1 :], i + 1):
+				if j in processed:
+					continue
+
+				node_b = candidate_b[0]
+				if self._elements_spatially_overlap(node_a, node_b):
+					current_group.append(candidate_b)
+					processed.add(j)
+
+			spatial_groups.append(current_group)
+
+		# Keep the best element from each spatial group
+		deduplicated = []
+		for group in spatial_groups:
+			if len(group) == 1:
+				deduplicated.append(group[0])
+			else:
+				# Choose the best element based on element type preference
+				best = self._choose_best_spatial_candidate(group)
+				deduplicated.append(best)
+
+		return deduplicated
+
+	def _detect_spatial_overlaps(self, analyzed_candidates) -> List[List]:
+		"""Detect groups of spatially overlapping elements."""
+		if not analyzed_candidates:
+			return []
+
+		spatial_groups = []
+		processed = set()
+
+		for i, (node_id_a, node_a, analysis_a) in enumerate(analyzed_candidates):
+			if node_id_a in processed:
+				continue
+
+			current_group = [(node_id_a, node_a, analysis_a)]
+			processed.add(node_id_a)
+
+			# Find overlapping elements
+			for j, (node_id_b, node_b, analysis_b) in enumerate(analyzed_candidates[i + 1 :], i + 1):
+				if node_id_b in processed:
+					continue
+
+				if self._elements_spatially_overlap(node_a, node_b):
+					current_group.append((node_id_b, node_b, analysis_b))
+					processed.add(node_id_b)
+
+			if len(current_group) > 1:  # Only add groups with conflicts
+				spatial_groups.append(current_group)
+
+		return spatial_groups
+
+	def _elements_spatially_overlap(self, node_a: EnhancedDOMTreeNode, node_b: EnhancedDOMTreeNode) -> bool:
+		"""Check if two elements spatially overlap (are positioned on top of each other)."""
+		if not node_a.snapshot_node or not node_b.snapshot_node:
+			return False
+
+		bbox_a = getattr(node_a.snapshot_node, 'bounding_box', None)
+		bbox_b = getattr(node_b.snapshot_node, 'bounding_box', None)
+
+		if not bbox_a or not bbox_b:
+			return False
+
+		# Get coordinates and dimensions
+		x1, y1 = bbox_a.get('x', 0), bbox_a.get('y', 0)
+		w1, h1 = bbox_a.get('width', 0), bbox_a.get('height', 0)
+		x2, y2 = bbox_b.get('x', 0), bbox_b.get('y', 0)
+		w2, h2 = bbox_b.get('width', 0), bbox_b.get('height', 0)
+
+		# Calculate overlap area
+		left = max(x1, x2)
+		right = min(x1 + w1, x2 + w2)
+		top = max(y1, y2)
+		bottom = min(y1 + h1, y2 + h2)
+
+		if left >= right or top >= bottom:
+			return False  # No overlap
+
+		overlap_area = (right - left) * (bottom - top)
+		area_a = w1 * h1
+		area_b = w2 * h2
+
+		if area_a == 0 or area_b == 0:
+			return False
+
+		# Consider elements overlapping if overlap is >70% of either element's area
+		overlap_threshold = 0.7
+		overlap_ratio_a = overlap_area / area_a
+		overlap_ratio_b = overlap_area / area_b
+
+		return overlap_ratio_a > overlap_threshold or overlap_ratio_b > overlap_threshold
+
+	def _choose_best_spatial_candidate(self, candidates):
+		"""Choose the best candidate from a group of spatially overlapping elements."""
+		if len(candidates) == 1:
+			return candidates[0]
+
+		# Priority order: prefer actual interactive elements over containers
+		priority_order = ['BUTTON', 'A', 'INPUT', 'SELECT', 'TEXTAREA', 'DIV', 'SPAN']
+
+		def get_priority(candidate):
+			node = candidate[0]
+			element_type = node.node_name.upper()
+			try:
+				return priority_order.index(element_type)
+			except ValueError:
+				return len(priority_order)  # Unknown elements go last
+
+		# Sort by priority, then by clickability
+		candidates.sort(key=lambda c: (get_priority(c), not self._is_likely_interactive(c[0])))
+		return candidates[0]
+
+	def _is_likely_interactive(self, node: EnhancedDOMTreeNode) -> bool:
+		"""Quick check if a node is likely interactive."""
+		element_type = node.node_name.upper()
+
+		# Form elements are always interactive
+		if element_type in ['BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'A']:
+			return True
+
+		# Check for interactive attributes
+		if node.attributes:
+			interactive_attrs = ['onclick', 'role', 'tabindex', 'href']
+			if any(attr in node.attributes for attr in interactive_attrs):
+				return True
+
+		return False
 
 	def _get_element_depth(self, node: EnhancedDOMTreeNode) -> int:
 		"""Get the depth of an element in the DOM tree (lower is closer to root)."""
@@ -1791,7 +2485,7 @@ class DOMTreeSerializer:
 
 		return False
 
-	def _is_ax_interactive_fast(self, node: EnhancedDOMTreeNode) -> bool:
+	def _is_ax_interactive_fast(self, node: EnhancedDOMTreeNode, include_all: bool = False) -> bool:
 		"""Fast check if node is interactive according to AX tree."""
 		if not node.ax_node:
 			return False
@@ -1822,7 +2516,6 @@ class DOMTreeSerializer:
 			if node.ax_node.role.lower() in interactive_roles:
 				# Special filtering for calendar/date picker elements
 				if node.ax_node.role.lower() == 'gridcell' and node.node_name.upper() == 'DIV':
-					# This is likely a calendar date cell - check if it's part of a large grid
 					if self._is_likely_calendar_cell_fast(node):
 						self.metrics.skipped_calendar_cells += 1
 						return False
@@ -1832,81 +2525,6 @@ class DOMTreeSerializer:
 		if node.ax_node.properties:
 			for prop in node.ax_node.properties:
 				if prop.name == AXPropertyName.FOCUSABLE and prop.value:
-					return True
-
-		return False
-
-	def _is_likely_calendar_cell_fast(self, node: EnhancedDOMTreeNode) -> bool:
-		"""ENHANCED calendar cell detection with sophisticated patterns from legacy method."""
-		# If it's a DIV with gridcell role, check if it's part of a large calendar
-		if not node.attributes:
-			return True  # No attributes, likely just a date cell
-
-		# **ENHANCED CALENDAR PATTERN DETECTION** from legacy method
-		if node.attributes:
-			classes = node.attributes.get('class', '').lower()
-			id_attr = node.attributes.get('id', '').lower()
-
-			# Expanded calendar indicators from legacy method
-			calendar_indicators = [
-				'date',
-				'day',
-				'cell',
-				'calendar',
-				'picker',
-				'grid',
-				'datepicker',
-				'monthview',
-				'dayview',
-				'weekview',
-				'cal-',
-				'dp-',
-				'date-',
-				'picker-',
-				'month-',
-				'week-',
-				'flatpickr',
-				'react-datepicker',
-				'vue-datepicker',
-				'mui-picker',
-				'ant-picker',
-				'bootstrap-datepicker',
-			]
-
-			# Check both class and id attributes for calendar patterns
-			combined_attrs = f'{classes} {id_attr}'
-			if any(indicator in combined_attrs for indicator in calendar_indicators):
-				return True
-
-			# **DATE CONTENT PATTERN DETECTION**: Check if content looks like a date
-			if hasattr(node, 'node_value') and node.node_value:
-				text_content = str(node.node_value).strip()
-				# Simple date patterns: 1-31, day names, month names
-				if text_content.isdigit() and 1 <= int(text_content) <= 31:
-					return True
-
-		# **ENHANCED STRUCTURAL CHECK** from legacy method
-		if node.node_name.upper() == 'DIV':
-			# More sophisticated attribute analysis
-			attr_count = len(node.attributes)
-			has_meaningful_attrs = any(
-				attr in node.attributes for attr in ['onclick', 'data-action', 'href', 'role', 'aria-label', 'title']
-			)
-
-			# Likely calendar cell if: few attributes AND no meaningful interaction attributes
-			if attr_count <= 3 and not has_meaningful_attrs:
-				return True
-
-			# Check for typical calendar cell attributes
-			if node.attributes:
-				data_attrs = [k for k in node.attributes.keys() if k.startswith('data-')]
-				# Calendar cells often have data-date, data-day, etc.
-				calendar_data_attrs = [
-					attr
-					for attr in data_attrs
-					if any(indicator in attr for indicator in ['date', 'day', 'month', 'year', 'time'])
-				]
-				if calendar_data_attrs and attr_count <= 4:
 					return True
 
 		return False
@@ -1978,29 +2596,52 @@ class DOMTreeSerializer:
 		filtered = []
 		seen_elements: Set[str] = set()  # Track unique elements by x_path
 
+		# **ENHANCED: Check if we should include ALL AX elements (when threshold = 0)**
+		should_include_all_ax = getattr(self, '_include_all_ax_elements', False)
+
 		for candidate_tuple in candidates:
 			candidate_node = candidate_tuple[0]  # First element is always the node
 			# candidate_tuple could be (node, 'analyzed', analysis) or (node, 'type')
 
-			# Fast visibility check (cached)
-			visibility_key = f'vis_{id(candidate_node)}'
-			if visibility_key not in self._visibility_cache:
-				self._visibility_cache[visibility_key] = self._is_element_visible_fast(candidate_node)
+			if should_include_all_ax:
+				# **SCORE THRESHOLD = 0 MODE: NO filtering - include EVERYTHING with AX nodes**
+				print(
+					f'🎯 PROCESSING AX ELEMENT: {candidate_node.node_name} (type: {candidate_tuple[1] if len(candidate_tuple) > 1 else "unknown"})'
+				)
 
-			if not self._visibility_cache[visibility_key]:
-				self.metrics.skipped_invisible += 1
-				continue
+				# NO filtering whatsoever - include everything
+				# NO text node filtering
+				# NO visibility filtering
+				# NO viewport filtering
+				# NO spatial deduplication
+				# NO xpath deduplication
 
-			# Fast viewport check
-			if not self._is_in_viewport_or_special_context_fast(candidate_node):
-				self.metrics.skipped_outside_viewport += 1
+				# Just add everything to filtered list
+				print(f'🎯 ADDING TO FILTERED LIST: {candidate_node.node_name}')
+				filtered.append(candidate_node)
 				continue
+			else:
+				# **NORMAL MODE: Standard filtering**
 
-			# Fast deduplication
-			element_key = candidate_node.x_path
-			if element_key in seen_elements:
-				self.metrics.skipped_duplicates += 1
-				continue
+				# Fast visibility check (cached)
+				visibility_key = f'vis_{id(candidate_node)}'
+				if visibility_key not in self._visibility_cache:
+					self._visibility_cache[visibility_key] = self._is_element_visible_fast(candidate_node)
+
+				if not self._visibility_cache[visibility_key]:
+					self.metrics.skipped_invisible += 1
+					continue
+
+				# Fast viewport check
+				if not self._is_in_viewport_or_special_context_fast(candidate_node):
+					self.metrics.skipped_outside_viewport += 1
+					continue
+
+				# Fast deduplication
+				element_key = candidate_node.x_path
+				if element_key in seen_elements:
+					self.metrics.skipped_duplicates += 1
+					continue
 
 			seen_elements.add(element_key)
 			filtered.append(candidate_node)
@@ -2665,96 +3306,116 @@ class DOMTreeSerializer:
 			self._semantic_groups.append(group)
 
 	def _generate_compressed_text(self) -> str:
-		"""Generate LLM-friendly text representation focused on visible content and user interactions."""
+		"""Generate clean LLM-friendly text focused on user interactions."""
 		lines = []
 
-		# Add page overview
-		total_elements = len(self._compressed_elements)
-		if total_elements > 0:
-			lines.append('=== INTERACTIVE ELEMENTS FOUND ===')
-			lines.append(f'Found {total_elements} interactive elements on this page:')
-			lines.append('')
-
-		# Generate semantic groups with improved descriptions
-		group_count = 0
+		# Generate semantic groups with clean formatting
 		for group in self._semantic_groups:
-			group_count += 1
+			if not group.elements:
+				continue
 
-			# Create user-friendly group titles
+			# Create clean group title
 			group_title = self._create_friendly_group_title(group)
-			lines.append(f'=== {group_title} ===')
+			lines.append(f'{group_title}:')
 
-			# Add group description if helpful
-			group_desc = self._create_group_description(group)
-			if group_desc:
-				lines.append(group_desc)
-				lines.append('')
-
-			# Format elements with better context
-			for i, elem in enumerate(group.elements, 1):
+			# Format elements cleanly
+			for elem in group.elements:
 				line = self._format_compressed_element(elem)
 				lines.append(f'  {line}')
 
 			lines.append('')  # Empty line between groups
 
-		# Add summary if multiple groups
-		if group_count > 1:
-			lines.append('=== SUMMARY ===')
-			summary_info = []
-			for group in self._semantic_groups:
-				if group.elements:
-					group_name = group.group_type.value.lower().replace('_', ' ')
-					count = len(group.elements)
-					summary_info.append(f'{count} {group_name} element{"s" if count != 1 else ""}')
-
-			if summary_info:
-				lines.append(f'This page contains: {", ".join(summary_info)}')
+		# Remove the last empty line if present
+		if lines and lines[-1] == '':
+			lines.pop()
 
 		return '\n'.join(lines)
 
 	def _create_friendly_group_title(self, group: SemanticGroup) -> str:
-		"""Create user-friendly group titles."""
+		"""Create clean, user-friendly group titles."""
 		group_type = group.group_type.value
 		element_count = len(group.elements)
 
+		# Simple, clean titles without technical jargon
 		friendly_titles = {
-			'FORM': f'FORM ELEMENTS ({element_count})',
-			'NAVIGATION': f'NAVIGATION LINKS ({element_count})',
-			'DROPDOWN': f'DROPDOWN/MENU OPTIONS ({element_count})',
-			'MENU': f'MENU ITEMS ({element_count})',
-			'TABLE': f'TABLE ELEMENTS ({element_count})',
-			'LIST': f'LIST ITEMS ({element_count})',
-			'TOOLBAR': f'TOOLBAR BUTTONS ({element_count})',
-			'TABS': f'TAB CONTROLS ({element_count})',
-			'ACCORDION': f'ACCORDION SECTIONS ({element_count})',
-			'MODAL': f'MODAL/DIALOG ELEMENTS ({element_count})',
-			'CAROUSEL': f'CAROUSEL CONTROLS ({element_count})',
-			'CONTENT': f'OTHER INTERACTIVE CONTENT ({element_count})',
-			'FOOTER': f'FOOTER ELEMENTS ({element_count})',
-			'HEADER': f'HEADER ELEMENTS ({element_count})',
-			'SIDEBAR': f'SIDEBAR ELEMENTS ({element_count})',
+			'FORM': 'FORM ELEMENTS',
+			'NAVIGATION': 'NAVIGATION',
+			'DROPDOWN': 'MENUS & DROPDOWNS',
+			'MENU': 'MENU OPTIONS',
+			'TABLE': 'TABLE ELEMENTS',
+			'LIST': 'LIST ITEMS',
+			'TOOLBAR': 'BUTTONS & CONTROLS',
+			'TABS': 'TABS',
+			'ACCORDION': 'COLLAPSIBLE SECTIONS',
+			'MODAL': 'DIALOGS & MODALS',
+			'CAROUSEL': 'IMAGE CONTROLS',
+			'CONTENT': 'INTERACTIVE CONTENT',
+			'FOOTER': 'FOOTER LINKS',
+			'HEADER': 'HEADER CONTROLS',
+			'SIDEBAR': 'SIDEBAR OPTIONS',
 		}
 
-		return friendly_titles.get(group_type, f'{group_type} ({element_count})')
+		title = friendly_titles.get(group_type, group_type)
+
+		# Add position context if available
+		position_context = self._get_group_position_context(group)
+		if position_context:
+			title = f'{title} ({position_context})'
+		elif element_count > 1:
+			title = f'{title} ({element_count})'
+
+		return title
+
+	def _get_group_position_context(self, group: SemanticGroup) -> str:
+		"""Determine the position context for a group of elements."""
+		if not group.elements:
+			return ''
+
+		# Analyze the positions of elements in the group to determine location
+		y_positions = []
+		x_positions = []
+
+		# Get position info from the original DOM nodes if available
+		for elem in group.elements:
+			# This would need to be enhanced with actual position data
+			# For now, we'll use simple heuristics based on element types and attributes
+			pass
+
+		# Use element types and attributes to infer position
+		element_types = [elem.element_type.lower() for elem in group.elements]
+
+		# Check for header indicators
+		if group.group_type.value == 'NAVIGATION':
+			# Look for header/nav indicators in attributes
+			for elem in group.elements:
+				if elem.attributes and any(
+					attr in elem.attributes.get('class', '').lower() for attr in ['header', 'nav', 'top', 'main-nav']
+				):
+					return 'header'
+			return 'navigation menu'
+
+		# Check for footer indicators
+		if any(attr in str(elem.attributes).lower() for elem in group.elements for attr in ['footer', 'bottom']):
+			return 'footer'
+
+		# Check for sidebar indicators
+		if any(
+			attr in str(elem.attributes).lower()
+			for elem in group.elements
+			for attr in ['sidebar', 'side', 'left-nav', 'right-nav']
+		):
+			return 'sidebar'
+
+		# Check for main content indicators
+		if group.group_type.value == 'FORM':
+			return 'main content'
+
+		return ''
 
 	def _create_group_description(self, group: SemanticGroup) -> str:
-		"""Create helpful descriptions for element groups."""
-		group_type = group.group_type.value
-		element_count = len(group.elements)
-
-		descriptions = {
-			'FORM': 'Form fields and controls for user input:',
-			'NAVIGATION': 'Links for navigating to different pages:',
-			'DROPDOWN': 'Dropdown menus and selectable options:',
-			'MENU': 'Menu items and navigation options:',
-			'TABLE': 'Interactive table elements:',
-			'LIST': 'List items that can be selected or clicked:',
-			'TOOLBAR': 'Action buttons and controls:',
-			'TABS': 'Tab controls for switching content:',
-			'CONTENT': 'Other clickable content on the page:',
-		}
-
-		return descriptions.get(group_type, '')
+		"""Create simple descriptions for element groups."""
+		# Remove descriptions for cleaner output - the title is self-explanatory
+		return ''
 
 	def _include_element_text_content(self) -> None:
 		"""Extract and include text content from elements for better LLM understanding."""
@@ -2766,35 +3427,272 @@ class DOMTreeSerializer:
 				pass
 
 	def _format_compressed_element(self, elem: CompressedElement) -> str:
-		"""Format a compressed element for natural language LLM consumption."""
-		# Start with the element index and a natural description
+		"""Format a compressed element for clean LLM consumption focused on user-visible content."""
 		parts = []
 
 		# Add index in brackets
 		parts.append(f'[{elem.index}]')
 
-		# Create natural language description based on element type and action
-		description = self._create_natural_description(elem)
+		# Create clean description without technical jargon
+		description = self._create_clean_description(elem)
 		parts.append(description)
 
-		# Add the text content/label in quotes - this is what the LLM will see
-		if elem.label and not elem.label.startswith('<'):
-			parts.append(f'"{elem.label}"')
+		# Add meaningful content - prioritize user-visible text
+		content = self._extract_meaningful_content(elem)
+		if content:
+			parts.append(content)
 
-		# Add target information in natural language
-		if elem.target:
-			target_desc = self._format_target_naturally(elem.target, elem.element_type)
+		# Add navigation target for links
+		if elem.target and elem.element_type.lower() in ['link']:
+			target_desc = self._format_link_destination(elem.target)
 			if target_desc:
 				parts.append(target_desc)
 
-		# Add state information naturally
-		state_info = self._format_state_naturally(elem.attributes)
-		if state_info:
-			parts.append(state_info)
-
-		# Context information removed - no iframe/shadow DOM processing
-
 		return ' '.join(parts)
+
+	def _create_clean_description(self, elem: CompressedElement) -> str:
+		"""Create a clean, user-focused description prioritizing role over element type."""
+		element_type = elem.element_type.lower()
+		action_type = elem.action_type.lower()
+
+		# PRIORITY 1: Check for role attribute and use that instead of element type
+		if elem.attributes and 'role' in elem.attributes:
+			role = elem.attributes['role'].lower()
+			role_descriptions = {
+				'button': 'Button',
+				'link': 'Link',
+				'menuitem': 'Menu item',
+				'tab': 'Tab',
+				'checkbox': 'Checkbox',
+				'radio': 'Radio button',
+				'slider': 'Slider',
+				'textbox': 'Text input',
+				'combobox': 'Dropdown',
+				'searchbox': 'Search',
+				'switch': 'Switch',
+				'option': 'Option',
+				'menuitemcheckbox': 'Menu checkbox',
+				'menuitemradio': 'Menu radio',
+				'listbox': 'List selector',
+				'tree': 'Tree view',
+				'grid': 'Grid',
+				'gridcell': 'Grid cell',
+				'spinbutton': 'Number input',
+				'progressbar': 'Progress bar',
+				'scrollbar': 'Scrollbar',
+				'separator': 'Separator',
+				'toolbar': 'Toolbar',
+				'tooltip': 'Tooltip',
+				'dialog': 'Dialog',
+				'alertdialog': 'Alert dialog',
+				'application': 'Application',
+				'banner': 'Banner',
+				'complementary': 'Complementary',
+				'contentinfo': 'Content info',
+				'form': 'Form',
+				'main': 'Main content',
+				'navigation': 'Navigation',
+				'region': 'Region',
+				'search': 'Search',
+			}
+			if role in role_descriptions:
+				return role_descriptions[role]
+			else:
+				# Capitalize the role name as fallback
+				return role.replace('_', ' ').replace('-', ' ').title()
+
+		# PRIORITY 2: Use element type only if no meaningful role
+		if element_type in ['button', 'submit']:
+			return 'Button'
+		elif element_type == 'link':
+			return 'Link'
+		elif element_type in ['input', 'email', 'password', 'search', 'phone', 'url', 'number']:
+			return 'Input'
+		elif element_type == 'textarea':
+			return 'Text area'
+		elif element_type == 'select':
+			return 'Dropdown'
+		elif element_type == 'checkbox':
+			return 'Checkbox'
+		elif element_type == 'radio':
+			return 'Radio button'
+		elif element_type in ['file']:
+			return 'File upload'
+		elif element_type in ['date', 'time']:
+			return 'Date/time picker'
+		elif element_type == 'slider':
+			return 'Slider'
+		else:
+			return 'Interactive element'
+
+	def _extract_meaningful_content(self, elem: CompressedElement) -> str:
+		"""Extract meaningful, user-visible content without technical scoring."""
+		content_parts = []
+
+		# For buttons, prioritize the text content
+		if elem.element_type.lower() in ['button', 'submit'] and elem.label:
+			if not elem.label.startswith('<') and elem.label.strip():
+				content_parts.append(f'"{elem.label.strip()}"')
+
+		# For inputs, show placeholder or current value
+		elif elem.element_type.lower() in ['input', 'email', 'password', 'search', 'phone', 'url', 'number', 'textarea']:
+			if elem.label and 'placeholder:' in elem.label:
+				placeholder = elem.label.replace('placeholder:', '').strip()
+				content_parts.append(f'placeholder: "{placeholder}"')
+			elif elem.label and not elem.label.startswith('<'):
+				content_parts.append(f'"{elem.label.strip()}"')
+
+			# Add state information for inputs
+			if 'required' in elem.attributes:
+				content_parts.append('(required)')
+			if 'disabled' in elem.attributes:
+				content_parts.append('(disabled)')
+
+		# For checkboxes and radio buttons, show state
+		elif elem.element_type.lower() in ['checkbox', 'radio']:
+			if elem.label and not elem.label.startswith('<'):
+				content_parts.append(f'"{elem.label.strip()}"')
+
+			if 'checked' in elem.attributes:
+				content_parts.append('(checked)')
+			else:
+				content_parts.append('(unchecked)')
+
+		# For dropdowns
+		elif elem.element_type.lower() == 'select':
+			if elem.label and not elem.label.startswith('<'):
+				content_parts.append(f'"{elem.label.strip()}"')
+			if 'selected' in elem.attributes:
+				content_parts.append('(has selection)')
+
+		# For links, just show the text
+		elif elem.element_type.lower() == 'link':
+			if elem.label and not elem.label.startswith('<'):
+				content_parts.append(f'"{elem.label.strip()}"')
+
+		# For other elements, show label if meaningful
+		else:
+			if elem.label and not elem.label.startswith('<') and len(elem.label.strip()) > 1:
+				content_parts.append(f'"{elem.label.strip()}"')
+
+		# Add enhanced context information
+		enhanced_context = self._get_enhanced_element_context(elem)
+		if enhanced_context:
+			content_parts.append(enhanced_context)
+
+		return ' '.join(content_parts)
+
+	def _get_enhanced_element_context(self, elem: CompressedElement) -> str:
+		"""Get enhanced context information for the element."""
+		context_parts = []
+
+		# Add interactive state information
+		state_info = self._get_interactive_state_info(elem)
+		if state_info:
+			context_parts.append(state_info)
+
+		# Add action hints
+		action_hint = self._get_action_hint(elem)
+		if action_hint:
+			context_parts.append(action_hint)
+
+		# Add accessibility descriptions
+		accessibility_info = self._get_accessibility_context(elem)
+		if accessibility_info:
+			context_parts.append(accessibility_info)
+
+		return ' '.join(context_parts) if context_parts else ''
+
+	def _get_interactive_state_info(self, elem: CompressedElement) -> str:
+		"""Get interactive state information for the element."""
+		# Check for expanded/collapsed state
+		if 'expanded' in elem.attributes:
+			if elem.attributes['expanded'] == 'true':
+				return '(expanded)'
+			else:
+				return '(collapsed)'
+
+		# Check for pressed state
+		if 'pressed' in elem.attributes:
+			if elem.attributes['pressed'] == 'true':
+				return '(pressed)'
+			else:
+				return '(not pressed)'
+
+		# Check for loading state
+		if 'aria-busy' in elem.attributes and elem.attributes['aria-busy'] == 'true':
+			return '(loading)'
+
+		return ''
+
+	def _get_action_hint(self, elem: CompressedElement) -> str:
+		"""Get hints about what the element does when interacted with."""
+		element_type = elem.element_type.lower()
+
+		# Button action hints
+		if element_type in ['button', 'submit']:
+			if elem.label:
+				label_lower = elem.label.lower()
+				if any(word in label_lower for word in ['submit', 'send', 'save']):
+					return '(submits form)'
+				elif any(word in label_lower for word in ['cancel', 'close', 'dismiss']):
+					return '(closes dialog)'
+				elif any(word in label_lower for word in ['menu', 'nav']):
+					return '(opens menu)'
+				elif any(word in label_lower for word in ['search', 'find']):
+					return '(performs search)'
+				elif any(word in label_lower for word in ['delete', 'remove']):
+					return '(deletes item)'
+				elif any(word in label_lower for word in ['edit', 'modify']):
+					return '(opens editor)'
+
+		# Link action hints
+		elif element_type == 'link':
+			if elem.target:
+				if elem.target.startswith('#'):
+					return '(jumps to section)'
+				elif 'login' in elem.target or 'signin' in elem.target:
+					return '(opens login page)'
+				elif 'signup' in elem.target or 'register' in elem.target:
+					return '(opens signup page)'
+
+		return ''
+
+	def _get_accessibility_context(self, elem: CompressedElement) -> str:
+		"""Get accessibility context information."""
+		# Check for aria-describedby or helpful descriptions
+		if 'aria-describedby' in elem.attributes:
+			return '(has help text)'
+
+		# Check for error states
+		if 'aria-invalid' in elem.attributes and elem.attributes['aria-invalid'] == 'true':
+			return '(has error)'
+
+		# Check for required fields
+		if 'aria-required' in elem.attributes and elem.attributes['aria-required'] == 'true':
+			return '(required field)'
+
+		return ''
+
+	def _format_link_destination(self, target: str) -> str:
+		"""Format link destinations in a clean, user-friendly way."""
+		if not target:
+			return ''
+
+		if target.startswith('mailto:'):
+			return f'(email: {target[7:]})'
+		elif target.startswith('tel:'):
+			return f'(phone: {target[4:]})'
+		elif target.startswith('#'):
+			return f'(jumps to: {target[1:]})'
+		elif target == 'javascript':
+			return '(action)'
+		else:
+			# Clean up URLs for display
+			if len(target) > 30:
+				return f'(goes to: {target[:30]}...)'
+			else:
+				return f'(goes to: {target})'
 
 	def _create_natural_description(self, elem: CompressedElement) -> str:
 		"""Create a natural language description of the element."""
@@ -2913,3 +3811,78 @@ class DOMTreeSerializer:
 
 		# Legacy serialization method completely removed for performance
 		# Only the optimized AX tree method is now available
+
+	def _is_likely_calendar_cell_fast(self, node: EnhancedDOMTreeNode) -> bool:
+		"""ENHANCED calendar cell detection with sophisticated patterns from legacy method."""
+		# If it's a DIV with gridcell role, check if it's part of a large calendar
+		if not node.attributes:
+			return True  # No attributes, likely just a date cell
+
+		# **ENHANCED CALENDAR PATTERN DETECTION** from legacy method
+		if node.attributes:
+			classes = node.attributes.get('class', '').lower()
+			id_attr = node.attributes.get('id', '').lower()
+
+			# Expanded calendar indicators from legacy method
+			calendar_indicators = [
+				'date',
+				'day',
+				'cell',
+				'calendar',
+				'picker',
+				'grid',
+				'datepicker',
+				'monthview',
+				'dayview',
+				'weekview',
+				'cal-',
+				'dp-',
+				'date-',
+				'picker-',
+				'month-',
+				'week-',
+				'flatpickr',
+				'react-datepicker',
+				'vue-datepicker',
+				'mui-picker',
+				'ant-picker',
+				'bootstrap-datepicker',
+			]
+
+			# Check both class and id attributes for calendar patterns
+			combined_attrs = f'{classes} {id_attr}'
+			if any(indicator in combined_attrs for indicator in calendar_indicators):
+				return True
+
+			# **DATE CONTENT PATTERN DETECTION**: Check if content looks like a date
+			if hasattr(node, 'node_value') and node.node_value:
+				text_content = str(node.node_value).strip()
+				# Simple date patterns: 1-31, day names, month names
+				if text_content.isdigit() and 1 <= int(text_content) <= 31:
+					return True
+
+		# **ENHANCED STRUCTURAL CHECK** from legacy method
+		if node.node_name.upper() == 'DIV':
+			# More sophisticated attribute analysis
+			attr_count = len(node.attributes)
+			has_meaningful_attrs = any(
+				attr in node.attributes for attr in ['onclick', 'data-action', 'href', 'role', 'aria-label', 'title']
+			)
+
+			# Likely calendar cell if: few attributes AND no meaningful interaction attributes
+			if attr_count <= 3 and not has_meaningful_attrs:
+				return True
+
+			# Check for typical calendar cell attributes
+			if node.attributes:
+				data_attrs = [k for k in node.attributes.keys() if k.startswith('data-')]
+				# Calendar cells often have data-date, data-day, etc.
+				calendar_data_attrs = [
+					attr
+					for attr in data_attrs
+					if any(indicator in attr for indicator in ['date', 'day', 'month', 'year', 'time'])
+				]
+				if calendar_data_attrs and attr_count <= 4:
+					return True
+
+		return False

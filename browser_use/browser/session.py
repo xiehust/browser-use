@@ -873,13 +873,18 @@ class BrowserSession(BaseModel):
 			chrome_process = psutil.Process(pid=self.browser_pid)
 			if not chrome_process.is_running():
 				self.logger.warning(f'⚠️ Expected Chrome process with pid={self.browser_pid} is not running')
+				self.browser_pid = None
+				self.cdp_url = None  # Clear stale CDP URL when process is dead
 				return
 			args = chrome_process.cmdline()
 		except psutil.NoSuchProcess:
 			self.logger.warning(f'⚠️ Expected Chrome process with pid={self.browser_pid} not found, unable to (re-)connect')
+			self.browser_pid = None
+			self.cdp_url = None  # Clear stale CDP URL when process is dead
 			return
 		except Exception as e:
 			self.browser_pid = None
+			self.cdp_url = None  # Clear stale CDP URL when process access fails
 			self.logger.warning(f'⚠️ Error accessing chrome process with pid={self.browser_pid}: {type(e).__name__}: {e}')
 			return
 
@@ -897,6 +902,7 @@ class BrowserSession(BaseModel):
 					f'❌ Could not find --remote-debugging-port=... to connect to in browser launch args for browser_pid={self.browser_pid}: {" ".join(args)}'
 				)
 			self.browser_pid = None
+			self.cdp_url = None  # Clear stale CDP URL when process is unusable
 			return
 
 		self.cdp_url = self.cdp_url or f'http://127.0.0.1:{debug_port}/'
@@ -956,10 +962,12 @@ class BrowserSession(BaseModel):
 								return
 						self.logger.error(f'❌ Chrome process {self.browser_pid} exited unexpectedly')
 						self.browser_pid = None
+						self.cdp_url = None  # Clear stale CDP URL when process exits
 						return
 				except psutil.NoSuchProcess:
 					self.logger.error(f'❌ Chrome process {self.browser_pid} no longer exists')
 					self.browser_pid = None
+					self.cdp_url = None  # Clear stale CDP URL when process no longer exists
 					return
 
 				try:
@@ -974,6 +982,7 @@ class BrowserSession(BaseModel):
 			else:
 				self.logger.error(f'❌ Chrome CDP port {debug_port} did not become available after 30 seconds')
 				self.browser_pid = None
+				self.cdp_url = None  # Clear stale CDP URL when port is unavailable
 				return
 
 		# Determine if this is a newly spawned subprocess or an existing process

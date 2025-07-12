@@ -169,6 +169,7 @@ class DOMService:
 		return normalize_url(url1) == normalize_url(url2)
 
 	def _build_enhanced_ax_node(self, ax_node: AXNode) -> EnhancedAXNode:
+		"""Enhanced AX node building with comprehensive property extraction."""
 		properties: list[EnhancedAXProperty] | None = None
 		if 'properties' in ax_node and ax_node['properties']:
 			properties = []
@@ -184,7 +185,44 @@ class DOMService:
 						)
 					)
 				except ValueError:
-					pass
+					# Store unknown properties as well for debugging/future use
+					properties.append(
+						EnhancedAXProperty(
+							name=property['name'],
+							value=property.get('value', {}).get('value', None),
+						)
+					)
+
+		# Extract additional AX tree properties that indicate interactivity
+		ax_value = ax_node.get('value', {}).get('value', None)
+		ax_level = ax_node.get('level', {}).get('value', None)
+
+		# Extract important boolean states with proper type casting
+		ax_expanded = None
+		ax_selected = None
+		ax_disabled = None
+		ax_focusable = None
+		ax_haspopup = None
+		ax_autocomplete = None
+
+		if properties:
+			for prop in properties:
+				prop_name = str(prop.name).lower()
+				prop_value = prop.value
+
+				# Map important AX properties to dedicated fields with proper type casting
+				if 'expanded' in prop_name:
+					ax_expanded = bool(prop_value) if prop_value is not None else None
+				elif 'selected' in prop_name:
+					ax_selected = bool(prop_value) if prop_value is not None else None
+				elif 'disabled' in prop_name:
+					ax_disabled = bool(prop_value) if prop_value is not None else None
+				elif 'focusable' in prop_name:
+					ax_focusable = bool(prop_value) if prop_value is not None else None
+				elif 'haspopup' in prop_name:
+					ax_haspopup = str(prop_value) if prop_value is not None else None
+				elif 'autocomplete' in prop_name:
+					ax_autocomplete = str(prop_value) if prop_value is not None else None
 
 		enhanced_ax_node = EnhancedAXNode(
 			ax_node_id=ax_node['nodeId'],
@@ -193,7 +231,17 @@ class DOMService:
 			name=ax_node.get('name', {}).get('value', None),
 			description=ax_node.get('description', {}).get('value', None),
 			properties=properties,
+			# Enhanced AX tree properties for better interactivity detection
+			value=ax_value,
+			level=ax_level,
+			expanded=ax_expanded,
+			selected=ax_selected,
+			disabled=ax_disabled,
+			focusable=ax_focusable,
+			haspopup=ax_haspopup,
+			autocomplete=ax_autocomplete,
 		)
+
 		return enhanced_ax_node
 
 	async def _get_viewport_size(self) -> tuple[float, float, float, float, float]:
@@ -571,21 +619,17 @@ class DOMService:
 		self,
 		include_attributes: list[str] | None = None,
 		use_enhanced_filtering: bool = True,
+		include_all_ax_elements: bool = False,
 	) -> tuple[str, dict[int, EnhancedDOMTreeNode]]:
 		"""Get the serialized DOM tree representation for LLM consumption.
-
-		This method now automatically handles multi-tab scenarios by:
-		- Always using the current active tab from the browser session
-		- Caching CDP sessions per tab for efficiency
-		- Detecting tab switches and updating accordingly
 
 		Args:
 			include_attributes: List of attributes to include
 			use_enhanced_filtering: Whether to use enhanced filtering to remove non-interactive containers
+			include_all_ax_elements: Whether to include ALL AX tree elements (when score threshold = 0)
 
 		Returns:
-			- Serialized string representation including iframe and shadow content
-			- Selector map mapping interactive indices to DOM nodes with context
+			Tuple of (serialized_dom_string, selector_map)
 		"""
 		enhanced_dom_tree = await self.get_dom_tree()
 
@@ -593,6 +637,13 @@ class DOMService:
 
 		# Use the optimized DOMTreeSerializer with enhanced filtering
 		serializer = DOMTreeSerializer(enhanced_dom_tree)
+
+		# **NEW: Set flag to include all AX elements if requested**
+		serializer._include_all_ax_elements = include_all_ax_elements
+
+		# Store reference for external access (for tree.py)
+		self.dom_tree_serializer = serializer
+
 		serialized, selector_map = serializer.serialize_accessible_elements(include_attributes)
 		serialization_method = 'optimized enhanced filtering' if use_enhanced_filtering else 'standard'
 

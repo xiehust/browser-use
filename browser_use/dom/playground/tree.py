@@ -202,18 +202,34 @@ async def save_comprehensive_dom_tree_json(
 		return None
 
 
-async def extract_interactive_elements_from_service(dom_service: DOMService) -> tuple[list[dict], str, dict]:
-	"""Extract interactive elements with enhanced reasoning tracking and reduced logging noise."""
+async def extract_interactive_elements_from_service(
+	dom_service: DOMService, score_threshold: int = 15
+) -> tuple[list[dict], str, dict]:
+	"""Extract interactive elements with enhanced reasoning tracking and score-based filtering."""
 	try:
-		print_section_header('🔄 ENHANCED DOM EXTRACTION WITH REASONING')
+		print_section_header('🔄 ENHANCED DOM EXTRACTION WITH REASONING AND SCORE FILTERING')
 
 		print('📋 Extraction Configuration:')
 		print('   • Method: get_serialized_dom_tree(use_enhanced_filtering=False)')
 		print('   • Focus: Comprehensive detection with optimization')
+		print(f'   • Score Threshold: {score_threshold} points (elements below this will be excluded)')
 		print('   • Logging: Enhanced with reasoning tracking (reduced noise)')
 
+		# **ENHANCED: Set flag to include ALL AX elements when score threshold is 0**
+		if score_threshold == 0:
+			print('   🎯 SPECIAL MODE: Score threshold 0 - including ALL AX tree elements!')
+			# Pass flag through the DOM service call instead of trying to set it on serializer
+			print('   ✅ Will use include_all_ax_elements=True in DOM service call')
+		else:
+			# Make sure flag is not set for normal operation
+			print('   📊 Normal filtering mode - selective element detection')
+
 		# Use the main DOMTreeSerializer which is already highly optimized
-		serialized, selector_map = await dom_service.get_serialized_dom_tree(use_enhanced_filtering=False)
+		# Pass the flag to include all AX elements when threshold = 0
+		include_all_ax = score_threshold == 0
+		serialized, selector_map = await dom_service.get_serialized_dom_tree(
+			use_enhanced_filtering=False, include_all_ax_elements=include_all_ax
+		)
 
 		interactive_elements = []
 		reasoning_summary = {
@@ -226,100 +242,145 @@ async def extract_interactive_elements_from_service(dom_service: DOMService) -> 
 			'by_reason': {},
 		}
 
-		print_subsection('🎯 INTERACTIVE ELEMENT ANALYSIS')
+		print_subsection('🎯 INTERACTIVE ELEMENT ANALYSIS WITH SCORE FILTERING')
 
 		# Extract bounding boxes for elements that have interactive indices
 		total_processed = 0
+		filtered_count = 0
+
+		# Build a filtered selector map based on score threshold
+		filtered_selector_map = {}
+
 		for interactive_index, node in selector_map.items():
 			total_processed += 1
-			if node.snapshot_node and hasattr(node.snapshot_node, 'bounding_box') and node.snapshot_node.bounding_box:
+
+			# **ENHANCED: For score threshold = 0, include ALL elements even without bounding boxes**
+			if score_threshold == 0:
+				# Include ALL elements when threshold=0, create fake bounding box if needed
+				if node.snapshot_node and hasattr(node.snapshot_node, 'bounding_box') and node.snapshot_node.bounding_box:
+					bbox = node.snapshot_node.bounding_box
+					if bbox.get('width', 0) <= 0 or bbox.get('height', 0) <= 0:
+						# Create fake bounding box for elements without valid dimensions
+						bbox = {'x': 0, 'y': 0, 'width': 10, 'height': 10}
+				else:
+					# Create fake bounding box for elements without snapshot or bounding box
+					bbox = {'x': 0, 'y': 0, 'width': 10, 'height': 10}
+			else:
+				# **NORMAL MODE: Only include elements with valid bounding boxes**
+				if not (node.snapshot_node and hasattr(node.snapshot_node, 'bounding_box') and node.snapshot_node.bounding_box):
+					continue
 				bbox = node.snapshot_node.bounding_box
-
 				# Only include elements with valid bounding boxes
-				if bbox.get('width', 0) > 0 and bbox.get('height', 0) > 0:
-					element = {
-						'x': bbox['x'],
-						'y': bbox['y'],
-						'width': bbox['width'],
-						'height': bbox['height'],
-						'interactive_index': interactive_index,
-						'element_name': node.node_name,
-						'is_clickable': True,
-						'is_scrollable': getattr(node, 'is_scrollable', False),
-						'attributes': node.attributes or {},
-						'frame_id': getattr(node, 'frame_id', None),
-					}
+				if bbox.get('width', 0) <= 0 or bbox.get('height', 0) <= 0:
+					continue
 
-					# Use ElementAnalysis from serializer for enhanced element analysis
-					reasoning = ElementAnalysis.analyze_element_interactivity(node)
+			# Use ElementAnalysis from serializer for enhanced element analysis
+			reasoning = ElementAnalysis.analyze_element_interactivity(node)
 
-					# Convert ElementAnalysis to dict format - with JSON safety
-					def make_json_safe(obj):
-						"""Recursively ensure all values are JSON serializable."""
-						if obj is None:
-							return None
-						elif isinstance(obj, (str, int, float, bool)):
-							return obj
-						elif isinstance(obj, list):
-							return [make_json_safe(item) for item in obj]
-						elif isinstance(obj, dict):
-							return {str(k): make_json_safe(v) for k, v in obj.items()}
-						else:
-							# Convert any other type to string
-							return str(obj)
+			# Apply score threshold filter (bypass for threshold=0 to include ALL AX elements)
+			if score_threshold == 0 or reasoning.score >= score_threshold:
+				element = {
+					'x': bbox['x'],
+					'y': bbox['y'],
+					'width': bbox['width'],
+					'height': bbox['height'],
+					'interactive_index': interactive_index,
+					'element_name': node.node_name,
+					'is_clickable': True,
+					'is_scrollable': getattr(node, 'is_scrollable', False),
+					'attributes': node.attributes or {},
+					'frame_id': getattr(node, 'frame_id', None),
+				}
 
-					reasoning_dict = {
-						'primary_reason': str(reasoning.primary_reason),
-						'confidence': str(reasoning.confidence),
-						'confidence_description': str(reasoning.confidence_description),
-						'score': int(reasoning.score),
-						'element_type': str(reasoning.element_type),
-						'element_category': str(reasoning.element_category),
-						'evidence': [str(e) for e in reasoning.evidence],
-						'warnings': [str(w) for w in reasoning.warnings],
-						'context_info': [str(c) for c in reasoning.context_info],
-						'interactive_indicators': make_json_safe(reasoning.interactive_indicators),
-						'event_listeners': [str(e) for e in reasoning.event_listeners],
-						'computed_styles_info': make_json_safe(reasoning.computed_styles_info),
-						'accessibility_info': make_json_safe(reasoning.accessibility_info),
-						'positioning_info': make_json_safe(reasoning.positioning_info),
-						'has_attributes': bool(len(node.attributes or {}) > 0),
-						'attribute_count': int(len(node.attributes or {})),
-						'all_attributes': make_json_safe(node.attributes or {}),
-					}
+				# Convert ElementAnalysis to dict format - with JSON safety
+				def make_json_safe(obj):
+					"""Recursively ensure all values are JSON serializable."""
+					if obj is None:
+						return None
+					elif isinstance(obj, (str, int, float, bool)):
+						return obj
+					elif isinstance(obj, list):
+						return [make_json_safe(item) for item in obj]
+					elif isinstance(obj, dict):
+						return {str(k): make_json_safe(v) for k, v in obj.items()}
+					else:
+						# Convert any other type to string
+						return str(obj)
 
-					element['reasoning'] = reasoning_dict
-					interactive_elements.append(element)
+				reasoning_dict = {
+					'primary_reason': str(reasoning.primary_reason),
+					'confidence': str(reasoning.confidence),
+					'confidence_description': str(reasoning.confidence_description),
+					'score': int(reasoning.score),
+					'element_type': str(reasoning.element_type),
+					'element_category': str(reasoning.element_category),
+					'evidence': [str(e) for e in reasoning.evidence],
+					'warnings': [str(w) for w in reasoning.warnings],
+					'context_info': [str(c) for c in reasoning.context_info],
+					'interactive_indicators': make_json_safe(reasoning.interactive_indicators),
+					'event_listeners': [str(e) for e in reasoning.event_listeners],
+					'computed_styles_info': make_json_safe(reasoning.computed_styles_info),
+					'accessibility_info': make_json_safe(reasoning.accessibility_info),
+					'positioning_info': make_json_safe(reasoning.positioning_info),
+					'has_attributes': bool(len(node.attributes or {}) > 0),
+					'attribute_count': int(len(node.attributes or {})),
+					'all_attributes': make_json_safe(node.attributes or {}),
+				}
 
-					# Update statistics
-					confidence = reasoning.confidence
-					reasoning_summary[f'{confidence}_confidence'] += 1
+				element['reasoning'] = reasoning_dict
+				interactive_elements.append(element)
 
-					element_type = reasoning.element_type
-					reasoning_summary['by_type'][element_type] = reasoning_summary['by_type'].get(element_type, 0) + 1
+				# Keep this element in the filtered selector map
+				filtered_selector_map[interactive_index] = node
 
-					primary_reason = reasoning.primary_reason
-					reasoning_summary['by_reason'][primary_reason] = reasoning_summary['by_reason'].get(primary_reason, 0) + 1
+				# Update statistics
+				confidence = reasoning.confidence
+				reasoning_summary[f'{confidence}_confidence'] += 1
+
+				element_type = reasoning.element_type
+				reasoning_summary['by_type'][element_type] = reasoning_summary['by_type'].get(element_type, 0) + 1
+
+				primary_reason = reasoning.primary_reason
+				reasoning_summary['by_reason'][primary_reason] = reasoning_summary['by_reason'].get(primary_reason, 0) + 1
+			else:
+				filtered_count += 1
+
+		# Now regenerate the serialized string using only the filtered elements
+		print(f'🎯 Regenerating serialized output with {len(filtered_selector_map)} filtered elements...')
+
+		# Use the DOM service to regenerate serialized output with filtered selector map
+		try:
+			# Create a filtered version of the serialized output
+			# We'll manually rebuild the serialized string using only the filtered elements
+			filtered_serialized = await regenerate_serialized_with_threshold(dom_service, filtered_selector_map, score_threshold)
+
+		except Exception as e:
+			print(f'⚠️ Could not regenerate filtered serialized output: {e}')
+			print('Using original serialized output (all elements)')
+			filtered_serialized = serialized
 
 		# Print detailed statistics
-		print('📊 EXTRACTION RESULTS:')
+		print('📊 SCORE-FILTERED EXTRACTION RESULTS:')
 		print(f'   • Total processed: {total_processed}')
-		print(f'   • Interactive elements found: {len(interactive_elements)}')
-		print(f'   • Serialized content length: {len(serialized):,} characters')
-		print(f'   • Selector map entries: {len(selector_map)}')
+		print(f'   • Score threshold: {score_threshold} points')
+		print(f'   • Elements above threshold: {len(interactive_elements)}')
+		print(f'   • Elements filtered out: {filtered_count}')
+		print(f'   • Inclusion rate: {(len(interactive_elements) / max(total_processed, 1) * 100):.1f}%')
+		print(f'   • Filtered serialized content length: {len(filtered_serialized):,} characters')
+		print(f'   • Filtered selector map entries: {len(filtered_selector_map)}')
 
-		print('\n🎯 CONFIDENCE BREAKDOWN:')
+		print('\n🎯 CONFIDENCE BREAKDOWN (filtered results):')
 		print(f'   • DEFINITE confidence: {reasoning_summary["DEFINITE_confidence"]} elements')
 		print(f'   • LIKELY confidence: {reasoning_summary["LIKELY_confidence"]} elements')
 		print(f'   • POSSIBLE confidence: {reasoning_summary["POSSIBLE_confidence"]} elements')
 		print(f'   • QUESTIONABLE confidence: {reasoning_summary["QUESTIONABLE_confidence"]} elements')
 		print(f'   • MINIMAL confidence: {reasoning_summary["MINIMAL_confidence"]} elements')
 
-		print('\n📋 ELEMENT TYPE BREAKDOWN:')
+		print('\n📋 ELEMENT TYPE BREAKDOWN (filtered results):')
 		for element_type, count in sorted(reasoning_summary['by_type'].items(), key=lambda x: x[1], reverse=True):
 			print(f'   • {element_type}: {count}')
 
-		print('\n🔍 REASONING BREAKDOWN:')
+		print('\n🔍 REASONING BREAKDOWN (filtered results):')
 		for reason, count in sorted(reasoning_summary['by_reason'].items(), key=lambda x: x[1], reverse=True):
 			print(f'   • {reason}: {count}')
 
@@ -327,11 +388,12 @@ async def extract_interactive_elements_from_service(dom_service: DOMService) -> 
 		print('\n🚀 PERFORMANCE OPTIMIZATIONS:')
 		print('   • Fast AX tree processing')
 		print('   • Viewport-based filtering')
+		print('   • Score-based threshold filtering')
 		print('   • Comprehensive cursor detection')
 		print('   • No CDP errors from iframe/shadow DOM processing')
 
 		# Show sample of each confidence level
-		print('\n🎯 SAMPLE ELEMENTS BY CONFIDENCE:')
+		print('\n🎯 SAMPLE ELEMENTS BY CONFIDENCE (score-filtered):')
 		confidence_levels = ['DEFINITE', 'LIKELY', 'POSSIBLE', 'QUESTIONABLE', 'MINIMAL']
 		for confidence in confidence_levels:
 			conf_elements = [e for e in interactive_elements if e['reasoning']['confidence'] == confidence]
@@ -352,7 +414,7 @@ async def extract_interactive_elements_from_service(dom_service: DOMService) -> 
 				if len(conf_elements) > 3:
 					print(f'      ... and {len(conf_elements) - 3} more')
 
-		return interactive_elements, serialized, selector_map
+		return interactive_elements, filtered_serialized, filtered_selector_map
 
 	except Exception as e:
 		print_section_header('❌ EXTRACTION ERROR', char='!')
@@ -361,6 +423,181 @@ async def extract_interactive_elements_from_service(dom_service: DOMService) -> 
 		print('Traceback:')
 		traceback.print_exc()
 		return [], '', {}
+
+
+async def regenerate_serialized_with_threshold(dom_service: DOMService, filtered_selector_map: dict, score_threshold: int) -> str:
+	"""Regenerate serialized DOM output using only elements above the score threshold."""
+	try:
+		print(f'🔄 Regenerating serialized output with score threshold {score_threshold}...')
+
+		# We need to create a new serialized representation using only the filtered elements
+		# This is a simplified approach - we'll build the string manually from the filtered elements
+
+		# Group elements by type for better organization
+		grouped_elements = {}
+
+		for idx, node in filtered_selector_map.items():
+			# Analyze the element again to get its reasoning
+			from browser_use.dom.serializer import ElementAnalysis
+
+			reasoning = ElementAnalysis.analyze_element_interactivity(node)
+
+			element_type = reasoning.element_type
+			confidence = reasoning.confidence
+			score = reasoning.score
+
+			# Create clean categories without technical confidence levels
+			if element_type in ['BUTTON', 'INPUT', 'SELECT', 'TEXTAREA']:
+				category = 'FORM ELEMENTS'
+			elif element_type in ['A']:
+				category = 'NAVIGATION'
+			else:
+				category = 'INTERACTIVE CONTENT'
+
+			if category not in grouped_elements:
+				grouped_elements[category] = []
+
+				# Create clean element description with comprehensive text extraction
+			attrs = node.attributes or {}
+
+			# Determine clean element type
+			if element_type == 'BUTTON':
+				clean_type = 'Button'
+			elif element_type == 'A':
+				clean_type = 'Link'
+			elif element_type in ['INPUT', 'TEXTAREA']:
+				clean_type = 'Input'
+			elif element_type == 'SELECT':
+				clean_type = 'Dropdown'
+			else:
+				clean_type = element_type.title()
+
+			element_desc = f'[{idx}] {clean_type}'
+
+			# EXTRACT TEXT CONTENT USING PROPER DOM NODE METHODS
+			meaningful_text = ''
+
+			# Method 1: Try visible text from children (most comprehensive)
+			if hasattr(node, 'children_nodes') and node.children_nodes:
+				text_parts = []
+				for child in node.children_nodes:
+					if hasattr(child, 'node_value') and child.node_value:
+						child_text = child.node_value.strip()
+						if child_text and len(child_text) > 1:
+							text_parts.append(child_text)
+				if text_parts:
+					combined_text = ' '.join(text_parts).strip()
+					# Clean up whitespace
+					import re
+
+					meaningful_text = re.sub(r'\s+', ' ', combined_text)[:80]
+
+			# Method 2: Try AX node text (accessibility tree)
+			if not meaningful_text and hasattr(node, 'ax_node') and node.ax_node:
+				if hasattr(node.ax_node, 'name') and node.ax_node.name:
+					meaningful_text = node.ax_node.name.strip()[:80]
+
+			# Method 3: Try snapshot node text content
+			if not meaningful_text and hasattr(node, 'snapshot_node') and node.snapshot_node:
+				snapshot = node.snapshot_node
+				for text_attr in ['text_content', 'inner_text']:
+					if hasattr(snapshot, text_attr):
+						text_val = getattr(snapshot, text_attr)
+						if text_val and len(text_val.strip()) > 1:
+							meaningful_text = text_val.strip()[:80]
+							break
+
+			# Method 4: Extract from attributes with priority
+			if not meaningful_text:
+				# Priority order for attribute text extraction
+				text_attrs = [
+					('aria-label', ''),
+					('title', 'title: '),
+					('placeholder', 'placeholder: '),
+					('value', ''),
+					('alt', 'alt: '),
+				]
+
+				for attr_name, prefix in text_attrs:
+					if attrs.get(attr_name):
+						attr_text = attrs[attr_name].strip()
+						if attr_text and len(attr_text) > 1:
+							meaningful_text = f'{prefix}{attr_text}'[:80]
+							break
+
+			# Add the meaningful text if we found any
+			if meaningful_text:
+				element_desc += f' "{meaningful_text}"'
+
+			# Add href information for links
+			if element_type == 'A' and attrs.get('href'):
+				href = attrs['href']
+				if href.startswith('#'):
+					element_desc += f' (jumps to: {href[1:20]})'
+				elif href.startswith('mailto:'):
+					element_desc += f' (email: {href[7:30]})'
+				elif href.startswith('tel:'):
+					element_desc += f' (phone: {href[4:20]})'
+				elif len(href) > 1 and not href.startswith('javascript:'):
+					if len(href) > 40:
+						element_desc += f' (goes to: {href[:40]}...)'
+					else:
+						element_desc += f' (goes to: {href})'
+
+			# Add role information if available and meaningful
+			if attrs.get('role'):
+				role = attrs['role'].strip()
+				if role and role not in ['generic', 'presentation']:
+					element_desc += f' role: {role}'
+
+			# 9. State information for form elements
+			state_info = []
+			if 'checked' in attrs:
+				state_info.append('checked')
+			if 'disabled' in attrs:
+				state_info.append('disabled')
+			if 'required' in attrs:
+				state_info.append('required')
+			if 'selected' in attrs:
+				state_info.append('selected')
+			if 'readonly' in attrs:
+				state_info.append('readonly')
+
+			if state_info:
+				element_desc += f' ({", ".join(state_info)})'
+
+			grouped_elements[category].append(element_desc)
+
+		# Build the clean serialized string
+		serialized_parts = []
+
+		for category, elements in grouped_elements.items():
+			if elements:
+				serialized_parts.append(f'{category}:')
+				for element in elements:
+					serialized_parts.append(f'  {element}')
+				serialized_parts.append('')  # Empty line between categories
+
+		# Remove trailing empty line
+		if serialized_parts and serialized_parts[-1] == '':
+			serialized_parts.pop()
+
+		filtered_serialized = '\n'.join(serialized_parts)
+
+		print(f'✅ Generated filtered serialized output: {len(filtered_serialized)} characters')
+		print(f'📊 Categories: {len(grouped_elements)}, Total elements: {len(filtered_selector_map)}')
+
+		return filtered_serialized
+
+	except Exception as e:
+		print(f'❌ Error regenerating serialized output: {e}')
+		# Fallback to simple representation
+		fallback = f'FILTERED ELEMENTS ({len(filtered_selector_map)}): ' + ', '.join(
+			[f'[{idx}] {node.node_name}' for idx, node in list(filtered_selector_map.items())[:10]]
+		)
+		if len(filtered_selector_map) > 10:
+			fallback += f' ... and {len(filtered_selector_map) - 10} more'
+		return fallback
 
 
 async def inject_highlighting_script(browser_session: BrowserSession, interactive_elements: list[dict]) -> None:
@@ -410,7 +647,6 @@ async def inject_highlighting_script(browser_session: BrowserSession, interactiv
 			// Global state
 			let state = {
 				highlightsVisible: true,
-				tooltipsEnabled: true,
 				currentFilter: 'ALL',
 				showSerializedData: false,
 				showElementList: false,
@@ -712,7 +948,9 @@ async def inject_highlighting_script(browser_session: BrowserSession, interactiv
 			const scoreSection = document.createElement('div');
 			scoreSection.style.cssText = 'margin-bottom: 15px; padding: 10px; background: rgba(255,255,255,0.05); border-radius: 8px;';
 			
-			const scoreTitle = createTextElement('div', '🎯 Score Threshold Filter', 'color: #4a90e2; font-weight: bold; margin-bottom: 8px;');
+			const scoreTitle = document.createElement('div');
+			scoreTitle.style.cssText = 'color: #4a90e2; font-weight: bold; margin-bottom: 8px;';
+			scoreTitle.textContent = '🎯 Score Threshold Filter';
 			scoreSection.appendChild(scoreTitle);
 			
 			// Score info display
@@ -811,6 +1049,23 @@ async def inject_highlighting_script(browser_session: BrowserSession, interactiv
 			updateScoreThreshold();
 			
 			panelContent.appendChild(scoreSection);
+			
+			// Selected element details section
+			const selectedElementSection = document.createElement('div');
+			selectedElementSection.id = 'selected-element-details';
+			selectedElementSection.style.cssText = 'margin-bottom: 15px; padding: 10px; background: rgba(255,255,255,0.05); border-radius: 8px; display: none;';
+			
+			const selectedElementTitle = document.createElement('div');
+			selectedElementTitle.style.cssText = 'color: #4a90e2; font-weight: bold; margin-bottom: 8px; font-size: 11px;';
+			selectedElementTitle.textContent = '🎯 Selected Element Details';
+			selectedElementSection.appendChild(selectedElementTitle);
+			
+			const selectedElementContent = document.createElement('div');
+			selectedElementContent.id = 'selected-element-content';
+			selectedElementContent.style.cssText = 'max-height: 200px; overflow-y: auto; font-size: 10px; line-height: 1.4;';
+			selectedElementSection.appendChild(selectedElementContent);
+			
+			panelContent.appendChild(selectedElementSection);
 			
 			// Data view section
 			const dataView = document.createElement('div');
@@ -1049,8 +1304,7 @@ async def inject_highlighting_script(browser_session: BrowserSession, interactiv
 				});
 			}
 			
-			// Track active tooltip to prevent conflicts
-			let activeTooltip = null;
+			// Variables for hover state management
 			let currentHoverElement = null;
 			
 			// Enhanced highlighting with ALL elements included
@@ -1171,322 +1425,249 @@ async def inject_highlighting_script(browser_session: BrowserSession, interactiv
 					pointer-events: none;
 				`);
 				
-				// Enhanced tooltip with comprehensive information - UNIQUE FOR EACH ELEMENT
-				const tooltip = document.createElement('div');
-				tooltip.setAttribute('data-browser-use-highlight', 'tooltip');
-				tooltip.setAttribute('data-tooltip-for', element.interactive_index);
-				tooltip.style.cssText = `
-					position: fixed;
-					top: 10px;
-					left: 10px;
-					background: linear-gradient(145deg, rgba(0, 0, 0, 0.95), rgba(20, 20, 20, 0.95));
-					color: white;
-					padding: 16px 20px;
-					font-size: 12px;
-					font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-					border-radius: 10px;
-					z-index: 1000005;
-					opacity: 0;
-					visibility: hidden;
-					transition: opacity 0.2s ease, visibility 0.2s ease, transform 0.2s ease;
-					transform: translateY(-10px);
-					box-shadow: 0 8px 32px rgba(0,0,0,0.6);
-					border: 2px solid ${borderColor};
-					max-width: 400px;
-					min-width: 250px;
-					white-space: normal;
-					line-height: 1.5;
-					pointer-events: none;
-					backdrop-filter: blur(10px);
-				`;
+										// No tooltip creation - details will be shown in debug panel
+			
+			// Function to show element details in debug panel
+			function showElementDetails() {
+				const selectedSection = document.getElementById('selected-element-details');
+				const selectedContent = document.getElementById('selected-element-content');
 				
-				// Build comprehensive tooltip content
+				if (!selectedSection || !selectedContent) return;
+				
+				// Clear existing content
+				while (selectedContent.firstChild) {
+					selectedContent.removeChild(selectedContent.firstChild);
+				}
+				
+				// Build comprehensive element details
+				const reasoning = element.reasoning || {};
 				const primaryReason = reasoning.primary_reason || 'unknown';
 				const evidence = reasoning.evidence || [];
 				const warnings = reasoning.warnings || [];
 				const elementType = reasoning.element_type || element.element_name || 'UNKNOWN';
 				const confidenceDescription = reasoning.confidence_description || 'Unknown confidence';
-				
-				// Create tooltip content safely
-				const tooltipContent = document.createElement('div');
+				const attrs = element.attributes || {};
+				const keyAttrs = ['id', 'class', 'type', 'role', 'aria-label', 'onclick', 'href'];
+				const relevantAttrs = keyAttrs.filter(attr => attrs[attr]);
 				
 				// Header with element info
 				const header = document.createElement('div');
-				header.style.cssText = `color: ${labelColor}; font-weight: bold; font-size: 14px; margin-bottom: 8px; border-bottom: 1px solid #444; padding-bottom: 6px;`;
+				header.style.cssText = `color: ${labelColor}; font-weight: bold; font-size: 12px; margin-bottom: 8px; border-bottom: 1px solid #444; padding-bottom: 6px;`;
 				header.textContent = confidenceEmoji + ' [' + element.interactive_index + '] ' + elementType.toUpperCase();
-				tooltipContent.appendChild(header);
+				selectedContent.appendChild(header);
 				
 				// Confidence with score
 				const confidenceDiv = document.createElement('div');
-				confidenceDiv.style.cssText = `color: ${labelColor}; font-size: 12px; font-weight: bold; margin-bottom: 8px; padding: 4px 8px; background-color: rgba(255, 255, 255, 0.1); border-radius: 4px; border-left: 3px solid ${labelColor};`;
+				confidenceDiv.style.cssText = `color: ${labelColor}; font-size: 11px; font-weight: bold; margin-bottom: 8px; padding: 4px 8px; background-color: rgba(255, 255, 255, 0.1); border-radius: 4px; border-left: 3px solid ${labelColor};`;
 				confidenceDiv.textContent = confidence + ' CONFIDENCE (' + score + ' points)';
-				tooltipContent.appendChild(confidenceDiv);
+				selectedContent.appendChild(confidenceDiv);
 				
 				// Description
 				const descDiv = document.createElement('div');
-				descDiv.style.cssText = 'color: #ccc; font-size: 11px; margin-bottom: 10px; font-style: italic; padding: 4px 8px; background-color: rgba(255, 255, 255, 0.05); border-radius: 4px;';
+				descDiv.style.cssText = 'color: #ccc; font-size: 10px; margin-bottom: 10px; font-style: italic; padding: 4px 8px; background-color: rgba(255, 255, 255, 0.05); border-radius: 4px;';
 				descDiv.textContent = confidenceDescription;
-				tooltipContent.appendChild(descDiv);
+				selectedContent.appendChild(descDiv);
 				
-				// Evidence (show more for debugging)
+				// Evidence
 				if (evidence.length > 0) {
 					const evidenceDiv = document.createElement('div');
 					evidenceDiv.style.cssText = 'margin-bottom: 10px;';
 					
 					const evidenceTitle = document.createElement('div');
-					evidenceTitle.style.cssText = 'color: #28a745; font-size: 11px; margin-bottom: 4px; font-weight: bold;';
+					evidenceTitle.style.cssText = 'color: #28a745; font-size: 10px; margin-bottom: 4px; font-weight: bold;';
 					evidenceTitle.textContent = '✅ Evidence (' + evidence.length + '):';
 					evidenceDiv.appendChild(evidenceTitle);
 					
-					// Show up to 5 evidence items for better debugging
 					evidence.slice(0, 5).forEach((ev, i) => {
 						const evidenceItem = document.createElement('div');
-						evidenceItem.style.cssText = 'color: #ccc; font-size: 10px; margin-bottom: 2px; border-left: 2px solid #28a745; padding-left: 8px; margin-left: 4px;';
+						evidenceItem.style.cssText = 'color: #ccc; font-size: 9px; margin-bottom: 2px; border-left: 2px solid #28a745; padding-left: 8px; margin-left: 4px;';
 						evidenceItem.textContent = (i + 1) + '. ' + ev;
 						evidenceDiv.appendChild(evidenceItem);
 					});
 					
 					if (evidence.length > 5) {
 						const moreDiv = document.createElement('div');
-						moreDiv.style.cssText = 'color: #999; font-size: 9px; font-style: italic; margin-top: 2px; padding-left: 12px;';
+						moreDiv.style.cssText = 'color: #999; font-size: 8px; font-style: italic; margin-top: 2px; padding-left: 12px;';
 						moreDiv.textContent = '... and ' + (evidence.length - 5) + ' more';
 						evidenceDiv.appendChild(moreDiv);
 					}
 					
-					tooltipContent.appendChild(evidenceDiv);
+					selectedContent.appendChild(evidenceDiv);
 				}
 				
-				// Warnings for debugging
+				// Warnings
 				if (warnings.length > 0) {
 					const warningsDiv = document.createElement('div');
 					warningsDiv.style.cssText = 'margin-bottom: 10px;';
 					
 					const warningsTitle = document.createElement('div');
-					warningsTitle.style.cssText = 'color: #ffc107; font-size: 11px; margin-bottom: 4px; font-weight: bold;';
+					warningsTitle.style.cssText = 'color: #ffc107; font-size: 10px; margin-bottom: 4px; font-weight: bold;';
 					warningsTitle.textContent = '⚠️ Warnings (' + warnings.length + '):';
 					warningsDiv.appendChild(warningsTitle);
 					
 					warnings.slice(0, 3).forEach((warn, i) => {
 						const warningItem = document.createElement('div');
-						warningItem.style.cssText = 'color: #ffeb3b; font-size: 10px; margin-bottom: 2px; border-left: 2px solid #ffc107; padding-left: 8px; margin-left: 4px;';
+						warningItem.style.cssText = 'color: #ffeb3b; font-size: 9px; margin-bottom: 2px; border-left: 2px solid #ffc107; padding-left: 8px; margin-left: 4px;';
 						warningItem.textContent = (i + 1) + '. ' + warn;
 						warningsDiv.appendChild(warningItem);
 					});
 					
-					tooltipContent.appendChild(warningsDiv);
+					selectedContent.appendChild(warningsDiv);
 				}
 				
-				// Key attributes for debugging
-				const attrs = element.attributes || {};
-				const keyAttrs = ['id', 'class', 'type', 'role', 'aria-label', 'onclick', 'href'];
-				const relevantAttrs = keyAttrs.filter(attr => attrs[attr]);
-				
+				// Key attributes
 				if (relevantAttrs.length > 0) {
 					const attrsDiv = document.createElement('div');
 					attrsDiv.style.cssText = 'margin-bottom: 10px;';
 					
 					const attrsTitle = document.createElement('div');
-					attrsTitle.style.cssText = 'color: #17a2b8; font-size: 11px; margin-bottom: 4px; font-weight: bold;';
+					attrsTitle.style.cssText = 'color: #17a2b8; font-size: 10px; margin-bottom: 4px; font-weight: bold;';
 					attrsTitle.textContent = '🏷️ Key Attributes:';
 					attrsDiv.appendChild(attrsTitle);
 					
 					relevantAttrs.forEach(attr => {
 						const attrItem = document.createElement('div');
-						attrItem.style.cssText = 'color: #b3e5fc; font-size: 10px; margin-bottom: 2px; border-left: 2px solid #17a2b8; padding-left: 8px; margin-left: 4px;';
+						attrItem.style.cssText = 'color: #b3e5fc; font-size: 9px; margin-bottom: 2px; border-left: 2px solid #17a2b8; padding-left: 8px; margin-left: 4px;';
 						const value = attrs[attr].toString();
 						const displayValue = value.length > 40 ? value.substring(0, 40) + '...' : value;
 						attrItem.textContent = attr + ': "' + displayValue + '"';
 						attrsDiv.appendChild(attrItem);
 					});
 					
-					tooltipContent.appendChild(attrsDiv);
+					selectedContent.appendChild(attrsDiv);
 				}
 				
-				// Position info with more details
+				// Position info
 				const positionDiv = document.createElement('div');
 				positionDiv.style.cssText = 'color: #666; font-size: 9px; margin-top: 12px; border-top: 1px solid #333; padding-top: 8px;';
 				const area = Math.round(element.width * element.height);
 				positionDiv.textContent = 'Position: (' + Math.round(element.x) + ', ' + Math.round(element.y) + ') • Size: ' + Math.round(element.width) + '×' + Math.round(element.height) + ' • Area: ' + area + 'px²';
-				tooltipContent.appendChild(positionDiv);
+				selectedContent.appendChild(positionDiv);
 				
 				// Debug info
 				const debugDiv = document.createElement('div');
 				debugDiv.style.cssText = 'color: #888; font-size: 8px; margin-top: 8px; border-top: 1px solid #333; padding-top: 6px; font-style: italic;';
 				debugDiv.textContent = 'Reason: ' + primaryReason + ' • Frame: ' + (element.frame_id || 'main') + ' • Clickable: ' + (element.is_clickable ? 'Yes' : 'No');
-				tooltipContent.appendChild(debugDiv);
+				selectedContent.appendChild(debugDiv);
 				
-				tooltip.appendChild(tooltipContent);
+				// Show the section
+				selectedSection.style.display = 'block';
+			}
+			
+			// Simple hover effects for visual feedback
+			function showHoverEffect() {
+				// Visual feedback for this element
+				highlight.style.borderColor = '#ff6b6b';
+				highlight.style.backgroundColor = 'rgba(255, 107, 107, 0.25)';
+				highlight.style.borderWidth = '4px';
+				highlight.style.boxShadow = '0 0 20px rgba(255, 107, 107, 0.6)';
+				highlight.style.transform = 'scale(1.02)';
+				highlight.style.zIndex = '1000006';
 				
-				// IMPROVED hover effects - each element manages its own tooltip independently
-				function showTooltip(e) {
-					if (!state.tooltipsEnabled) return;
-					
-					// Hide ALL other tooltips first
-					const allTooltips = container.querySelectorAll('[data-browser-use-highlight="tooltip"]');
-					allTooltips.forEach(t => {
-						if (t !== tooltip) {
-							t.style.opacity = '0';
-							t.style.visibility = 'hidden';
-						}
+				// Label animation
+				label.style.backgroundColor = '#ff6b6b';
+				label.style.transform = 'scale(1.15) translateY(-2px)';
+				label.style.boxShadow = '0 4px 12px rgba(255, 107, 107, 0.4)';
+				
+				// Badge animation
+				confidenceBadge.style.transform = 'scale(1.2) rotate(5deg)';
+			}
+			
+			function hideHoverEffect() {
+				// Reset visual effects
+				highlight.style.borderColor = borderColor;
+				highlight.style.backgroundColor = backgroundColor;
+				highlight.style.borderWidth = borderWidth;
+				highlight.style.boxShadow = 'none';
+				highlight.style.transform = 'scale(1)';
+				highlight.style.zIndex = '999999';
+				
+				// Reset label
+				label.style.backgroundColor = labelColor;
+				label.style.transform = 'scale(1) translateY(0)';
+				label.style.boxShadow = '0 2px 6px rgba(0,0,0,0.3)';
+				
+				// Reset badge
+				confidenceBadge.style.transform = 'scale(1) rotate(0deg)';
+			}
+			
+			// Add event listeners - hover for visual feedback, click for details
+			highlight.addEventListener('mouseenter', showHoverEffect, false);
+			highlight.addEventListener('mouseleave', hideHoverEffect, false);
+				
+							// Enhanced click handling with detailed logging and panel display
+			highlight.addEventListener('click', function(e) {
+				e.stopPropagation();
+				
+				// Show element details in debug panel
+				showElementDetails();
+				
+				// Comprehensive click logging
+				console.group('🎯 Element [' + element.interactive_index + '] CLICKED - DETAILED ANALYSIS');
+				console.log('═'.repeat(60));
+				console.log('🏷️  BASIC INFO:');
+				console.log('   Type:', elementType);
+				console.log('   Confidence:', confidence, '(' + score + ' points)');
+				console.log('   Position:', element.x + ',' + element.y);
+				console.log('   Size:', element.width + 'x' + element.height + ' (area: ' + Math.round(element.width * element.height) + 'px²)');
+				console.log('   Primary Reason:', primaryReason);
+				
+				console.log('🔍 REASONING ANALYSIS:');
+				console.log('   Category:', reasoning.element_category || 'unknown');
+				console.log('   Description:', confidenceDescription);
+				
+				if (evidence.length > 0) {
+					console.log('✅ EVIDENCE (' + evidence.length + ' items):');
+					evidence.forEach((ev, i) => console.log('   ' + (i + 1) + '. ' + ev));
+				}
+				
+				if (warnings.length > 0) {
+					console.log('⚠️  WARNINGS (' + warnings.length + ' items):');
+					warnings.forEach((warn, i) => console.log('   ' + (i + 1) + '. ' + warn));
+				}
+				
+				if (Object.keys(attrs).length > 0) {
+					console.log('🏷️  ALL ATTRIBUTES (' + Object.keys(attrs).length + ' total):');
+					Object.entries(attrs).forEach(([key, value]) => {
+						const displayValue = value.toString().length > 100 ? value.toString().substring(0, 100) + '...' : value;
+						console.log('   ' + key + ':', displayValue);
 					});
-					
-					// Set this as current hover element
-					currentHoverElement = element.interactive_index;
-					
-					// Visual feedback for this element
-					highlight.style.borderColor = '#ff6b6b';
-					highlight.style.backgroundColor = 'rgba(255, 107, 107, 0.25)';
-					highlight.style.borderWidth = '4px';
-					highlight.style.boxShadow = '0 0 20px rgba(255, 107, 107, 0.6)';
-					highlight.style.transform = 'scale(1.02)';
-					highlight.style.zIndex = '1000006';
-					
-					// Label animation
-					label.style.backgroundColor = '#ff6b6b';
-					label.style.transform = 'scale(1.15) translateY(-2px)';
-					label.style.boxShadow = '0 4px 12px rgba(255, 107, 107, 0.4)';
-					
-					// Badge animation
-					confidenceBadge.style.transform = 'scale(1.2) rotate(5deg)';
-					
-					// Show this tooltip immediately
-					updateTooltipPosition(e);
-					tooltip.style.opacity = '1';
-					tooltip.style.visibility = 'visible';
-					tooltip.style.transform = 'translateY(0)';
-					activeTooltip = tooltip;
-					
-					// Enhanced console logging for debugging
-					console.group('🎯 Element [' + element.interactive_index + '] Hovered');
-					console.log('Type:', elementType);
-					console.log('Confidence:', confidence + ' (' + score + ' points)');
-					console.log('Position:', element.x + ',' + element.y, 'Size:', element.width + 'x' + element.height);
-					console.log('Primary Reason:', primaryReason);
-					if (evidence.length > 0) console.log('Evidence:', evidence);
-					if (warnings.length > 0) console.log('Warnings:', warnings);
-					if (relevantAttrs.length > 0) {
-						const attrObj = {};
-						relevantAttrs.forEach(attr => attrObj[attr] = attrs[attr]);
-						console.log('Key Attributes:', attrObj);
-					}
-					console.groupEnd();
 				}
 				
-				function hideTooltip() {
-					// Only hide if this is the current hover element
-					if (currentHoverElement === element.interactive_index) {
-						currentHoverElement = null;
-						
-						// Reset visual effects
-						highlight.style.borderColor = borderColor;
-						highlight.style.backgroundColor = backgroundColor;
-						highlight.style.borderWidth = borderWidth;
-						highlight.style.boxShadow = 'none';
-						highlight.style.transform = 'scale(1)';
-						highlight.style.zIndex = '999999';
-						
-						// Reset label
-						label.style.backgroundColor = labelColor;
-						label.style.transform = 'scale(1) translateY(0)';
-						label.style.boxShadow = '0 2px 6px rgba(0,0,0,0.3)';
-						
-						// Reset badge
-						confidenceBadge.style.transform = 'scale(1) rotate(0deg)';
-						
-						// Hide tooltip
-						tooltip.style.opacity = '0';
-						tooltip.style.visibility = 'hidden';
-						tooltip.style.transform = 'translateY(-10px)';
-						
-						if (activeTooltip === tooltip) {
-							activeTooltip = null;
-						}
-					}
-				}
+				console.log('🔧 TECHNICAL INFO:');
+				console.log('   Clickable:', element.is_clickable);
+				console.log('   Scrollable:', element.is_scrollable);
+				console.log('   Frame ID:', element.frame_id || 'main');
+				console.log('   Has Attributes:', reasoning.has_attributes);
+				console.log('   Attribute Count:', reasoning.attribute_count);
 				
-				function updateTooltipPosition(e) {
-					const x = Math.min(e.clientX + 15, window.innerWidth - 420);
-					const y = Math.min(e.clientY + 15, window.innerHeight - 400);
-					tooltip.style.left = x + 'px';
-					tooltip.style.top = y + 'px';
-				}
+				console.log('═'.repeat(60));
+				console.groupEnd();
 				
-				// Add event listeners with better handling
-				highlight.addEventListener('mouseenter', showTooltip, false);
-				highlight.addEventListener('mouseleave', hideTooltip, false);
-				highlight.addEventListener('mousemove', updateTooltipPosition, false);
-				
-				// Enhanced click handling with detailed logging
-				highlight.addEventListener('click', function(e) {
-					e.stopPropagation();
-					
-					// Comprehensive click logging
-					console.group('🎯 Element [' + element.interactive_index + '] CLICKED - DETAILED ANALYSIS');
-					console.log('═'.repeat(60));
-					console.log('🏷️  BASIC INFO:');
-					console.log('   Type:', elementType);
-					console.log('   Confidence:', confidence, '(' + score + ' points)');
-					console.log('   Position:', element.x + ',' + element.y);
-					console.log('   Size:', element.width + 'x' + element.height + ' (area: ' + Math.round(element.width * element.height) + 'px²)');
-					console.log('   Primary Reason:', primaryReason);
-					
-					console.log('🔍 REASONING ANALYSIS:');
-					console.log('   Category:', reasoning.element_category || 'unknown');
-					console.log('   Description:', confidenceDescription);
-					
-					if (evidence.length > 0) {
-						console.log('✅ EVIDENCE (' + evidence.length + ' items):');
-						evidence.forEach((ev, i) => console.log('   ' + (i + 1) + '. ' + ev));
-					}
-					
-					if (warnings.length > 0) {
-						console.log('⚠️  WARNINGS (' + warnings.length + ' items):');
-						warnings.forEach((warn, i) => console.log('   ' + (i + 1) + '. ' + warn));
-					}
-					
-					if (Object.keys(attrs).length > 0) {
-						console.log('🏷️  ALL ATTRIBUTES (' + Object.keys(attrs).length + ' total):');
-						Object.entries(attrs).forEach(([key, value]) => {
-							const displayValue = value.toString().length > 100 ? value.toString().substring(0, 100) + '...' : value;
-							console.log('   ' + key + ':', displayValue);
-						});
-					}
-					
-					console.log('🔧 TECHNICAL INFO:');
-					console.log('   Clickable:', element.is_clickable);
-					console.log('   Scrollable:', element.is_scrollable);
-					console.log('   Frame ID:', element.frame_id || 'main');
-					console.log('   Has Attributes:', reasoning.has_attributes);
-					console.log('   Attribute Count:', reasoning.attribute_count);
-					
-					console.log('═'.repeat(60));
-					console.groupEnd();
-					
-					// Scroll element in debug panel list and highlight it
-					const listItem = elementList.querySelector(`[onclick*="${element.interactive_index}"]`);
-					if (listItem) {
-						listItem.style.background = 'rgba(255, 107, 107, 0.3)';
-						listItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-						setTimeout(() => {
-							listItem.style.background = 'transparent';
-						}, 2000);
-					}
-					
-					// Flash effect on the element itself
-					const originalBorder = highlight.style.border;
-					highlight.style.border = '4px solid #ff6b6b';
-					highlight.style.boxShadow = '0 0 30px rgba(255, 107, 107, 0.8)';
+				// Scroll element in debug panel list and highlight it
+				const listItem = elementList.querySelector(`[onclick*="${element.interactive_index}"]`);
+				if (listItem) {
+					listItem.style.background = 'rgba(255, 107, 107, 0.3)';
+					listItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 					setTimeout(() => {
-						highlight.style.border = originalBorder;
-						highlight.style.boxShadow = 'none';
-					}, 1000);
-				}, false);
+						listItem.style.background = 'transparent';
+					}, 2000);
+				}
 				
-				// Assemble element
-				highlight.appendChild(tooltip);
-				highlight.appendChild(label);
-				highlight.appendChild(confidenceBadge);
-				container.appendChild(highlight);
+				// Flash effect on the element itself
+				const originalBorder = highlight.style.border;
+				highlight.style.border = '4px solid #ff6b6b';
+				highlight.style.boxShadow = '0 0 30px rgba(255, 107, 107, 0.8)';
+				setTimeout(() => {
+					highlight.style.border = originalBorder;
+					highlight.style.boxShadow = 'none';
+				}, 1000);
+			}, false);
+				
+							// Assemble element (no tooltip - details shown in debug panel)
+			highlight.appendChild(label);
+			highlight.appendChild(confidenceBadge);
+			container.appendChild(highlight);
 			});
 			
 			// Add enhanced animations based on score gradients
@@ -1619,7 +1800,7 @@ async def inject_highlighting_script(browser_session: BrowserSession, interactiv
 		traceback.print_exc()
 
 
-async def save_outputs_to_files(serialized: str, selector_map: dict, interactive_elements: list[dict], url: str) -> None:
+async def save_outputs_to_files(serialized: str, selector_map: dict, interactive_elements: list[dict], url: str) -> dict:
 	"""Save all outputs to tmp files for analysis with enhanced reasoning data."""
 	try:
 		print_subsection('💾 SAVING ANALYSIS FILES')
@@ -1712,9 +1893,16 @@ async def save_outputs_to_files(serialized: str, selector_map: dict, interactive
 		print(f'   • {abs_selector_path}')
 		print('     Selector map for debugging')
 
+		return {
+			'serialized_file': str(abs_serialized_path),
+			'elements_file': str(abs_elements_path),
+			'selector_file': str(abs_selector_path),
+		}
+
 	except Exception as e:
 		print(f'❌ Error saving enhanced files: {e}')
 		traceback.print_exc()
+		return {}
 
 
 def get_website_choice() -> str:
@@ -2009,20 +2197,12 @@ async def save_comprehensive_summary(all_results):
 
 
 async def main():
-	"""Main function with choice between interactive and comprehensive testing."""
+	"""Main function for interactive DOM testing."""
 	print('🔍 DOM Extraction Testing Tool')
 	print('=' * 50)
-	print('Choose testing mode:')
-	print('  1. Interactive testing (original)')
-	print('  2. Comprehensive automated testing')
 
 	try:
-		choice = input('Enter choice (1 or 2): ').strip()
-		if choice == '2':
-			print('❌ Comprehensive testing mode not available')
-			await interactive_testing_mode()
-		else:
-			await interactive_testing_mode()
+		await interactive_testing_mode()
 	except (EOFError, KeyboardInterrupt):
 		print('\n👋 Exiting...')
 
@@ -2044,9 +2224,18 @@ async def interactive_testing_mode():
 		print('🎯 PURPOSE: Fast comprehensive DOM element detection')
 		print('  ✅ AX tree-driven filtering for speed')
 		print('  ✅ Viewport-based element filtering')
+		print('  ✅ Score-based threshold filtering')
 		print('  ✅ Aggressive container removal')
 		print('  ✅ Perfect sync between highlighting and serialization')
 		print('=' * 60)
+
+		# Use default score threshold - users can adjust via debug UI slider
+		score_threshold = 0  # CHANGED: Test with threshold 0 to include ALL AX elements
+		print('\n🎯 TESTING SCORE THRESHOLD = 0 MODE:')
+		print('   • Using score threshold: 0 points (includes ALL AX elements)')
+		print('   • 🎛️  This should include many more elements')
+		print('   • 📊 Testing the enhanced scoring system')
+		print('   • 🎮 Full interactive debugging features enabled')
 
 		while True:
 			try:
@@ -2059,14 +2248,17 @@ async def interactive_testing_mode():
 				await asyncio.sleep(3)  # Wait for page to load
 
 				while True:
-					print('\n🔄 Extracting DOM with optimized comprehensive detection')
+					print('\n🔄 Extracting DOM with score-filtered comprehensive detection')
 					print('=' * 60)
 
-					# Extract interactive elements
-					interactive_elements, serialized, selector_map = await extract_interactive_elements_from_service(dom_service)
+					# Extract interactive elements with score threshold
+					interactive_elements, serialized, selector_map = await extract_interactive_elements_from_service(
+						dom_service, score_threshold
+					)
 
 					# Print summary
-					print('\n📊 Extraction Results:')
+					print('\n📊 Score-Filtered Extraction Results:')
+					print(f'  - Score threshold: {score_threshold} points')
 					print(f'  - Interactive elements detected: {len(interactive_elements)}')
 					print(f'  - Serialized length: {len(serialized)} characters')
 					print(f'  - Selector map entries: {len(selector_map)}')
@@ -2074,6 +2266,7 @@ async def interactive_testing_mode():
 					# Show performance optimization info
 					print('  - 🚀 Performance optimizations active:')
 					print('      - Fast AX tree processing')
+					print('      - Score-based threshold filtering')
 					print('      - No CDP errors from iframe/shadow DOM')
 					print('      - Viewport-based filtering')
 
@@ -2087,18 +2280,31 @@ async def interactive_testing_mode():
 
 					# Print sample elements
 					if interactive_elements:
-						print('\n🎯 Sample interactive elements:')
+						print('\n🎯 Sample score-filtered interactive elements:')
 						for elem in interactive_elements[:5]:
+							score = elem.get('reasoning', {}).get('score', 0)
+							confidence = elem.get('reasoning', {}).get('confidence', 'UNKNOWN')
 							attrs_info = get_element_description(elem)
-							print(f'      [{elem["interactive_index"]}] {elem["element_name"]}{attrs_info}')
+							print(
+								f'      [{elem["interactive_index"]}] {elem["element_name"]}{attrs_info} - {score}pts ({confidence})'
+							)
 						if len(interactive_elements) > 5:
 							print(f'      ... and {len(interactive_elements) - 5} more')
 
-					# Highlight elements
+					# Highlight elements with full debug UI (only the filtered ones will be highlighted)
 					await inject_highlighting_script(browser_session, interactive_elements)
 
 					# Save outputs to files
-					await save_outputs_to_files(serialized, selector_map, interactive_elements, url)
+					saved_files = await save_outputs_to_files(serialized, selector_map, interactive_elements, url)
+
+					# Show where the LLM string representation is saved
+					print('\n📄 LLM STRING REPRESENTATION SAVED:')
+					if saved_files and 'serialized_file' in saved_files:
+						print(f'   📁 File: {saved_files["serialized_file"]}')
+						print('   📊 Content: Enhanced DOM serialization with reasoning')
+						print(f'   📏 Size: {len(serialized):,} characters')
+					else:
+						print('   ⚠️  File location not available')
 
 					# Save comprehensive DOM tree JSON
 					json_file_path = await save_comprehensive_dom_tree_json(
@@ -2108,7 +2314,7 @@ async def interactive_testing_mode():
 						print(f'📄 DOM tree JSON also available at: {json_file_path}')
 
 					# Print serialized output preview
-					print('\n📄 Serialized output preview (first 800 chars):')
+					print('\n📄 Score-filtered serialized output preview (first 800 chars):')
 					print('-' * 60)
 					print(serialized[:800])
 					if len(serialized) > 800:
@@ -2120,10 +2326,12 @@ async def interactive_testing_mode():
 					print('  1. Extract again (test for consistency)')
 					print('  2. Test different website')
 					print('  3. Inspect elements via CLI')
-					print('  4. Exit')
+					print('  4. Extract & analyze AX tree')
+					print('  5. Exit')
+					print('  🎛️  Use debug UI slider to adjust threshold in real-time')
 
 					try:
-						next_choice = input('Enter choice (1, 2, 3, or 4): ').strip()
+						next_choice = input('Enter choice (1, 2, 3, 4, or 5): ').strip()
 						if next_choice == '1':
 							continue  # Extract again
 						elif next_choice == '2':
@@ -2132,6 +2340,18 @@ async def interactive_testing_mode():
 							cli_inspection_mode(interactive_elements)
 							continue  # Stay on same page after inspection
 						elif next_choice == '4':
+							# Extract and analyze AX tree
+							print('\n🌳 Extracting and analyzing AX tree for interactive patterns...')
+							ax_tree_path = await extract_and_save_ax_tree(dom_service, url)
+							if ax_tree_path:
+								print('\n✅ AX tree analysis complete!')
+								print(f'📁 Files saved for analysis: {Path(ax_tree_path).parent}')
+								print('🔍 Review the analysis to understand what interactive elements we might be missing')
+								input('\n📋 Press ENTER to continue...')
+							else:
+								print('❌ Failed to extract AX tree')
+							continue  # Stay on same page
+						elif next_choice == '5':
 							print('👋 Exiting...')
 							return
 						else:
@@ -2160,7 +2380,7 @@ async def interactive_testing_mode():
 		await browser_session.stop()
 
 
-async def test_website_direct(url: str) -> None:
+async def test_website_direct(url: str, score_threshold: int = 15) -> None:
 	"""Test a specific website directly without input() calls for better automation."""
 	profile = BrowserProfile(headless=False, keep_alive=True)
 	browser_session = BrowserSession(browser_profile=profile)
@@ -2170,23 +2390,33 @@ async def test_website_direct(url: str) -> None:
 		dom_service = DOMService(browser_session)
 
 		print_section_header(f'🌐 TESTING WEBSITE: {url}')
+		print(f'🎯 Score threshold: {score_threshold} points')
 
 		# Navigate to website
 		print(f'📍 Navigating to: {url}')
 		await browser_session.navigate_to(url)
 		await asyncio.sleep(3)  # Wait for page to load
 
-		# Extract interactive elements
-		interactive_elements, serialized, selector_map = await extract_interactive_elements_from_service(dom_service)
+		# Extract interactive elements with score threshold
+		interactive_elements, serialized, selector_map = await extract_interactive_elements_from_service(
+			dom_service, score_threshold
+		)
 
 		# Inject highlighting
 		await inject_highlighting_script(browser_session, interactive_elements)
 
-		# Save outputs
-		await save_outputs_to_files(serialized, selector_map, interactive_elements, url)
+		# Save outputs and show LLM string representation location
+		saved_files = await save_outputs_to_files(serialized, selector_map, interactive_elements, url)
+
+		print('\n📄 LLM STRING REPRESENTATION SAVED:')
+		if saved_files and 'serialized_file' in saved_files:
+			print(f'   📁 File: {saved_files["serialized_file"]}')
+			print('   📊 Content: Enhanced DOM serialization with reasoning')
+		else:
+			print('   ⚠️  File location not available')
 
 		print_section_header('✅ TESTING COMPLETE')
-		print(f'🎯 Found {len(interactive_elements)} interactive elements')
+		print(f'🎯 Found {len(interactive_elements)} interactive elements (threshold: {score_threshold}pts)')
 		print('🖥️  Browser will stay open for manual inspection')
 		print('🔄 Press Ctrl+R in browser to refresh highlighting after scrolling')
 		tmp_dir_abs = Path('tmp').absolute()
@@ -2200,306 +2430,6 @@ async def test_website_direct(url: str) -> None:
 	# Note: Browser stays open due to keep_alive=True
 
 
-# Common test websites for quick testing
-TEST_WEBSITES = {
-	'simple': 'https://example.com',
-	'browser-use': 'https://browser-use.com',
-	'github': 'https://github.com',
-	'semantic-ui': 'https://semantic-ui.com/modules/dropdown.html',
-	'google-flights': 'https://www.google.com/travel/flights',
-	'wikipedia': 'https://en.wikipedia.org/wiki/Internet',
-	'google-search': 'https://www.google.com/search?q=browser+automation',
-	'stackoverflow': 'https://stackoverflow.com',
-}
-
-
-def inspect_element_by_number(interactive_elements: list[dict], element_number: int) -> None:
-	"""Inspect a specific element by its interactive index number with comprehensive details."""
-
-	# Find element by interactive_index
-	target_element = None
-	for elem in interactive_elements:
-		if elem.get('interactive_index') == element_number:
-			target_element = elem
-			break
-
-	if not target_element:
-		print(f'\n❌ Element [{element_number}] not found in interactive elements.')
-		available_indices = []
-		for elem in interactive_elements:
-			idx = elem.get('interactive_index')
-			if idx is not None and isinstance(idx, int):
-				available_indices.append(idx)
-		available_indices.sort()
-		print(f'📋 Available elements: {available_indices}')
-		return
-
-	reasoning = target_element.get('reasoning', {})
-	attrs = target_element.get('attributes', {})
-
-	print('\n🔍 COMPREHENSIVE ELEMENT INSPECTION')
-	print('=' * 80)
-
-	# Enhanced header with visual indicators
-	confidence_emoji = {
-		'DEFINITE': '🟢',
-		'LIKELY': '🟡',
-		'POSSIBLE': '🟠',
-		'QUESTIONABLE': '🔴',
-		'MINIMAL': '🟣',
-	}.get(reasoning.get('confidence'), '❓')
-
-	print(f'\n🎯 ELEMENT [{element_number}] - {reasoning.get("element_type", "UNKNOWN")}')
-	print(f'{confidence_emoji} {reasoning.get("confidence", "UNKNOWN")} CONFIDENCE ({reasoning.get("score", 0)} points)')
-	print(f'📂 Category: {reasoning.get("element_category", "unknown").replace("_", " ").title()}')
-	print(f'📄 Description: {reasoning.get("confidence_description", "No description")}')
-	print(f'🎲 Primary Reason: {reasoning.get("primary_reason", "unknown").replace("_", " ").title()}')
-
-	# Enhanced position and size information
-	x, y = target_element.get('x', 0), target_element.get('y', 0)
-	width, height = target_element.get('width', 0), target_element.get('height', 0)
-	print('\n📍 POSITIONING & SIZE:')
-	print(f'   • Position: ({x:.1f}, {y:.1f})')
-	print(f'   • Size: {width:.1f}×{height:.1f}px')
-	print(f'   • Area: {width * height:.0f} px²')
-	print(f'   • Bounds: ({x:.1f}, {y:.1f}) to ({x + width:.1f}, {y + height:.1f})')
-	if width > 0 and height > 0:
-		aspect_ratio = width / height
-		print(
-			f'   • Aspect Ratio: {aspect_ratio:.2f}:1 ({"landscape" if aspect_ratio > 1 else "portrait" if aspect_ratio < 1 else "square"})'
-		)
-
-	# Element properties
-	print('\n🔧 ELEMENT PROPERTIES:')
-	print(f'   • Is Clickable: {target_element.get("is_clickable", False)}')
-	print(f'   • Is Scrollable: {target_element.get("is_scrollable", False)}')
-	print(f'   • Frame ID: {target_element.get("frame_id", "main")}')
-	print(f'   • Has Attributes: {reasoning.get("has_attributes", False)}')
-	print(f'   • Attribute Count: {reasoning.get("attribute_count", 0)}')
-
-	# Evidence section with better formatting
-	evidence = reasoning.get('evidence', [])
-	if evidence:
-		print(f'\n✅ EVIDENCE ({len(evidence)} items):')
-		for i, ev in enumerate(evidence, 1):
-			print(f'   {i:2d}. {ev}')
-	else:
-		print('\n❓ No evidence recorded')
-
-	# Warnings section with better formatting
-	warnings = reasoning.get('warnings', [])
-	if warnings:
-		print(f'\n⚠️  WARNINGS ({len(warnings)} items):')
-		for i, warn in enumerate(warnings, 1):
-			print(f'   {i:2d}. {warn}')
-
-	# Context information with better formatting
-	context_info = reasoning.get('context_info', [])
-	if context_info:
-		print(f'\n📋 CONTEXT INFORMATION ({len(context_info)} items):')
-		for i, info in enumerate(context_info, 1):
-			print(f'   {i:2d}. {info}')
-
-	# Enhanced attributes section with categorization
-	if attrs:
-		print(f'\n🏷️  ALL ATTRIBUTES ({len(attrs)} total):')
-
-		# Categorize attributes
-		important_attrs = ['id', 'class', 'type', 'role', 'aria-label', 'aria-labelledby', 'href', 'src', 'alt', 'title']
-		event_attrs = [k for k in attrs.keys() if k.startswith('on')]
-		data_attrs = [k for k in attrs.keys() if k.startswith('data-')]
-		aria_attrs = [k for k in attrs.keys() if k.startswith('aria-')]
-		style_attrs = [k for k in attrs.keys() if k in ['style', 'class']]
-
-		# Show important attributes first
-		if any(attr in attrs for attr in important_attrs):
-			print('\n   📌 IMPORTANT ATTRIBUTES:')
-			for attr in important_attrs:
-				if attr in attrs:
-					value_str = str(attrs[attr])
-					if len(value_str) > 100:
-						value_str = value_str[:100] + '...'
-					print(f'      • {attr}: "{value_str}"')
-
-		# Show event attributes
-		if event_attrs:
-			print('\n   ⚡ EVENT ATTRIBUTES:')
-			for attr in sorted(event_attrs):
-				value_str = str(attrs[attr])
-				if len(value_str) > 80:
-					value_str = value_str[:80] + '...'
-				print(f'      • {attr}: "{value_str}"')
-
-		# Show data attributes
-		if data_attrs:
-			print('\n   💾 DATA ATTRIBUTES:')
-			for attr in sorted(data_attrs):
-				value_str = str(attrs[attr])
-				if len(value_str) > 80:
-					value_str = value_str[:80] + '...'
-				print(f'      • {attr}: "{value_str}"')
-
-		# Show ARIA attributes
-		if aria_attrs:
-			print('\n   ♿ ARIA ATTRIBUTES:')
-			for attr in sorted(aria_attrs):
-				value_str = str(attrs[attr])
-				if len(value_str) > 80:
-					value_str = value_str[:80] + '...'
-				print(f'      • {attr}: "{value_str}"')
-
-		# Show remaining attributes
-		shown_attrs = set(important_attrs + event_attrs + data_attrs + aria_attrs)
-		remaining_attrs = [k for k in attrs.keys() if k not in shown_attrs]
-		if remaining_attrs:
-			print('\n   🔧 OTHER ATTRIBUTES:')
-			for attr in sorted(remaining_attrs):
-				value_str = str(attrs[attr])
-				if len(value_str) > 80:
-					value_str = value_str[:80] + '...'
-				print(f'      • {attr}: "{value_str}"')
-	else:
-		print('\n🏷️  No attributes found')
-
-	# Enhanced scoring breakdown
-	print('\n📊 DETAILED SCORING BREAKDOWN:')
-	print(f'   • Final Score: {reasoning.get("score", 0)} points')
-	print(f'   • Primary Reason: {reasoning.get("primary_reason", "unknown").replace("_", " ").title()}')
-	print(f'   • Element Category: {reasoning.get("element_category", "unknown").replace("_", " ").title()}')
-
-	# Score ranges for context with detailed explanations
-	score = reasoning.get('score', 0)
-	if score >= 70:
-		print('   • Score Range: DEFINITE (70+ points) 🟢')
-		print('     └─ Very likely to be interactive, high confidence')
-	elif score >= 40:
-		print('   • Score Range: LIKELY (40-69 points) 🟡')
-		print('     └─ Probably interactive, good confidence')
-	elif score >= 20:
-		print('   • Score Range: POSSIBLE (20-39 points) 🟠')
-		print('     └─ Possibly interactive, moderate confidence')
-	elif score >= 10:
-		print('   • Score Range: QUESTIONABLE (10-19 points) 🔴')
-		print('     └─ Questionable interactivity, low confidence')
-	else:
-		print('   • Score Range: MINIMAL (<10 points) 🟣')
-		print('     └─ Minimal interactivity, very low confidence')
-
-	# Analysis recommendations
-	print('\n🎯 ANALYSIS RECOMMENDATIONS:')
-	confidence = reasoning.get('confidence', 'UNKNOWN')
-	if confidence == 'DEFINITE':
-		print('   ✅ This element should definitely be included in automation')
-	elif confidence == 'LIKELY':
-		print('   ✅ This element is probably safe to include in automation')
-	elif confidence == 'POSSIBLE':
-		print('   ⚠️  Consider including this element, but test thoroughly')
-	elif confidence == 'QUESTIONABLE':
-		print('   ⚠️  Use caution - this element might not be reliably interactive')
-	elif confidence == 'MINIMAL':
-		print('   ❌ This element is unlikely to be interactive - consider excluding')
-
-	# Size analysis
-	if width > 0 and height > 0:
-		size_category = 'unknown'
-		if width < 10 or height < 10:
-			size_category = 'very small'
-		elif width < 30 or height < 30:
-			size_category = 'small'
-		elif width < 100 or height < 100:
-			size_category = 'medium'
-		elif width < 300 or height < 300:
-			size_category = 'large'
-		else:
-			size_category = 'very large'
-
-		print('\n📏 SIZE ANALYSIS:')
-		print(f'   • Size Category: {size_category.title()}')
-		if size_category in ['very small', 'small']:
-			print('   • Note: Small elements can still be interactive (buttons, icons, etc.)')
-		elif size_category in ['very large']:
-			print('   • Note: Large elements might be containers with nested interactive elements')
-
-	print('=' * 80)
-
-
-def cli_inspection_mode(interactive_elements: list[dict]) -> None:
-	"""Interactive CLI inspection mode for elements."""
-
-	if not interactive_elements:
-		print('❌ No interactive elements to inspect.')
-		return
-
-	print('\n🔍 CLI INSPECTION MODE')
-	print('=' * 50)
-	print(f'Found {len(interactive_elements)} interactive elements')
-	print('Commands:')
-	print('  • Enter number (e.g., "1", "42") to inspect element')
-	print('  • "list" - show all elements')
-	print('  • "quit" or "q" - exit inspection mode')
-	print('  • "help" - show this help')
-	print('=' * 50)
-
-	while True:
-		try:
-			cmd = input('\n🔍 Inspect element: ').strip().lower()
-
-			if cmd in ['quit', 'q', 'exit']:
-				print('👋 Exiting inspection mode.')
-				break
-			elif cmd in ['help', 'h']:
-				print('\nCommands:')
-				print('  • Enter number to inspect element')
-				print('  • "list" - show all elements')
-				print('  • "quit" - exit')
-			elif cmd == 'list':
-				print(f'\n📋 ALL {len(interactive_elements)} INTERACTIVE ELEMENTS:')
-				for elem in sorted(interactive_elements, key=lambda x: x.get('interactive_index', 0)):
-					idx = elem.get('interactive_index')
-					reasoning = elem.get('reasoning', {})
-					confidence = reasoning.get('confidence', 'UNKNOWN')
-					score = reasoning.get('score', 0)
-					element_type = reasoning.get('element_type', 'UNKNOWN')
-
-					confidence_emoji = {
-						'DEFINITE': '🟢',
-						'LIKELY': '🟡',
-						'POSSIBLE': '🟠',
-						'QUESTIONABLE': '🔴',
-						'REJECTED': '⚫',
-					}.get(confidence, '❓')
-
-					print(f'   [{idx:2d}] {element_type} - {confidence_emoji} {confidence} ({score} pts)')
-			elif cmd.isdigit():
-				element_number = int(cmd)
-				inspect_element_by_number(interactive_elements, element_number)
-			else:
-				print(f'❌ Unknown command: "{cmd}". Type "help" for available commands.')
-
-		except (EOFError, KeyboardInterrupt):
-			print('\n👋 Exiting inspection mode.')
-			break
-		except Exception as e:
-			print(f'❌ Error: {e}')
-
-
-# Enhanced TEST_WEBSITES with more options
-TEST_WEBSITES = {
-	'simple': 'https://example.com',
-	'browser-use': 'https://browser-use.com',
-	'github': 'https://github.com',
-	'semantic-ui': 'https://semantic-ui.com/modules/dropdown.html',
-	'google-flights': 'https://www.google.com/travel/flights',
-	'wikipedia': 'https://en.wikipedia.org/wiki/Internet',
-	'google-search': 'https://www.google.com/search?q=browser+automation',
-	'stackoverflow': 'https://stackoverflow.com',
-	'reddit': 'https://www.reddit.com',
-	'youtube': 'https://www.youtube.com',
-	'amazon': 'https://www.amazon.com',
-	'twitter': 'https://twitter.com',
-}
-
-
 async def persistent_debug_mode():
 	"""Persistent browser debugging mode - keeps browser open and allows navigation to multiple websites."""
 	print('🚀' * 30)
@@ -2509,9 +2439,11 @@ async def persistent_debug_mode():
 	print('   • Browser stays open permanently')
 	print('   • Navigate to any website')
 	print('   • Debug UI automatically loads on each page')
+	print('   • Configurable score threshold filtering')
 	print('   • Type URLs or use shortcuts')
 	print('   • Press ENTER to re-highlight current page')
 	print('   • Type "inspect" to analyze specific elements by ID')
+	print('   • Type "threshold" to change score threshold')
 	print('   • Press Ctrl+C to exit')
 	print('')
 
@@ -2522,10 +2454,18 @@ async def persistent_debug_mode():
 		await browser_session.start()
 		dom_service = DOMService(browser_session)
 
+		# Use default score threshold - adjustable via debug UI slider
+		score_threshold = 15
+		print('🎯 INTERACTIVE DEBUG MODE:')
+		print('   • Default threshold: 15 points (adjustable via slider in debug UI)')
+		print('   • 🎛️  Real-time threshold adjustment available')
+		print('   • 📊 Live statistics and filtering')
+		print(f'\n✅ Starting with threshold: {score_threshold} points')
+
 		# Initialize interactive elements for inspection
 		interactive_elements = []
 
-		print('🌐 WEBSITE SHORTCUTS:')
+		print('\n🌐 WEBSITE SHORTCUTS:')
 		shortcuts = {
 			'1': ('Example.com', 'https://example.com'),
 			'2': ('GitHub', 'https://github.com'),
@@ -2563,6 +2503,7 @@ async def persistent_debug_mode():
 				print('   • Type "inspect" to inspect a specific element by ID')
 				print('   • Type "help" for all shortcuts')
 				print('   • Type "quit" to exit')
+				print('   • 🎛️  Use the slider in debug UI to adjust threshold')
 
 				choice = input('\n🌐 Website: ').strip()
 
@@ -2574,12 +2515,15 @@ async def persistent_debug_mode():
 					for key, (name, url) in shortcuts.items():
 						print(f'   {key}. {name} - {url}')
 					continue
+
 				elif choice.lower() == 'inspect':
 					# Element inspection mode
 					if 'interactive_elements' in locals() and interactive_elements:
 						print('\n🔍 ELEMENT INSPECTION MODE')
 						print('=' * 50)
-						print(f'Found {len(interactive_elements)} interactive elements on current page')
+						print(
+							f'Found {len(interactive_elements)} interactive elements on current page (threshold: {score_threshold}pts)'
+						)
 						available_ids = []
 						for elem in interactive_elements:
 							idx = elem.get('interactive_index')
@@ -2606,7 +2550,7 @@ async def persistent_debug_mode():
 					continue
 				elif choice == '':
 					# Empty input - re-run highlighting on current page
-					print('🔄 Re-running highlighting on current page...')
+					print(f'🔄 Re-running highlighting on current page (threshold: {score_threshold}pts)...')
 					url = None  # Don't navigate, just re-extract
 					name = 'Current Page'
 				elif choice in shortcuts:
@@ -2630,9 +2574,11 @@ async def persistent_debug_mode():
 					# Small delay to let any pending page changes settle
 					await asyncio.sleep(1)
 
-				# Extract and inject debug UI
-				print('🔍 Extracting interactive elements...')
-				current_elements, serialized, selector_map = await extract_interactive_elements_from_service(dom_service)
+				# Extract and inject debug UI with score threshold
+				print(f'🔍 Extracting interactive elements (threshold: {score_threshold}pts)...')
+				current_elements, serialized, selector_map = await extract_interactive_elements_from_service(
+					dom_service, score_threshold
+				)
 
 				# Update global interactive_elements for inspection
 				interactive_elements = current_elements
@@ -2646,7 +2592,7 @@ async def persistent_debug_mode():
 					conf = elem.get('reasoning', {}).get('confidence', 'MINIMAL')
 					confidence_counts[conf] = confidence_counts.get(conf, 0) + 1
 
-				print(f'✅ Debug UI loaded! Found {len(current_elements)} interactive elements')
+				print(f'✅ Debug UI loaded! Found {len(current_elements)} interactive elements (threshold: {score_threshold}pts)')
 				print(
 					f'   🟢 DEFINITE: {confidence_counts["DEFINITE"]} | 🟡 LIKELY: {confidence_counts["LIKELY"]} | 🟠 POSSIBLE: {confidence_counts["POSSIBLE"]}'
 				)
@@ -2965,6 +2911,489 @@ async def inject_highlighting_script_safe(browser_session: BrowserSession, inter
 	except Exception as e:
 		print('❌ Error injecting highlighting script: {e}')
 		traceback.print_exc()
+
+
+# Common test websites for quick testing
+TEST_WEBSITES = {
+	'simple': 'https://example.com',
+	'browser-use': 'https://browser-use.com',
+	'github': 'https://github.com',
+	'semantic-ui': 'https://semantic-ui.com/modules/dropdown.html',
+	'google-flights': 'https://www.google.com/travel/flights',
+	'wikipedia': 'https://en.wikipedia.org/wiki/Internet',
+	'google-search': 'https://www.google.com/search?q=browser+automation',
+	'stackoverflow': 'https://stackoverflow.com',
+	'reddit': 'https://www.reddit.com',
+	'youtube': 'https://www.youtube.com',
+	'amazon': 'https://www.amazon.com',
+	'twitter': 'https://twitter.com',
+}
+
+
+def inspect_element_by_number(interactive_elements: list[dict], element_number: int) -> None:
+	"""Inspect a specific element by its interactive index number with comprehensive details."""
+
+	# Find element by interactive_index
+	target_element = None
+	for elem in interactive_elements:
+		if elem.get('interactive_index') == element_number:
+			target_element = elem
+			break
+
+	if not target_element:
+		print(f'\n❌ Element [{element_number}] not found in interactive elements.')
+		available_indices = []
+		for elem in interactive_elements:
+			idx = elem.get('interactive_index')
+			if idx is not None and isinstance(idx, int):
+				available_indices.append(idx)
+		available_indices.sort()
+		print(f'📋 Available elements: {available_indices}')
+		return
+
+	reasoning = target_element.get('reasoning', {})
+	attrs = target_element.get('attributes', {})
+
+	print('\n🔍 COMPREHENSIVE ELEMENT INSPECTION')
+	print('=' * 80)
+
+	# Enhanced header with visual indicators
+	confidence_emoji = {
+		'DEFINITE': '🟢',
+		'LIKELY': '🟡',
+		'POSSIBLE': '🟠',
+		'QUESTIONABLE': '🔴',
+		'MINIMAL': '🟣',
+	}.get(reasoning.get('confidence'), '❓')
+
+	print(f'\n🎯 ELEMENT [{element_number}] - {reasoning.get("element_type", "UNKNOWN")}')
+	print(f'{confidence_emoji} {reasoning.get("confidence", "UNKNOWN")} CONFIDENCE ({reasoning.get("score", 0)} points)')
+	print(f'📂 Category: {reasoning.get("element_category", "unknown").replace("_", " ").title()}')
+	print(f'📄 Description: {reasoning.get("confidence_description", "No description")}')
+	print(f'🎲 Primary Reason: {reasoning.get("primary_reason", "unknown").replace("_", " ").title()}')
+
+	# Enhanced position and size information
+	x, y = target_element.get('x', 0), target_element.get('y', 0)
+	width, height = target_element.get('width', 0), target_element.get('height', 0)
+	print('\n📍 POSITIONING & SIZE:')
+	print(f'   • Position: ({x:.1f}, {y:.1f})')
+	print(f'   • Size: {width:.1f}×{height:.1f}px')
+	print(f'   • Area: {width * height:.0f} px²')
+	print(f'   • Bounds: ({x:.1f}, {y:.1f}) to ({x + width:.1f}, {y + height:.1f})')
+	if width > 0 and height > 0:
+		aspect_ratio = width / height
+		print(
+			f'   • Aspect Ratio: {aspect_ratio:.2f}:1 ({"landscape" if aspect_ratio > 1 else "portrait" if aspect_ratio < 1 else "square"})'
+		)
+
+	# Element properties
+	print('\n🔧 ELEMENT PROPERTIES:')
+	print(f'   • Is Clickable: {target_element.get("is_clickable", False)}')
+	print(f'   • Is Scrollable: {target_element.get("is_scrollable", False)}')
+	print(f'   • Frame ID: {target_element.get("frame_id", "main")}')
+	print(f'   • Has Attributes: {reasoning.get("has_attributes", False)}')
+	print(f'   • Attribute Count: {reasoning.get("attribute_count", 0)}')
+
+	# Evidence section with better formatting
+	evidence = reasoning.get('evidence', [])
+	if evidence:
+		print(f'\n✅ EVIDENCE ({len(evidence)} items):')
+		for i, ev in enumerate(evidence, 1):
+			print(f'   {i:2d}. {ev}')
+	else:
+		print('\n❓ No evidence recorded')
+
+	# Warnings section with better formatting
+	warnings = reasoning.get('warnings', [])
+	if warnings:
+		print(f'\n⚠️  WARNINGS ({len(warnings)} items):')
+		for i, warn in enumerate(warnings, 1):
+			print(f'   {i:2d}. {warn}')
+
+	# Context information with better formatting
+	context_info = reasoning.get('context_info', [])
+	if context_info:
+		print(f'\n📋 CONTEXT INFORMATION ({len(context_info)} items):')
+		for i, info in enumerate(context_info, 1):
+			print(f'   {i:2d}. {info}')
+
+	# Enhanced attributes section with categorization
+	if attrs:
+		print(f'\n🏷️  ALL ATTRIBUTES ({len(attrs)} total):')
+
+		# Categorize attributes
+		important_attrs = ['id', 'class', 'type', 'role', 'aria-label', 'aria-labelledby', 'href', 'src', 'alt', 'title']
+		event_attrs = [k for k in attrs.keys() if k.startswith('on')]
+		data_attrs = [k for k in attrs.keys() if k.startswith('data-')]
+		aria_attrs = [k for k in attrs.keys() if k.startswith('aria-')]
+		style_attrs = [k for k in attrs.keys() if k in ['style', 'class']]
+
+		# Show important attributes first
+		if any(attr in attrs for attr in important_attrs):
+			print('\n   📌 IMPORTANT ATTRIBUTES:')
+			for attr in important_attrs:
+				if attr in attrs:
+					value_str = str(attrs[attr])
+					if len(value_str) > 100:
+						value_str = value_str[:100] + '...'
+					print(f'      • {attr}: "{value_str}"')
+
+		# Show event attributes
+		if event_attrs:
+			print('\n   ⚡ EVENT ATTRIBUTES:')
+			for attr in sorted(event_attrs):
+				value_str = str(attrs[attr])
+				if len(value_str) > 80:
+					value_str = value_str[:80] + '...'
+				print(f'      • {attr}: "{value_str}"')
+
+		# Show data attributes
+		if data_attrs:
+			print('\n   💾 DATA ATTRIBUTES:')
+			for attr in sorted(data_attrs):
+				value_str = str(attrs[attr])
+				if len(value_str) > 80:
+					value_str = value_str[:80] + '...'
+				print(f'      • {attr}: "{value_str}"')
+
+		# Show ARIA attributes
+		if aria_attrs:
+			print('\n   ♿ ARIA ATTRIBUTES:')
+			for attr in sorted(aria_attrs):
+				value_str = str(attrs[attr])
+				if len(value_str) > 80:
+					value_str = value_str[:80] + '...'
+				print(f'      • {attr}: "{value_str}"')
+
+		# Show remaining attributes
+		shown_attrs = set(important_attrs + event_attrs + data_attrs + aria_attrs)
+		remaining_attrs = [k for k in attrs.keys() if k not in shown_attrs]
+		if remaining_attrs:
+			print('\n   🔧 OTHER ATTRIBUTES:')
+			for attr in sorted(remaining_attrs):
+				value_str = str(attrs[attr])
+				if len(value_str) > 80:
+					value_str = value_str[:80] + '...'
+				print(f'      • {attr}: "{value_str}"')
+	else:
+		print('\n🏷️  No attributes found')
+
+	# Enhanced scoring breakdown
+	print('\n📊 DETAILED SCORING BREAKDOWN:')
+	print(f'   • Final Score: {reasoning.get("score", 0)} points')
+	print(f'   • Primary Reason: {reasoning.get("primary_reason", "unknown").replace("_", " ").title()}')
+	print(f'   • Element Category: {reasoning.get("element_category", "unknown").replace("_", " ").title()}')
+
+	# Score ranges for context with detailed explanations
+	score = reasoning.get('score', 0)
+	if score >= 70:
+		print('   • Score Range: DEFINITE (70+ points) 🟢')
+		print('     └─ Very likely to be interactive, high confidence')
+	elif score >= 40:
+		print('   • Score Range: LIKELY (40-69 points) 🟡')
+		print('     └─ Probably interactive, good confidence')
+	elif score >= 20:
+		print('   • Score Range: POSSIBLE (20-39 points) 🟠')
+		print('     └─ Possibly interactive, moderate confidence')
+	elif score >= 10:
+		print('   • Score Range: QUESTIONABLE (10-19 points) 🔴')
+		print('     └─ Questionable interactivity, low confidence')
+	else:
+		print('   • Score Range: MINIMAL (<10 points) 🟣')
+		print('     └─ Minimal interactivity, very low confidence')
+
+	# Analysis recommendations
+	print('\n🎯 ANALYSIS RECOMMENDATIONS:')
+	confidence = reasoning.get('confidence', 'UNKNOWN')
+	if confidence == 'DEFINITE':
+		print('   ✅ This element should definitely be included in automation')
+	elif confidence == 'LIKELY':
+		print('   ✅ This element is probably safe to include in automation')
+	elif confidence == 'POSSIBLE':
+		print('   ⚠️  Consider including this element, but test thoroughly')
+	elif confidence == 'QUESTIONABLE':
+		print('   ⚠️  Use caution - this element might not be reliably interactive')
+	elif confidence == 'MINIMAL':
+		print('   ❌ This element is unlikely to be interactive - consider excluding')
+
+	# Size analysis
+	if width > 0 and height > 0:
+		size_category = 'unknown'
+		if width < 10 or height < 10:
+			size_category = 'very small'
+		elif width < 30 or height < 30:
+			size_category = 'small'
+		elif width < 100 or height < 100:
+			size_category = 'medium'
+		elif width < 300 or height < 300:
+			size_category = 'large'
+		else:
+			size_category = 'very large'
+
+		print('\n📏 SIZE ANALYSIS:')
+		print(f'   • Size Category: {size_category.title()}')
+		if size_category in ['very small', 'small']:
+			print('   • Note: Small elements can still be interactive (buttons, icons, etc.)')
+		elif size_category in ['very large']:
+			print('   • Note: Large elements might be containers with nested interactive elements')
+
+	print('=' * 80)
+
+
+def cli_inspection_mode(interactive_elements: list[dict]) -> None:
+	"""Interactive CLI inspection mode for elements."""
+
+	if not interactive_elements:
+		print('❌ No interactive elements to inspect.')
+		return
+
+	print('\n🔍 CLI INSPECTION MODE')
+	print('=' * 50)
+	print(f'Found {len(interactive_elements)} interactive elements')
+	print('Commands:')
+	print('  • Enter number (e.g., "1", "42") to inspect element')
+	print('  • "list" - show all elements')
+	print('  • "quit" or "q" - exit inspection mode')
+	print('  • "help" - show this help')
+	print('=' * 50)
+
+	while True:
+		try:
+			cmd = input('\n🔍 Inspect element: ').strip().lower()
+
+			if cmd in ['quit', 'q', 'exit']:
+				print('👋 Exiting inspection mode.')
+				break
+			elif cmd in ['help', 'h']:
+				print('\nCommands:')
+				print('  • Enter number to inspect element')
+				print('  • "list" - show all elements')
+				print('  • "quit" - exit')
+			elif cmd == 'list':
+				print(f'\n📋 ALL {len(interactive_elements)} INTERACTIVE ELEMENTS:')
+				for elem in sorted(interactive_elements, key=lambda x: x.get('interactive_index', 0)):
+					idx = elem.get('interactive_index')
+					reasoning = elem.get('reasoning', {})
+					confidence = reasoning.get('confidence', 'UNKNOWN')
+					score = reasoning.get('score', 0)
+					element_type = reasoning.get('element_type', 'UNKNOWN')
+
+					confidence_emoji = {
+						'DEFINITE': '🟢',
+						'LIKELY': '🟡',
+						'POSSIBLE': '🟠',
+						'QUESTIONABLE': '🔴',
+						'REJECTED': '⚫',
+					}.get(confidence, '❓')
+
+					print(f'   [{idx:2d}] {element_type} - {confidence_emoji} {confidence} ({score} pts)')
+			elif cmd.isdigit():
+				element_number = int(cmd)
+				inspect_element_by_number(interactive_elements, element_number)
+			else:
+				print(f'❌ Unknown command: "{cmd}". Type "help" for available commands.')
+
+		except (EOFError, KeyboardInterrupt):
+			print('\n👋 Exiting inspection mode.')
+			break
+		except Exception as e:
+			print(f'❌ Error: {e}')
+
+
+async def extract_and_save_ax_tree(dom_service: DOMService, url: str) -> str | None:
+	"""Extract and save the complete AX tree as JSON for analysis."""
+	try:
+		print_section_header('🌳 EXTRACTING COMPLETE AX TREE FOR ANALYSIS')
+
+		# Get the browser session to access the AX tree
+		browser_session = dom_service.browser_session
+		page = await browser_session.get_current_page()
+
+		# Get the AX tree snapshot
+		print('🔍 Getting AX tree snapshot...')
+		ax_tree = await page.accessibility.snapshot()
+
+		if not ax_tree:
+			print('❌ Failed to get AX tree snapshot')
+			return None
+
+		# Create tmp directory if it doesn't exist
+		tmp_dir = Path('tmp')
+		tmp_dir.mkdir(exist_ok=True)
+
+		# Clean URL for filename
+		safe_url = url.replace('://', '_').replace('/', '_').replace('?', '_').replace('&', '_')[:50]
+		timestamp = int(time.time())
+
+		# Save complete AX tree
+		ax_tree_file = tmp_dir / f'complete_ax_tree_{safe_url}_{timestamp}.json'
+
+		print(f'💾 Saving AX tree to: {ax_tree_file}')
+		async with aiofiles.open(ax_tree_file, 'w', encoding='utf-8') as f:
+			await f.write(json.dumps(ax_tree, indent=2, ensure_ascii=False))
+
+		# Analyze AX tree for interactive patterns
+		interactive_patterns = analyze_ax_tree_patterns(ax_tree)
+
+		# Save analysis
+		analysis_file = tmp_dir / f'ax_tree_analysis_{safe_url}_{timestamp}.json'
+		async with aiofiles.open(analysis_file, 'w', encoding='utf-8') as f:
+			await f.write(json.dumps(interactive_patterns, indent=2, ensure_ascii=False))
+
+		# Print absolute paths
+		abs_ax_tree_path = ax_tree_file.absolute()
+		abs_analysis_path = analysis_file.absolute()
+
+		print(f'📁 Complete AX tree saved: {abs_ax_tree_path}')
+		print(f'📁 Interactive analysis saved: {abs_analysis_path}')
+
+		# Print key findings
+		print('\n🔍 KEY INTERACTIVE PATTERNS FOUND:')
+		print(f'   • Total nodes: {interactive_patterns["total_nodes"]}')
+		print(f'   • Clickable nodes: {interactive_patterns["clickable_count"]}')
+		print(f'   • Focusable nodes: {interactive_patterns["focusable_count"]}')
+		print(f'   • Nodes with actions: {interactive_patterns["actionable_count"]}')
+
+		print('\n🎯 TOP INTERACTIVE ROLES:')
+		for role, count in list(interactive_patterns['roles_with_actions'].items())[:10]:
+			print(f'   • {role}: {count} nodes')
+
+		print('\n📋 COMMON INTERACTIVE PROPERTIES:')
+		for prop, count in list(interactive_patterns['interactive_properties'].items())[:10]:
+			print(f'   • {prop}: {count} occurrences')
+
+		return str(abs_ax_tree_path)
+
+	except Exception as e:
+		print(f'❌ Error extracting AX tree: {e}')
+		traceback.print_exc()
+		return None
+
+
+def analyze_ax_tree_patterns(ax_tree: dict) -> dict:
+	"""Analyze AX tree to identify patterns that indicate interactivity."""
+
+	def traverse_node(node, results):
+		"""Recursively traverse AX tree nodes."""
+		if not isinstance(node, dict):
+			return
+
+		results['total_nodes'] += 1
+
+		# Get node properties
+		role = node.get('role', '').lower()
+		name = node.get('name', '')
+		properties = node.get('properties', {})
+
+		# Track roles
+		if role:
+			results['all_roles'][role] = results['all_roles'].get(role, 0) + 1
+
+		# Check for interactive indicators
+		is_interactive = False
+
+		# Check if clickable
+		if properties.get('clickable') or 'click' in str(properties).lower():
+			results['clickable_count'] += 1
+			is_interactive = True
+
+		# Check if focusable
+		if properties.get('focusable') or node.get('focusable'):
+			results['focusable_count'] += 1
+			is_interactive = True
+
+		# Check for actions
+		actions = node.get('actions', [])
+		if actions:
+			results['actionable_count'] += 1
+			is_interactive = True
+			for action in actions:
+				action_name = action if isinstance(action, str) else str(action)
+				results['action_types'][action_name] = results['action_types'].get(action_name, 0) + 1
+
+		# Interactive roles
+		interactive_roles = [
+			'button',
+			'link',
+			'menuitem',
+			'tab',
+			'checkbox',
+			'radio',
+			'textbox',
+			'combobox',
+			'listbox',
+			'option',
+			'slider',
+			'spinbutton',
+			'switch',
+			'searchbox',
+			'menuitemcheckbox',
+			'menuitemradio',
+			'treeitem',
+		]
+
+		if role in interactive_roles:
+			is_interactive = True
+			results['roles_with_actions'][role] = results['roles_with_actions'].get(role, 0) + 1
+
+		# Check for cursor pointer indication in computed styles or properties
+		computed = node.get('computed', {})
+		if computed:
+			cursor = computed.get('cursor', '').lower()
+			if cursor == 'pointer':
+				results['cursor_pointer_count'] += 1
+				is_interactive = True
+
+		# Track interactive properties
+		if is_interactive:
+			results['interactive_nodes'] += 1
+
+			# Collect all properties from interactive nodes
+			for key, value in properties.items():
+				prop_key = f'{key}={value}'
+				results['interactive_properties'][prop_key] = results['interactive_properties'].get(prop_key, 0) + 1
+
+			# Track interactive node with details
+			results['interactive_node_details'].append(
+				{
+					'role': role,
+					'name': name[:50] if name else '',
+					'properties': properties,
+					'actions': actions,
+					'computed': computed,
+				}
+			)
+
+		# Traverse children
+		children = node.get('children', [])
+		for child in children:
+			traverse_node(child, results)
+
+	# Initialize results
+	results = {
+		'total_nodes': 0,
+		'interactive_nodes': 0,
+		'clickable_count': 0,
+		'focusable_count': 0,
+		'actionable_count': 0,
+		'cursor_pointer_count': 0,
+		'all_roles': {},
+		'roles_with_actions': {},
+		'action_types': {},
+		'interactive_properties': {},
+		'interactive_node_details': [],
+	}
+
+	# Start traversal
+	traverse_node(ax_tree, results)
+
+	# Sort results by frequency
+	results['all_roles'] = dict(sorted(results['all_roles'].items(), key=lambda x: x[1], reverse=True))
+	results['roles_with_actions'] = dict(sorted(results['roles_with_actions'].items(), key=lambda x: x[1], reverse=True))
+	results['action_types'] = dict(sorted(results['action_types'].items(), key=lambda x: x[1], reverse=True))
+	results['interactive_properties'] = dict(sorted(results['interactive_properties'].items(), key=lambda x: x[1], reverse=True))
+
+	return results
 
 
 if __name__ == '__main__':

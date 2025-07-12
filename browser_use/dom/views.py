@@ -5,7 +5,7 @@ from cdp_use.cdp.accessibility.types import AXPropertyName
 from cdp_use.cdp.dom.types import ShadowRootType
 from pydantic import BaseModel
 
-################## TO BE REMOVED
+# TO BE REMOVED
 DEFAULT_INCLUDE_ATTRIBUTES = [
 	'title',
 	'type',
@@ -28,7 +28,7 @@ class DOMNodeAttributes(BaseModel):
 	value: str
 
 
-################## END TO BE REMOVED
+# END TO BE REMOVED
 
 
 class NodeType(int, Enum):
@@ -78,6 +78,24 @@ class EnhancedAXNode:
 
 	properties: list[EnhancedAXProperty] | None
 
+	# Enhanced AX tree properties for better interactivity detection
+	value: str | None = None
+	"""Current value of the element (e.g., selected option, input value)"""
+	level: int | None = None
+	"""Hierarchical level (e.g., for headings)"""
+	expanded: bool | None = None
+	"""Whether element is expanded (for collapsible elements)"""
+	selected: bool | None = None
+	"""Whether element is selected (for options, menu items)"""
+	disabled: bool | None = None
+	"""Whether element is disabled"""
+	focusable: bool | None = None
+	"""Whether element can receive focus"""
+	haspopup: str | None = None
+	"""Type of popup this element triggers (menu, dialog, etc.)"""
+	autocomplete: str | None = None
+	"""Autocomplete behavior for input elements"""
+
 
 @dataclass(slots=True)
 class EnhancedSnapshotNode:
@@ -122,20 +140,20 @@ class EnhancedDOMTreeNode:
 	Whether the node is scrollable.
 	"""
 
-	## frames
+	# frames
 	frame_id: str | None
 	content_document: 'EnhancedDOMTreeNode | None'
 	"""
 	Content document is the document inside a new iframe.
 	"""
-	## Shadow DOM
+	# Shadow DOM
 	shadow_root_type: ShadowRootType | None
 	shadow_roots: list['EnhancedDOMTreeNode'] | None
 	"""
 	Shadow roots are the shadow DOMs of the element.
 	"""
 
-	## Navigation
+	# Navigation
 	parent_node: 'EnhancedDOMTreeNode | None'
 	children_nodes: list['EnhancedDOMTreeNode'] | None
 
