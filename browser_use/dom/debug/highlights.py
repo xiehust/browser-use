@@ -72,7 +72,7 @@ def convert_dom_selector_map_to_highlight_format(selector_map: DOMSelectorMap) -
 				bbox = {'x': rect.x, 'y': rect.y, 'width': rect.width, 'height': rect.height}
 
 		# Only include elements with valid bounding boxes (following working implementation)
-		if bbox and bbox.get('width', 0) > 0 and bbox.get('height', 0) > 0:
+		if bbox:
 			element = {
 				'x': bbox['x'],
 				'y': bbox['y'],
