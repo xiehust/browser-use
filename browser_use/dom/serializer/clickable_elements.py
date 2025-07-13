@@ -54,6 +54,7 @@ class ClickableElementDetector:
 					continue
 
 		# Secondary check: intrinsically interactive HTML elements
+		# Note: iframe is removed - only iframe content should be interactive, not the iframe container
 		interactive_tags = {
 			'button',
 			'input',
@@ -65,7 +66,6 @@ class ClickableElementDetector:
 			'summary',
 			'option',
 			'optgroup',
-			'iframe',
 		}
 		if node.tag_name in interactive_tags:
 			return True

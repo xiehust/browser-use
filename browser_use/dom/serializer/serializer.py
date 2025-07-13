@@ -80,16 +80,16 @@ class DOMTreeSerializer:
 
 		return self._clickable_cache[node.node_id]
 
-	def _create_simplified_tree(self, node: EnhancedDOMTreeNode) -> SimplifiedNode | None:
+	def _create_simplified_tree(self, node: EnhancedDOMTreeNode, is_iframe_content: bool = False) -> SimplifiedNode | None:
 		"""Step 1: Create a simplified tree with enhanced element detection and iframe piercing."""
 
-		# Check if we're processing iframe content (relaxed visibility requirements)
-		is_iframe_content = getattr(self, '_debug_iframe', False)
+		# Track if we're processing iframe content (relaxed visibility requirements)
+		# This parameter gets passed down recursively to maintain iframe context
 
 		if node.node_type == NodeType.DOCUMENT_NODE:
 			if node.children_nodes:
 				for child in node.children_nodes:
-					simplified_child = self._create_simplified_tree(child)
+					simplified_child = self._create_simplified_tree(child, is_iframe_content)
 					if simplified_child:
 						return simplified_child
 			return None
@@ -98,7 +98,7 @@ class DOMTreeSerializer:
 			if node.node_name == '#document':
 				if node.children_nodes:
 					for child in node.children_nodes:
-						simplified_child = self._create_simplified_tree(child)
+						simplified_child = self._create_simplified_tree(child, is_iframe_content)
 						if simplified_child:
 							return simplified_child
 				return None
@@ -124,10 +124,14 @@ class DOMTreeSerializer:
 			if should_include:
 				simplified = SimplifiedNode(original_node=node)
 
+				# Mark as iframe content if we're processing iframe content
+				if is_iframe_content:
+					simplified.is_iframe_content = True
+
 				# Process regular children first
 				if node.children_nodes:
 					for child in node.children_nodes:
-						simplified_child = self._create_simplified_tree(child)
+						simplified_child = self._create_simplified_tree(child, is_iframe_content)
 						if simplified_child:
 							simplified.children.append(simplified_child)
 
@@ -154,7 +158,9 @@ class DOMTreeSerializer:
 			# For iframe content, be more lenient with text nodes
 			if is_iframe_content:
 				if node.node_value and node.node_value.strip() and len(node.node_value.strip()) > 1:
-					return SimplifiedNode(original_node=node)
+					simplified = SimplifiedNode(original_node=node)
+					simplified.is_iframe_content = True
+					return simplified
 			else:
 				if is_visible and node.node_value and node.node_value.strip() and len(node.node_value.strip()) > 1:
 					return SimplifiedNode(original_node=node)
@@ -167,19 +173,11 @@ class DOMTreeSerializer:
 		"""Process the content document inside an iframe."""
 		try:
 			# For pierced DOM trees, the content document already contains the iframe's DOM structure
-			# We just need to process it normally and mark it as iframe content
-
-			# Enable relaxed criteria for iframe processing
-			self._debug_iframe = True
-
-			# Process the content document as a regular DOM tree
-			iframe_content = self._create_simplified_tree(content_document)
-
-			# Disable relaxed criteria
-			self._debug_iframe = False
+			# We process it with iframe context enabled (relaxed criteria and iframe marking)
+			iframe_content = self._create_simplified_tree(content_document, is_iframe_content=True)
 
 			if iframe_content:
-				# Mark this as iframe content for identification
+				# Mark this as iframe boundary for identification
 				iframe_content.is_iframe_boundary = True
 
 			return iframe_content
@@ -304,10 +302,13 @@ class DOMTreeSerializer:
 				formatted_text.append(line)
 
 		elif node.original_node.node_type == NodeType.TEXT_NODE:
-			# Include visible text
+			# Include visible text or iframe content text
 			is_visible = node.original_node.snapshot_node and node.original_node.snapshot_node.is_visible
+			is_iframe_text = getattr(node, 'is_iframe_content', False)
+
+			# Include text if visible OR if it's iframe content (which lacks visibility data)
 			if (
-				is_visible
+				(is_visible or is_iframe_text)
 				and node.original_node.node_value
 				and node.original_node.node_value.strip()
 				and len(node.original_node.node_value.strip()) > 1
