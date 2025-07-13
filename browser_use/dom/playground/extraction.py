@@ -102,9 +102,7 @@ async def test_focus_vs_all_elements():
 			print('🔄 Cycled to last website!')
 
 		website_url, website_description = websites[current_website_index]
-		# sleep 2
 		await page.goto(website_url)
-		await asyncio.sleep(1)
 
 		last_clicked_index = None  # Track the index for text input
 		while True:
@@ -127,12 +125,8 @@ async def test_focus_vs_all_elements():
 				get_state_time = end_time - start_time
 				print(f'get_state_summary took {get_state_time:.2f} seconds')
 
-				# Get detailed timing info from DOM service
-				print('\nGetting detailed DOM timing...')
-				async with DomService(browser_session, page) as dom_service:
-					serialized_state, timing_info = await dom_service.get_serialized_dom_tree()
-
-				# Combine all timing info
+				# Use timing info from the state summary instead of calling DOM service again
+				timing_info = getattr(all_elements_state.dom_state, 'timing_info', {})
 				all_timing = {'get_state_summary_total': get_state_time, **timing_info}
 
 				async with DomService(browser_session, page) as dom_service:
