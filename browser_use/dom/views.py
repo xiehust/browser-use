@@ -23,6 +23,7 @@ DEFAULT_INCLUDE_ATTRIBUTES = [
 	'aria-expanded',
 	'data-state',
 	'aria-checked',
+	'aria-current',
 ]
 
 
