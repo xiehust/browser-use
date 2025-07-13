@@ -33,11 +33,11 @@ async def test_focus_vs_all_elements():
 	# Unified website list with descriptions
 	websites = [
 		# Standard websites with various interactive elements
+		('https://www.linkedin.com/robots.txt', 'Professional network'),
+		('https://www.rent.com/', 'Rental listings'),
 		('https://www.espn.com', 'Sports news site'),
 		('https://www.eatsure.com/', 'Food delivery platform'),
 		('https://www.kayak.com/', 'Travel booking site'),
-		('https://www.linkedin.com/robots.txt', 'Professional network'),
-		('https://www.rent.com/', 'Rental listings'),
 		('https://web.archive.org/web/20200228210807/https://www.base-search.net/Search/Advanced', 'Archive search'),
 		('https://www.va.gov/find-locations', 'VA locations finder'),
 		('https://www.bbcgoodfood.com', 'Recipe website'),
@@ -196,11 +196,14 @@ async def test_focus_vs_all_elements():
 				timing_text += '\n🎯 CLICKABLE DETECTION ANALYSIS:\n'
 				timing_text += f'{"─" * 35}\n'
 				clickable_time = all_timing.get('clickable_detection_time', 0)
-				if clickable_time > 0:
+				if clickable_time > 0 and total_elements > 0:
 					avg_per_element = (clickable_time / total_elements) * 1000000  # microseconds
 					timing_text += f'Total clickable detection time: {clickable_time * 1000:.2f} ms\n'
 					timing_text += f'Average per element: {avg_per_element:.2f} μs\n'
 					timing_text += f'Clickable detection calls: ~{total_elements} (approx)\n'
+				elif total_elements == 0:
+					timing_text += 'No interactive elements found on this page\n'
+					timing_text += f'Total clickable detection time: {clickable_time * 1000:.2f} ms\n'
 
 				async with await anyio.open_file('./tmp/timing_analysis.txt', 'w', encoding='utf-8') as f:
 					await f.write(timing_text)
