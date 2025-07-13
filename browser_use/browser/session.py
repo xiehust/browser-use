@@ -3043,7 +3043,9 @@ class BrowserSession(BaseModel):
 	@observe_debug(ignore_output=True)
 	@time_execution_async('--get_state_summary')
 	@require_healthy_browser(usable_page=True, reopen_page=True)
-	async def get_state_summary(self, cache_clickable_elements_hashes: bool) -> BrowserStateSummary:
+	async def get_state_summary(
+		self, cache_clickable_elements_hashes: bool, inject_highlights: bool = True
+	) -> BrowserStateSummary:
 		self.logger.debug('🔄 Starting get_state_summary...')
 		"""Get a summary of the current browser state
 
@@ -3058,7 +3060,7 @@ class BrowserSession(BaseModel):
 			which helps reduce token usage.
 		"""
 		await self._wait_for_page_and_frames_load()
-		updated_state = await self._get_updated_state()
+		updated_state = await self._get_updated_state(inject_highlights=inject_highlights)
 
 		self._cached_browser_state_summary = updated_state
 
@@ -3101,7 +3103,7 @@ class BrowserSession(BaseModel):
 		)
 
 	@observe_debug(name='get_updated_state', ignore_output=True)
-	async def _get_updated_state(self, focus_element: int = -1) -> BrowserStateSummary:
+	async def _get_updated_state(self, focus_element: int = -1, inject_highlights: bool = True) -> BrowserStateSummary:
 		"""Update and return state."""
 
 		# Check if current page is still valid, if not switch to another available page
@@ -3141,7 +3143,13 @@ class BrowserSession(BaseModel):
 						timeout=45.0,  # 45 second timeout for DOM processing - generous for complex pages
 					)
 
-					await self.inject_highlights(dom_service, dom_state.selector_map)
+					# Store timing info in dom_state for extraction playground access
+					self.logger.debug(f'📊 Collected timing info: {timing_info.keys()}')
+					dom_state.timing_info = timing_info
+
+					# Only inject highlights if requested (default True for backward compatibility)
+					if inject_highlights:
+						await self.inject_highlights(dom_service, dom_state.selector_map)
 
 					self.logger.debug('✅ DOM processing completed')
 				except TimeoutError:
@@ -3149,10 +3157,11 @@ class BrowserSession(BaseModel):
 					self.logger.warning('🔄 Falling back to minimal DOM state to allow basic navigation...')
 
 					# Create minimal DOM state for basic navigation
-
 					from browser_use.dom.views import SerializedDOMState
 
 					dom_state = SerializedDOMState(_root=None, selector_map={})
+					timing_info = {'timeout_fallback': True}
+					dom_state.timing_info = timing_info
 
 			self.logger.debug('📋 Getting tabs info...')
 			tabs_info = await self.get_tabs_info()

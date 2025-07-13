@@ -361,6 +361,7 @@ class SerializedDOMState:
 	"""Not meant to be used directly, use `llm_representation` instead"""
 
 	selector_map: DOMSelectorMap
+	timing_info: dict[str, Any] | None = None
 
 	def llm_representation(
 		self,

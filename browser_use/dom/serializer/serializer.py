@@ -17,7 +17,7 @@ class DOMTreeSerializer:
 		self._previous_cached_selector_map = previous_cached_state.selector_map if previous_cached_state else None
 		# Add timing tracking
 		self.timing_info: dict[str, float] = {}
-		# Cache for clickable element detection to avoid redundant calls
+		# Cache for clickable element detection to avoid redundant calls (keyed by backend_node_id)
 		self._clickable_cache: dict[int, bool] = {}
 		# Track frame context for iframe piercing
 		self._frame_stack: list[str] = []  # Stack of frame identifiers
@@ -42,6 +42,15 @@ class DOMTreeSerializer:
 		end_step1 = time.time()
 		self.timing_info['create_simplified_tree'] = end_step1 - start_step1
 
+		# Add batch clickable detection timing
+		clickable_elements_processed = len(self._clickable_cache)
+		if clickable_elements_processed > 0:
+			# Estimate clickable detection time from the tree creation step
+			self.timing_info['clickable_elements_processed'] = clickable_elements_processed
+			self.timing_info['avg_clickable_detection_per_element_ms'] = (
+				(end_step1 - start_step1) / clickable_elements_processed * 1000
+			)
+
 		# Step 2: Optimize tree (remove unnecessary parents)
 		start_step2 = time.time()
 		optimized_tree = self._optimize_tree(simplified_tree)
@@ -65,20 +74,12 @@ class DOMTreeSerializer:
 
 	def _is_interactive_cached(self, node: EnhancedDOMTreeNode) -> bool:
 		"""Cached version of clickable element detection to avoid redundant calls."""
-		if node.node_id not in self._clickable_cache:
-			import time
-
-			start_time = time.time()
+		if node.backend_node_id not in self._clickable_cache:
+			# Use backend_node_id for more efficient caching (node_id can vary between sessions)
 			result = ClickableElementDetector.is_interactive(node)
-			end_time = time.time()
+			self._clickable_cache[node.backend_node_id] = result
 
-			if 'clickable_detection_time' not in self.timing_info:
-				self.timing_info['clickable_detection_time'] = 0
-			self.timing_info['clickable_detection_time'] += end_time - start_time
-
-			self._clickable_cache[node.node_id] = result
-
-		return self._clickable_cache[node.node_id]
+		return self._clickable_cache[node.backend_node_id]
 
 	def _create_simplified_tree(self, node: EnhancedDOMTreeNode, is_iframe_content: bool = False) -> SimplifiedNode | None:
 		"""Step 1: Create a simplified tree with enhanced element detection and iframe piercing."""

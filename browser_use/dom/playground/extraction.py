@@ -1,19 +1,14 @@
 import asyncio
 import json
-import os
 import time
 
 import anyio
 import pyperclip
-import tiktoken
 
-from browser_use.agent.prompts import AgentMessagePrompt
 from browser_use.browser import BrowserProfile, BrowserSession
 from browser_use.browser.types import ViewportSize
-from browser_use.dom.debug.highlights import inject_highlighting_script, remove_highlighting_script
+from browser_use.dom.debug.highlights import inject_highlighting_script
 from browser_use.dom.service import DomService
-from browser_use.dom.views import DEFAULT_INCLUDE_ATTRIBUTES
-from browser_use.filesystem.file_system import FileSystem
 
 TIMEOUT = 60
 
@@ -29,6 +24,7 @@ async def test_focus_vs_all_elements():
 			headless=False,
 		),
 	)
+	current_time = time.time()
 
 	# Unified website list with descriptions
 	websites = [
@@ -108,74 +104,82 @@ async def test_focus_vs_all_elements():
 		while True:
 			try:
 				page = await browser_session.get_current_page()
-				async with DomService(browser_session, page) as dom_service:
-					await remove_highlighting_script(dom_service)
+				# async with DomService(browser_session, page) as dom_service:
+				# 	await remove_highlighting_script(dom_service)
 
 				print(f'\n{"=" * 60}')
 				print(f'[{current_website_index + 1}/{len(websites)}] Testing: {website_url}')
 				print(f'📝 {website_description}')
 				print(f'{"=" * 60}')
 
-				# Get/refresh the state (includes removing old highlights)
+				# Get/refresh the state (DOM extraction only, no highlights yet)
 				print('\nGetting page state...')
 
 				start_time = time.time()
-				all_elements_state = await browser_session.get_state_summary(True)
+				all_elements_state = await browser_session.get_state_summary(True, inject_highlights=False)
 				end_time = time.time()
 				get_state_time = end_time - start_time
 				print(f'get_state_summary took {get_state_time:.2f} seconds')
 
-				# Use timing info from the state summary instead of calling DOM service again
+				# Use timing info from the state summary
 				timing_info = getattr(all_elements_state.dom_state, 'timing_info', {})
 				all_timing = {'get_state_summary_total': get_state_time, **timing_info}
 
+				# Now inject highlights with the simple script
+				time_start_highlighting = time.time()
+
 				async with DomService(browser_session, page) as dom_service:
 					await inject_highlighting_script(dom_service, all_elements_state.dom_state.selector_map)
+
+				time_end_highlighting = time.time()
+				highlighting_time = time_end_highlighting - time_start_highlighting
+				print(f'inject_highlighting_script took {highlighting_time:.2f} seconds')
 
 				selector_map = all_elements_state.dom_state.selector_map
 				total_elements = len(selector_map.keys())
 				print(f'Total number of elements: {total_elements}')
 
 				# print(all_elements_state.element_tree.clickable_elements_to_string())
-				prompt = AgentMessagePrompt(
-					browser_state_summary=all_elements_state,
-					file_system=FileSystem(base_dir='./tmp'),
-					include_attributes=DEFAULT_INCLUDE_ATTRIBUTES,
-					step_info=None,
-				)
-				# Write the user message to a file for analysis
-				user_message = prompt.get_user_message(use_vision=False).text
+				# prompt = AgentMessagePrompt(
+				# 	browser_state_summary=all_elements_state,
+				# 	file_system=FileSystem(base_dir='./tmp'),
+				# 	include_attributes=DEFAULT_INCLUDE_ATTRIBUTES,
+				# 	step_info=None,
+				# )
+				# # Write the user message to a file for analysis
+				# user_message = prompt.get_user_message(use_vision=False).text
 
-				# clickable_elements_str = all_elements_state.element_tree.clickable_elements_to_string()
+				# # clickable_elements_str = all_elements_state.element_tree.clickable_elements_to_string()
 
-				text_to_save = user_message
+				# text_to_save = user_message
 
-				os.makedirs('./tmp', exist_ok=True)
-				async with await anyio.open_file('./tmp/user_message.txt', 'w', encoding='utf-8') as f:
-					await f.write(text_to_save)
+				# os.makedirs('./tmp', exist_ok=True)
+				# async with await anyio.open_file('./tmp/user_message.txt', 'w', encoding='utf-8') as f:
+				# 	await f.write(text_to_save)
 
-				# save pure clickable elements to a file
-				if all_elements_state.dom_state._root:
-					async with await anyio.open_file('./tmp/element_tree.json', 'w', encoding='utf-8') as f:
-						await f.write(json.dumps(all_elements_state.dom_state._root.__json__(), indent=2))
+				# # save pure clickable elements to a file
+				# if all_elements_state.dom_state._root:
+				# 	async with await anyio.open_file('./tmp/element_tree.json', 'w', encoding='utf-8') as f:
+				# 		await f.write(json.dumps(all_elements_state.dom_state._root.__json__(), indent=2))
 
-				# copy the user message to the clipboard
-				# pyperclip.copy(text_to_save)
+				# # copy the user message to the clipboard
+				# # pyperclip.copy(text_to_save)
 
-				encoding = tiktoken.encoding_for_model('gpt-4o')
-				token_count = len(encoding.encode(text_to_save))
-				print(f'Token count: {token_count}')
+				# encoding = tiktoken.encoding_for_model('gpt-4o')
+				# token_count = len(encoding.encode(text_to_save))
+				# print(f'Token count: {token_count}')
 
-				print('User message written to ./tmp/user_message.txt')
-				print('Element tree written to ./tmp/element_tree.json')
+				# print('User message written to ./tmp/user_message.txt')
+				# print('Element tree written to ./tmp/element_tree.json')
 
-				# Save timing information
-				timing_text = '🔍 DOM EXTRACTION PERFORMANCE ANALYSIS\n'
-				timing_text += f'{"=" * 50}\n\n'
-				timing_text += f'📄 Website: {website_url}\n'
-				timing_text += f'📊 Total Elements: {total_elements}\n'
-				timing_text += f'🎯 Token Count: {token_count}\n\n'
+				# # Save timing information
+				# timing_text = '🔍 DOM EXTRACTION PERFORMANCE ANALYSIS\n'
+				# timing_text += f'{"=" * 50}\n\n'
+				# timing_text += f'📄 Website: {website_url}\n'
+				# timing_text += f'📊 Total Elements: {total_elements}\n'
+				# timing_text += f'🎯 Token Count: {token_count}\n\n'
 
+				timing_text = ''
 				timing_text += '⏱️  TIMING BREAKDOWN:\n'
 				timing_text += f'{"─" * 30}\n'
 				for key, value in all_timing.items():
@@ -209,9 +213,11 @@ async def test_focus_vs_all_elements():
 				print('Timing analysis written to ./tmp/timing_analysis.txt')
 
 				website_list = get_website_list_for_prompt()
+				print(f'Total time: {time.time() - current_time:.2f} seconds')
 				answer = input(
 					f"\n{website_list}\n\n🎮 Enter: element index | 'index,text' input | 'c,index' copy | 1-{len(websites)} jump | Enter re-run | 'n' next | 'p' previous | 'q' quit: "
 				)
+				current_time = time.time()
 
 				if answer.lower() == 'q':
 					return  # Exit completely
