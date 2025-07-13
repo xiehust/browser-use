@@ -19,6 +19,9 @@ class DOMTreeSerializer:
 		self.timing_info: dict[str, float] = {}
 		# Cache for clickable element detection to avoid redundant calls
 		self._clickable_cache: dict[int, bool] = {}
+		# Track frame context for iframe piercing
+		self._frame_stack: list[str] = []  # Stack of frame identifiers
+		self._iframe_count = 0  # Counter for unnamed iframes
 
 	def serialize_accessible_elements(self) -> tuple[SerializedDOMState, dict[str, float]]:
 		import time
@@ -30,6 +33,8 @@ class DOMTreeSerializer:
 		self._selector_map = {}
 		self._semantic_groups = []
 		self._clickable_cache = {}  # Clear cache for new serialization
+		self._frame_stack = []  # Reset frame stack
+		self._iframe_count = 0  # Reset iframe counter
 
 		# Step 1: Create simplified tree (includes clickable element detection)
 		start_step1 = time.time()
@@ -76,7 +81,10 @@ class DOMTreeSerializer:
 		return self._clickable_cache[node.node_id]
 
 	def _create_simplified_tree(self, node: EnhancedDOMTreeNode) -> SimplifiedNode | None:
-		"""Step 1: Create a simplified tree with enhanced element detection."""
+		"""Step 1: Create a simplified tree with enhanced element detection and iframe piercing."""
+
+		# Check if we're processing iframe content (relaxed visibility requirements)
+		is_iframe_content = getattr(self, '_debug_iframe', False)
 
 		if node.node_type == NodeType.DOCUMENT_NODE:
 			if node.children_nodes:
@@ -101,35 +109,85 @@ class DOMTreeSerializer:
 
 			# Use enhanced scoring for inclusion decision
 			is_interactive = self._is_interactive_cached(node)
-
 			is_visible = node.snapshot_node and node.snapshot_node.is_visible
 			is_scrollable = node.is_scrollable
+			is_iframe = node.node_name.lower() == 'iframe'
 
-			# Include if interactive (regardless of visibility), or scrollable, or has children to process
-			should_include = (is_interactive and is_visible) or is_scrollable or node.children_nodes
+			# Relaxed inclusion criteria for iframe content
+			if is_iframe_content:
+				# For iframe content, include if interactive OR has children (ignore visibility)
+				should_include = is_interactive or is_scrollable or node.children_nodes or is_iframe
+			else:
+				# Standard criteria for main page content
+				should_include = (is_interactive and is_visible) or is_scrollable or node.children_nodes or is_iframe
 
 			if should_include:
 				simplified = SimplifiedNode(original_node=node)
-				# simplified._analysis = analysis  # Store analysis for grouping
 
-				# Process children
+				# Process regular children first
 				if node.children_nodes:
 					for child in node.children_nodes:
 						simplified_child = self._create_simplified_tree(child)
 						if simplified_child:
 							simplified.children.append(simplified_child)
 
+				# Handle iframe content piercing
+				if is_iframe and node.content_document:
+					iframe_simplified = self._process_iframe_content(node, node.content_document)
+					if iframe_simplified:
+						simplified.children.append(iframe_simplified)
+
 				# Return if meaningful or has meaningful children
-				if (is_interactive and is_visible) or is_scrollable or simplified.children:
-					return simplified
+				if is_iframe_content:
+					# For iframe content, be more lenient
+					if is_interactive or is_scrollable or simplified.children or is_iframe:
+						return simplified
+				else:
+					# Standard criteria for main page
+					if (is_interactive and is_visible) or is_scrollable or simplified.children or is_iframe:
+						return simplified
 
 		elif node.node_type == NodeType.TEXT_NODE:
 			# Include meaningful text nodes
 			is_visible = node.snapshot_node and node.snapshot_node.is_visible
-			if is_visible and node.node_value and node.node_value.strip() and len(node.node_value.strip()) > 1:
-				return SimplifiedNode(original_node=node)
+
+			# For iframe content, be more lenient with text nodes
+			if is_iframe_content:
+				if node.node_value and node.node_value.strip() and len(node.node_value.strip()) > 1:
+					return SimplifiedNode(original_node=node)
+			else:
+				if is_visible and node.node_value and node.node_value.strip() and len(node.node_value.strip()) > 1:
+					return SimplifiedNode(original_node=node)
 
 		return None
+
+	def _process_iframe_content(
+		self, iframe_node: EnhancedDOMTreeNode, content_document: EnhancedDOMTreeNode
+	) -> SimplifiedNode | None:
+		"""Process the content document inside an iframe."""
+		try:
+			# For pierced DOM trees, the content document already contains the iframe's DOM structure
+			# We just need to process it normally and mark it as iframe content
+
+			# Enable relaxed criteria for iframe processing
+			self._debug_iframe = True
+
+			# Process the content document as a regular DOM tree
+			iframe_content = self._create_simplified_tree(content_document)
+
+			# Disable relaxed criteria
+			self._debug_iframe = False
+
+			if iframe_content:
+				# Mark this as iframe content for identification
+				iframe_content.is_iframe_boundary = True
+
+			return iframe_content
+
+		except Exception as e:
+			# Handle any processing errors gracefully
+			print(f'Warning: Could not process iframe content: {e}')
+			return None
 
 	def _optimize_tree(self, node: SimplifiedNode | None) -> SimplifiedNode | None:
 		"""Step 2: Optimize tree structure."""
@@ -145,14 +203,16 @@ class DOMTreeSerializer:
 
 		node.children = optimized_children
 
-		# Keep meaningful nodes
+		# Keep meaningful nodes including iframe boundaries
 		is_interactive_opt = self._is_interactive_cached(node.original_node)
+		is_iframe_boundary = getattr(node, 'is_iframe_boundary', False)
 
 		if (
 			is_interactive_opt
 			or node.original_node.is_scrollable
 			or node.original_node.node_type == NodeType.TEXT_NODE
 			or node.children
+			or is_iframe_boundary
 		):
 			return node
 
@@ -191,13 +251,16 @@ class DOMTreeSerializer:
 
 	@staticmethod
 	def serialize_tree(node: SimplifiedNode | None, include_attributes: list[str], depth: int = 0) -> str:
-		"""Serialize the optimized tree to string format."""
+		"""Serialize the optimized tree to string format with iframe support."""
 		if not node:
 			return ''
 
 		formatted_text = []
 		depth_str = depth * '\t'
 		next_depth = depth
+
+		# Check if this is an iframe boundary
+		is_iframe_boundary = getattr(node, 'is_iframe_boundary', False)
 
 		if node.original_node.node_type == NodeType.ELEMENT_NODE:
 			# Skip displaying nodes marked as should_display=False
@@ -208,8 +271,15 @@ class DOMTreeSerializer:
 						formatted_text.append(child_text)
 				return '\n'.join(formatted_text)
 
+			# Special handling for iframe boundaries - but only for actual iframe content documents
+			if is_iframe_boundary and node.original_node.node_name.lower() in ['html', '#document']:
+				# This is an iframe content document - find the parent iframe info
+				# Look for iframe attributes in parent context (this is a heuristic)
+				formatted_text.append(f'{depth_str}┌── IFRAME START (content document) ──')
+				next_depth += 1
+
 			# Add element with interactive_index if clickable or scrollable
-			if node.interactive_index is not None or node.original_node.is_scrollable:
+			elif node.interactive_index is not None or node.original_node.is_scrollable:
 				next_depth += 1
 
 				# Build attributes string
@@ -250,6 +320,10 @@ class DOMTreeSerializer:
 			child_text = DOMTreeSerializer.serialize_tree(child, include_attributes, next_depth)
 			if child_text:
 				formatted_text.append(child_text)
+
+		# Close iframe boundary
+		if is_iframe_boundary and node.original_node.node_name.lower() in ['html', '#document'] and formatted_text:
+			formatted_text.append(f'{depth_str}└── IFRAME END ──')
 
 		return '\n'.join(formatted_text)
 

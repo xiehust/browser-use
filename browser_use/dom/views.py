@@ -39,11 +39,13 @@ class SimplifiedNode:
 	is_new: bool = False
 
 	ignored_by_paint_order: bool = False
+	is_iframe_boundary: bool = False
 
 	def __json__(self) -> dict:
 		return {
 			'should_display': self.should_display,
 			'interactive_index': self.interactive_index,
+			'is_iframe_boundary': self.is_iframe_boundary,
 			'original_node': self.original_node.__json__(),
 			'children': [c.__json__() for c in self.children],
 		}

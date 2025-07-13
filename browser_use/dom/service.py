@@ -1,6 +1,6 @@
 import asyncio
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 from cdp_use import CDPClient
@@ -42,7 +42,8 @@ class DomService:
 		self.page = page
 
 		self.cdp_client: CDPClient | None = None
-		# self.playwright_page_to_session_id_store: dict[str, str] = {}
+		# Cache for frame session IDs to avoid repeated target attachment
+		self._frame_sessions: dict[str, str] = {}
 
 	async def _get_cdp_client(self) -> CDPClient:
 		if not self.browser.cdp_url:
@@ -76,6 +77,11 @@ class DomService:
 		if self.cdp_client:
 			await self.cdp_client.stop()
 			self.cdp_client = None
+
+	async def _get_all_frame_session_ids(self) -> dict[str, str]:
+		"""Get session ID for the main frame. Modern Chrome includes iframe content via pierce=true."""
+		session_id = await self._get_current_page_session_id()
+		return {'main': session_id}
 
 	async def _get_current_page_session_id(self) -> str:
 		"""Get the target ID for a playwright page.
@@ -112,32 +118,47 @@ class DomService:
 
 		raise ValueError(f'No session id found for page {self.page.url}')
 
+	def _extract_ax_property_value(self, value) -> str | bool | None:
+		"""Extract value from various formats returned by the accessibility API."""
+		if isinstance(value, dict):
+			extracted = value.get('value', value)
+			if isinstance(extracted, (str, bool)) or extracted is None:
+				return extracted
+			return str(extracted)  # Convert to string if not expected type
+		elif isinstance(value, list) and len(value) > 0:
+			# Sometimes values are returned as a list with one element
+			return self._extract_ax_property_value(value[0])
+		elif isinstance(value, (str, bool)) or value is None:
+			return value
+		else:
+			return str(value) if value is not None else None
+
 	def _build_enhanced_ax_node(self, ax_node: AXNode) -> EnhancedAXNode:
-		properties: list[EnhancedAXProperty] | None = None
+		"""Build enhanced accessibility node from CDP AX node."""
+
+		properties = None
 		if 'properties' in ax_node and ax_node['properties']:
 			properties = []
-			for property in ax_node['properties']:
+			for prop in ax_node['properties']:
 				try:
-					# test whether property name can go into the enum (sometimes Chrome returns some random properties)
-					properties.append(
-						EnhancedAXProperty(
-							name=property['name'],
-							value=property.get('value', {}).get('value', None),
-							# related_nodes=[],  # TODO: add related nodes
-						)
-					)
-				except ValueError:
-					pass
+					prop_name = prop.get('name')
+					prop_value = self._extract_ax_property_value(prop.get('value'))
 
-		enhanced_ax_node = EnhancedAXNode(
-			ax_node_id=ax_node['nodeId'],
-			ignored=ax_node['ignored'],
-			role=ax_node.get('role', {}).get('value', None),
-			name=ax_node.get('name', {}).get('value', None),
-			description=ax_node.get('description', {}).get('value', None),
+					if prop_name and prop_value is not None:
+						properties.append(EnhancedAXProperty(name=prop_name, value=prop_value))
+				except Exception as e:
+					# Skip problematic properties
+					print(f'Warning: Could not process AX property {prop}: {e}')
+					continue
+
+		return EnhancedAXNode(
+			ax_node_id=ax_node.get('nodeId', ''),
+			ignored=ax_node.get('ignored', False),
+			role=ax_node.get('role', {}).get('value') if ax_node.get('role') else None,
+			name=ax_node.get('name', {}).get('value') if ax_node.get('name') else None,
+			description=ax_node.get('description', {}).get('value') if ax_node.get('description') else None,
 			properties=properties,
 		)
-		return enhanced_ax_node
 
 	async def _get_viewport_size(self) -> tuple[float, float, float, float, float]:
 		"""Get viewport dimensions, device pixel ratio, and scroll position using CDP."""
@@ -177,10 +198,20 @@ class DomService:
 			return 1920.0, 1080.0, 1.0, 0.0, 0.0
 
 	async def _build_enhanced_dom_tree(
-		self, dom_tree: GetDocumentReturns, ax_tree: GetFullAXTreeReturns, snapshot: CaptureSnapshotReturns
+		self, all_frame_data: dict[str, tuple[GetDocumentReturns, GetFullAXTreeReturns, CaptureSnapshotReturns]]
 	) -> EnhancedDOMTreeNode:
-		ax_tree_lookup: dict[int, AXNode] = {
-			ax_node['backendDOMNodeId']: ax_node for ax_node in ax_tree['nodes'] if 'backendDOMNodeId' in ax_node
+		"""Build enhanced DOM tree from multiple frame data sources."""
+
+		# Get main frame data
+		main_frame_data = all_frame_data.get('main')
+		if not main_frame_data:
+			raise ValueError('No main frame data available')
+
+		main_dom_tree, main_ax_tree, main_snapshot = main_frame_data
+
+		# Build AX tree lookup for main frame
+		main_ax_tree_lookup: dict[int, AXNode] = {
+			ax_node['backendDOMNodeId']: ax_node for ax_node in main_ax_tree['nodes'] if 'backendDOMNodeId' in ax_node
 		}
 
 		enhanced_dom_tree_node_lookup: dict[int, EnhancedDOMTreeNode] = {}
@@ -189,14 +220,38 @@ class DomService:
 		# Get viewport dimensions first for visibility calculation
 		viewport_width, viewport_height, device_pixel_ratio, scroll_x, scroll_y = await self._get_viewport_size()
 
-		# Parse snapshot data with everything calculated upfront
-		# Parse snapshot data with everything calculated upfront
-		snapshot_lookup = build_snapshot_lookup(snapshot, viewport_width, viewport_height, device_pixel_ratio, scroll_x, scroll_y)
+		# Parse snapshot data with everything calculated upfront for main frame
+		main_snapshot_lookup = build_snapshot_lookup(
+			main_snapshot, viewport_width, viewport_height, device_pixel_ratio, scroll_x, scroll_y
+		)
 
-		def _construct_enhanced_node(node: Node) -> EnhancedDOMTreeNode:
+		# Build snapshot lookups for all iframe frames
+		iframe_snapshot_lookups: dict[str, dict[int, Any]] = {}
+		iframe_ax_lookups: dict[str, dict[int, AXNode]] = {}
+
+		for frame_id, (dom_tree, ax_tree, snapshot) in all_frame_data.items():
+			if frame_id != 'main':
+				# Build snapshot lookup for this iframe
+				iframe_snapshot_lookups[frame_id] = build_snapshot_lookup(
+					snapshot, viewport_width, viewport_height, device_pixel_ratio, scroll_x, scroll_y
+				)
+				# Build AX lookup for this iframe
+				iframe_ax_lookups[frame_id] = {
+					ax_node['backendDOMNodeId']: ax_node for ax_node in ax_tree['nodes'] if 'backendDOMNodeId' in ax_node
+				}
+
+		def _construct_enhanced_node(node: Node, frame_context: str = 'main') -> EnhancedDOMTreeNode:
 			# memoize the mf (I don't know if some nodes are duplicated)
 			if node['nodeId'] in enhanced_dom_tree_node_lookup:
 				return enhanced_dom_tree_node_lookup[node['nodeId']]
+
+			# Determine which lookups to use based on frame context
+			if frame_context == 'main':
+				ax_tree_lookup = main_ax_tree_lookup
+				snapshot_lookup = main_snapshot_lookup
+			else:
+				ax_tree_lookup = iframe_ax_lookups.get(frame_context, {})
+				snapshot_lookup = iframe_snapshot_lookups.get(frame_context, {})
 
 			ax_node = ax_tree_lookup.get(node['backendNodeId'])
 			if ax_node:
@@ -244,23 +299,74 @@ class DomService:
 				]  # parents should always be in the lookup
 
 			if 'contentDocument' in node and node['contentDocument']:
-				dom_tree_node.content_document = _construct_enhanced_node(node['contentDocument'])  # maybe new maybe not, idk
+				# For iframe content documents, we need to determine the frame context
+				# This is where iframe piercing happens - we process the content document
+				# with the appropriate frame context (snapshot/ax data from the iframe's session)
+				content_frame_context = frame_context  # Default to current context
+
+				# Try to find matching iframe frame data
+				if node['nodeName'].lower() == 'iframe':
+					# Look for iframe data that might match this content document
+					for iframe_frame_id in iframe_snapshot_lookups.keys():
+						if iframe_frame_id != 'main':
+							content_frame_context = iframe_frame_id
+							break  # Use first available iframe context for now
+							# TODO: Better matching between iframe elements and their frame contexts
+
+				dom_tree_node.content_document = _construct_enhanced_node(node['contentDocument'], content_frame_context)
 
 			if 'shadowRoots' in node and node['shadowRoots']:
 				dom_tree_node.shadow_roots = []
 				for shadow_root in node['shadowRoots']:
-					dom_tree_node.shadow_roots.append(_construct_enhanced_node(shadow_root))
+					dom_tree_node.shadow_roots.append(_construct_enhanced_node(shadow_root, frame_context))
 
 			if 'children' in node and node['children']:
 				dom_tree_node.children_nodes = []
 				for child in node['children']:
-					dom_tree_node.children_nodes.append(_construct_enhanced_node(child))
+					dom_tree_node.children_nodes.append(_construct_enhanced_node(child, frame_context))
 
 			return dom_tree_node
 
-		enhanced_dom_tree_node = _construct_enhanced_node(dom_tree['root'])
+		enhanced_dom_tree_node = _construct_enhanced_node(main_dom_tree['root'])
 
 		return enhanced_dom_tree_node
+
+	async def _get_all_trees_with_iframe_support(
+		self,
+	) -> tuple[dict[str, tuple[GetDocumentReturns, GetFullAXTreeReturns, CaptureSnapshotReturns]], dict[str, float]]:
+		"""Get DOM, AX, and Snapshot trees with iframe content included via pierce=true."""
+		if not self.browser.cdp_url:
+			raise ValueError('CDP URL is not set')
+
+		session_id = await self._get_current_page_session_id()
+		cdp_client = await self._get_cdp_client()
+
+		# Use pierce=true to get iframe content documents included in the main DOM tree
+		snapshot_request = cdp_client.send.DOMSnapshot.captureSnapshot(
+			params={
+				'computedStyles': REQUIRED_COMPUTED_STYLES,
+				'includePaintOrder': True,
+				'includeDOMRects': True,
+				'includeBlendedBackgroundColors': False,
+				'includeTextColorOpacities': False,
+			},
+			session_id=session_id,
+		)
+
+		# Pierce=true includes iframe content documents
+		dom_tree_request = cdp_client.send.DOM.getDocument(params={'depth': -1, 'pierce': True}, session_id=session_id)
+
+		ax_tree_request = cdp_client.send.Accessibility.getFullAXTree(session_id=session_id)
+
+		start = time.time()
+		snapshot, dom_tree, ax_tree = await asyncio.gather(snapshot_request, dom_tree_request, ax_tree_request)
+		end = time.time()
+		cdp_timing = {'cdp_calls_total': end - start}
+		print(f'Time taken to get DOM tree with iframe content: {end - start} seconds')
+
+		# Return single frame data - the iframe content is embedded in the main DOM tree
+		all_frame_data = {'main': (dom_tree, ax_tree, snapshot)}
+		return all_frame_data, cdp_timing
 
 	async def _get_all_trees(self) -> tuple[CaptureSnapshotReturns, GetDocumentReturns, GetFullAXTreeReturns, dict[str, float]]:
 		if not self.browser.cdp_url:
@@ -293,10 +399,12 @@ class DomService:
 		return snapshot, dom_tree, ax_tree, cdp_timing
 
 	async def get_dom_tree(self) -> tuple[EnhancedDOMTreeNode, dict[str, float]]:
-		snapshot, dom_tree, ax_tree, cdp_timing = await self._get_all_trees()
+		"""Get enhanced DOM tree with iframe piercing support."""
+		# Use the new iframe-aware method
+		all_frame_data, cdp_timing = await self._get_all_trees_with_iframe_support()
 
 		start = time.time()
-		enhanced_dom_tree = await self._build_enhanced_dom_tree(dom_tree, ax_tree, snapshot)
+		enhanced_dom_tree = await self._build_enhanced_dom_tree(all_frame_data)
 		end = time.time()
 
 		build_tree_timing = {'build_enhanced_dom_tree': end - start}

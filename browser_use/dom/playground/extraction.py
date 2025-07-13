@@ -33,33 +33,36 @@ async def test_focus_vs_all_elements():
 	# Unified website list with descriptions
 	websites = [
 		# Standard websites with various interactive elements
-		('https://www.linkedin.com/robots.txt', 'Professional network'),
-		('https://www.rent.com/', 'Rental listings'),
-		('https://www.espn.com', 'Sports news site'),
-		('https://www.eatsure.com/', 'Food delivery platform'),
-		('https://www.kayak.com/', 'Travel booking site'),
-		('https://web.archive.org/web/20200228210807/https://www.base-search.net/Search/Advanced', 'Archive search'),
-		('https://www.va.gov/find-locations', 'VA locations finder'),
+		# ('https://www.linkedin.com/robots.txt', 'Professional network'),
+		# ('https://www.rent.com/', 'Rental listings'),
+		# ('https://www.espn.com', 'Sports news site'),
+		# ('https://www.eatsure.com/', 'Food delivery platform'),
+		# ('https://www.kayak.com/', 'Travel booking site'),
+		# ('https://web.archive.org/web/20200228210807/https://www.base-search.net/Search/Advanced', 'Archive search'),
+		# ('https://www.va.gov/find-locations', 'VA locations finder'),
 		('https://www.bbcgoodfood.com', 'Recipe website'),
-		('https://www.napaonline.com/', 'Auto parts store'),
-		('https://v0-simple-landing-page-seven-xi.vercel.app/', 'Simple landing page'),
-		('https://www.google.com/travel/flights', 'Flight search'),
-		('https://www.amazon.com/s?k=laptop', 'E-commerce search'),
-		('https://github.com/trending', 'Code repository'),
+		# ('https://www.napaonline.com/', 'Auto parts store'),
+		# ('https://v0-simple-landing-page-seven-xi.vercel.app/', 'Simple landing page'),
+		# ('https://www.google.com/travel/flights', 'Flight search'),
+		# ('https://www.amazon.com/s?k=laptop', 'E-commerce search'),
+		# ('https://github.com/trending', 'Code repository'),
 		('https://www.reddit.com', 'Social platform'),
-		('https://www.ycombinator.com/companies', 'Startup directory'),
-		('https://www.kayak.com/flights', 'Flight booking'),
+		# ('https://www.ycombinator.com/companies', 'Startup directory'),
+		# ('https://www.kayak.com/flights', 'Flight booking'),
 		('https://www.booking.com', 'Hotel booking'),
 		('https://www.airbnb.com', 'Accommodation platform'),
 		('https://www.linkedin.com/jobs', 'Job listings'),
 		('https://stackoverflow.com/questions', 'Developer Q&A'),
-		# Complex/difficult websites
-		('https://www.w3schools.com/html/tryit.asp?filename=tryhtml_iframe', '🔸 NESTED IFRAMES'),
+		# Complex/difficult websites with iframes
+		('https://www.w3schools.com/html/tryit.asp?filename=tryhtml_iframe', '🔸 IFRAME: W3Schools tryit editor'),
 		('https://semantic-ui.com/modules/dropdown.html', '🔸 COMPLEX DROPDOWNS'),
-		('https://www.dezlearn.com/nested-iframes-example/', '🔸 CROSS-ORIGIN IFRAMES'),
-		('https://codepen.io/towc/pen/mJzOWJ', '🔸 CANVAS ELEMENTS'),
+		('https://www.dezlearn.com/nested-iframes-example/', '🔸 NESTED IFRAMES'),
 		('https://jqueryui.com/accordion/', '🔸 ACCORDION WIDGETS'),
+		('https://codepen.io/towc/pen/mJzOWJ', '🔸 CANVAS ELEMENTS'),
 		('https://www.unesco.org/en', '🔸 COMPLEX LAYOUT'),
+		# Additional iframe test cases
+		('https://www.w3schools.com/html/html_iframe.asp', '🔸 IFRAME: Basic iframe examples'),
+		('https://developer.mozilla.org/en-US/docs/Web/HTML/Element/iframe', '🔸 IFRAME: MDN iframe documentation'),
 	]
 
 	current_website_index = 0
@@ -85,7 +88,7 @@ async def test_focus_vs_all_elements():
 	# Show startup info
 	print('\n🌐 BROWSER-USE DOM EXTRACTION TESTER')
 	print(f'📊 {len(websites)} websites total')
-	print('🔧 Controls: Type 1-{} to jump | Enter to re-run | "n" next | "p" previous | "q" quit'.format(len(websites)))
+	print(f'🔧 Controls: Type 1-{len(websites)} to jump | Enter to re-run | "n" next | "p" previous | "q" quit')
 	print('💾 Outputs: tmp/user_message.txt & tmp/element_tree.json\n')
 
 	while True:

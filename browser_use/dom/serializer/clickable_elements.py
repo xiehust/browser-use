@@ -54,7 +54,19 @@ class ClickableElementDetector:
 					continue
 
 		# Secondary check: intrinsically interactive HTML elements
-		interactive_tags = {'button', 'input', 'select', 'textarea', 'a', 'label', 'details', 'summary', 'option', 'optgroup'}
+		interactive_tags = {
+			'button',
+			'input',
+			'select',
+			'textarea',
+			'a',
+			'label',
+			'details',
+			'summary',
+			'option',
+			'optgroup',
+			'iframe',
+		}
 		if node.tag_name in interactive_tags:
 			return True
 
