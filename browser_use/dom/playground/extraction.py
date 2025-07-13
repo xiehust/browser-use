@@ -33,6 +33,7 @@ async def test_focus_vs_all_elements():
 	# Unified website list with descriptions
 	websites = [
 		# Standard websites with various interactive elements
+		('https://csreis.github.io/tests/cross-site-iframe.html', '🔸 IFRAME: Cross-site iframe'),
 		# ('https://www.linkedin.com/robots.txt', 'Professional network'),
 		# ('https://www.rent.com/', 'Rental listings'),
 		# ('https://www.espn.com', 'Sports news site'),

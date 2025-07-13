@@ -186,7 +186,7 @@ async def remove_highlighting_script(dom_service: DomService) -> None:
 
 
 async def inject_highlighting_script(dom_service: DomService, interactive_elements: DOMSelectorMap) -> None:
-	"""Inject JavaScript to highlight interactive elements with real coordinate resolution for iframe content."""
+	"""Inject JavaScript to highlight interactive elements with enhanced iframe coordinate resolution."""
 	if not interactive_elements:
 		print('⚠️ No interactive elements to highlight')
 		return
@@ -207,7 +207,9 @@ async def inject_highlighting_script(dom_service: DomService, interactive_elemen
 		cdp_client = await dom_service._get_cdp_client()
 		session_id = await dom_service._get_current_page_session_id()
 
-		print(f'📍 Creating robust highlighting for {len(limited_elements)} elements (total found: {total_elements})')
+		print(
+			f'📍 Creating enhanced iframe-aware highlighting for {len(limited_elements)} elements (total found: {total_elements})'
+		)
 
 		# Remove any existing highlights first
 		await remove_highlighting_script(dom_service)
@@ -229,14 +231,14 @@ async def inject_highlighting_script(dom_service: DomService, interactive_elemen
 			}
 			elements_data.append(element_info)
 
-		# Create comprehensive highlighting script with real coordinate resolution
+		# Create enhanced highlighting script with cross-origin iframe support
 		script = f"""
 		(function() {{
 			const elementsData = {json.dumps(elements_data)};
 			const totalElementsFound = {total_elements};
 			
-			console.log('=== BROWSER-USE ENHANCED HIGHLIGHTING ===');
-			console.log('Processing', elementsData.length, 'interactive elements with real coordinate resolution');
+			console.log('=== BROWSER-USE ENHANCED IFRAME-AWARE HIGHLIGHTING ===');
+			console.log('Processing', elementsData.length, 'interactive elements with advanced iframe coordinate resolution');
 			if (totalElementsFound > elementsData.length) {{
 				console.warn('Note: Limited to', elementsData.length, 'elements out of', totalElementsFound, 'total for performance');
 			}}
@@ -291,112 +293,235 @@ async def inject_highlighting_script(dom_service: DomService, interactive_elemen
 				return element;
 			}}
 			
-			// Function to find element by backend node ID using DOM walker
-			function findElementByBackendNodeId(backendNodeId, rootElement = document.documentElement) {{
-				const walker = document.createTreeWalker(
-					rootElement,
-					NodeFilter.SHOW_ELEMENT,
-					null,
-					false
-				);
-				
-				let node;
-				while (node = walker.nextNode()) {{
-					// Check if this element matches our backend node ID
-					// We can't directly access backend node ID, so we'll use other attributes
-					if (node.nodeType === Node.ELEMENT_NODE) {{
-						// Try to match by unique characteristics
-						return node; // For now, we'll implement a different approach
+			// Enhanced element finding with multiple strategies
+			function findElementInDocument(doc, elementData) {{
+				// Strategy 1: XPath resolution
+				if (elementData.xpath) {{
+					try {{
+						const xpathResult = doc.evaluate(
+							'//' + elementData.xpath,
+							doc,
+							null,
+							XPathResult.FIRST_ORDERED_NODE_TYPE,
+							null
+						);
+						const element = xpathResult.singleNodeValue;
+						if (element) return element;
+					}} catch (e) {{
+						console.debug('XPath failed for', elementData.interactive_index, e);
 					}}
 				}}
+				
+				// Strategy 2: Tag name + attributes matching
+				const candidates = doc.getElementsByTagName(elementData.element_name);
+				for (let candidate of candidates) {{
+					// Try to match by unique attributes
+					if (candidate.tagName.toLowerCase() === elementData.element_name.toLowerCase()) {{
+						// Enhanced matching - check key attributes if available
+						const attrs = elementData.attributes || {{}};
+						let matchScore = 1; // Base score for tag match
+						let totalAttributes = 0;
+						
+						for (let [key, value] of Object.entries(attrs)) {{
+							totalAttributes++;
+							if (candidate.getAttribute(key) === value) {{
+								matchScore += 2; // Higher score for attribute match
+							}}
+						}}
+						
+						// Check text content similarity
+						const elementText = elementData.text_content || '';
+						const candidateText = candidate.textContent || candidate.innerText || '';
+						if (elementText && candidateText.includes(elementText.trim())) {{
+							matchScore += 3; // High score for text match
+						}}
+						
+						// Return if good match (tag + some attributes/text)
+						if (matchScore >= 3 || (totalAttributes === 0 && matchScore >= 1)) {{
+							return candidate;
+						}}
+					}}
+				}}
+				
+				// Strategy 3: Text content search as last resort
+				if (elementData.text_content && elementData.text_content.trim()) {{
+					const walker = doc.createTreeWalker(
+						doc.body || doc.documentElement,
+						NodeFilter.SHOW_ELEMENT,
+						{{
+							acceptNode: function(node) {{
+								const nodeText = node.textContent || node.innerText || '';
+								return nodeText.includes(elementData.text_content.trim()) ? 
+									NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+							}}
+						}},
+						false
+					);
+					
+					let node;
+					while (node = walker.nextNode()) {{
+						if (node.tagName.toLowerCase() === elementData.element_name.toLowerCase()) {{
+							return node;
+						}}
+					}}
+				}}
+				
 				return null;
 			}}
 			
-			// Function to resolve element coordinates using CDP-like approach
+			// Transform coordinates from iframe space to main page space
+			function transformIframeCoordinates(element, iframe) {{
+				try {{
+					// Get element position within iframe
+					const elementRect = element.getBoundingClientRect();
+					
+					// Get iframe position on main page
+					const iframeRect = iframe.getBoundingClientRect();
+					
+					// Get scroll offsets
+					const mainScrollLeft = window.pageXOffset || document.documentElement.scrollLeft || document.body.scrollLeft || 0;
+					const mainScrollTop = window.pageYOffset || document.documentElement.scrollTop || document.body.scrollTop || 0;
+					
+					// Transform coordinates from iframe space to main page space
+					const transformedX = iframeRect.left + elementRect.left + mainScrollLeft;
+					const transformedY = iframeRect.top + elementRect.top + mainScrollTop;
+					
+					return {{
+						x: transformedX,
+						y: transformedY,
+						width: elementRect.width,
+						height: elementRect.height,
+						found: true,
+						source: 'iframe_transformed'
+					}};
+				}} catch (error) {{
+					console.warn('Error transforming iframe coordinates:', error);
+					return null;
+				}}
+			}}
+			
+			// Enhanced coordinate resolution with cross-origin bypass attempts
 			function resolveElementCoordinates(elementData) {{
 				try {{
-					// Try to find element using multiple strategies
 					let element = null;
+					let coordinateSource = 'fallback';
 					
-					// Strategy 1: Try XPath if available
-					if (elementData.xpath) {{
-						try {{
-							const xpathResult = document.evaluate(
-								'//' + elementData.xpath,
-								document,
-								null,
-								XPathResult.FIRST_ORDERED_NODE_TYPE,
-								null
-							);
-							element = xpathResult.singleNodeValue;
-						}} catch (e) {{
-							// XPath failed, try other methods
-						}}
-					}}
-					
-					// Strategy 2: Try to find by tag name and attributes
-					if (!element) {{
-						const candidates = document.getElementsByTagName(elementData.element_name);
-						for (let candidate of candidates) {{
-							// Simple matching by tag name for now
-							if (candidate.tagName.toLowerCase() === elementData.element_name.toLowerCase()) {{
-								element = candidate;
-								break; // Take first match for now
-							}}
-						}}
-					}}
-					
-					// Strategy 3: Look in all iframes (with timeout protection)
-					if (!element) {{
-						const iframes = document.querySelectorAll('iframe');
-						for (let iframe of iframes) {{
-							try {{
-								const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
-								if (iframeDoc) {{
-									const iframeCandidates = iframeDoc.getElementsByTagName(elementData.element_name);
-									for (let candidate of iframeCandidates) {{
-										if (candidate.tagName.toLowerCase() === elementData.element_name.toLowerCase()) {{
-											element = candidate;
-											break;
-										}}
-									}}
-									if (element) break;
-								}}
-							}} catch (e) {{
-								// Cross-origin iframe, skip
-								continue;
-							}}
-						}}
-					}}
-					
+					// Strategy 1: Search in main document
+					element = findElementInDocument(document, elementData);
 					if (element) {{
 						const rect = element.getBoundingClientRect();
-						const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
-						const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+						const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft || document.body.scrollLeft || 0;
+						const scrollTop = window.pageYOffset || document.documentElement.scrollTop || document.body.scrollTop || 0;
 						
 						return {{
 							x: rect.left + scrollLeft,
 							y: rect.top + scrollTop,
 							width: rect.width,
 							height: rect.height,
-							found: true
-						}};
-					}} else {{
-						// Fallback positioning for iframe content
-						let fallbackY = 100;
-						if (elementData.is_iframe_content) {{
-							const iframeIndex = elementData.interactive_index % 10;
-							fallbackY = 100 + (iframeIndex * 30);
-						}}
-						
-						return {{
-							x: elementData.is_iframe_content ? 600 : 50,
-							y: fallbackY,
-							width: elementData.is_iframe_content ? 180 : 100,
-							height: 25,
-							found: false
+							found: true,
+							source: 'main_document'
 						}};
 					}}
+					
+					// Strategy 2: Search in all iframes with multiple bypass attempts
+					const iframes = document.querySelectorAll('iframe');
+					console.debug(`Searching in ${{iframes.length}} iframes for element ${{elementData.interactive_index}}`);
+					
+					for (let i = 0; i < iframes.length; i++) {{
+						const iframe = iframes[i];
+						let iframeDoc = null;
+						
+						try {{
+							// Attempt 1: Direct contentDocument access (same-origin)
+							iframeDoc = iframe.contentDocument;
+							coordinateSource = 'same_origin_iframe';
+						}} catch (e1) {{
+							try {{
+								// Attempt 2: contentWindow.document access
+								iframeDoc = iframe.contentWindow.document;
+								coordinateSource = 'contentWindow_iframe';
+							}} catch (e2) {{
+								try {{
+									// Attempt 3: Force access with security bypass
+									// This works when Chrome is started with --disable-web-security
+									const frame = iframe.contentWindow;
+									if (frame && frame.document) {{
+										iframeDoc = frame.document;
+										coordinateSource = 'security_bypassed_iframe';
+									}}
+								}} catch (e3) {{
+									console.debug(`Iframe ${{i}} blocked all access attempts:`, e3.message);
+									continue;
+								}}
+							}}
+						}}
+						
+						if (iframeDoc) {{
+							console.debug(`Successfully accessed iframe ${{i}} via ${{coordinateSource}}`);
+							element = findElementInDocument(iframeDoc, elementData);
+							if (element) {{
+								const transformed = transformIframeCoordinates(element, iframe);
+								if (transformed) {{
+									transformed.source = coordinateSource;
+									return transformed;
+								}}
+							}}
+						}}
+					}}
+					
+					// Strategy 3: Advanced fallback for iframe content
+					if (elementData.is_iframe_content) {{
+						// Try to estimate position based on iframe locations
+						let estimatedPosition = null;
+						
+						// Look for iframes that might contain this element
+						for (let iframe of iframes) {{
+							const iframeRect = iframe.getBoundingClientRect();
+							const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft || 0;
+							const scrollTop = window.pageYOffset || document.documentElement.scrollTop || 0;
+							
+							// Estimate position within iframe based on element index
+							const estimatedX = iframeRect.left + scrollLeft + 10 + ((elementData.interactive_index % 5) * 20);
+							const estimatedY = iframeRect.top + scrollTop + 20 + (Math.floor(elementData.interactive_index / 5) * 25);
+							
+							// Check if this looks reasonable (within iframe bounds)
+							if (estimatedX >= iframeRect.left + scrollLeft && 
+								estimatedY >= iframeRect.top + scrollTop &&
+								estimatedX <= iframeRect.right + scrollLeft &&
+								estimatedY <= iframeRect.bottom + scrollTop) {{
+								estimatedPosition = {{
+									x: estimatedX,
+									y: estimatedY,
+									width: 100,
+									height: 20,
+									found: false,
+									source: 'iframe_estimated'
+								}};
+								break;
+							}}
+						}}
+						
+						if (estimatedPosition) {{
+							return estimatedPosition;
+						}}
+					}}
+					
+					// Final fallback positioning
+					let fallbackY = 100;
+					if (elementData.is_iframe_content) {{
+						const iframeIndex = elementData.interactive_index % 10;
+						fallbackY = 100 + (iframeIndex * 30);
+					}}
+					
+					return {{
+						x: elementData.is_iframe_content ? 600 : 50,
+						y: fallbackY,
+						width: elementData.is_iframe_content ? 180 : 100,
+						height: 25,
+						found: false,
+						source: 'fallback'
+					}};
+					
 				}} catch (error) {{
 					console.warn('Error resolving coordinates for element:', elementData.interactive_index, error);
 					return {{
@@ -404,7 +529,8 @@ async def inject_highlighting_script(dom_service: DomService, interactive_elemen
 						y: 100 + (elementData.interactive_index * 20),
 						width: 100,
 						height: 20,
-						found: false
+						found: false,
+						source: 'error_fallback'
 					}};
 				}}
 			}}
@@ -420,18 +546,56 @@ async def inject_highlighting_script(dom_service: DomService, interactive_elemen
 					// Process current batch
 					for (let i = currentIndex; i < endIndex; i++) {{
 						const elementData = elementsData[i];
-						const coords = resolveElementCoordinates(elementData);  // Remove await - make it synchronous
+						const coords = resolveElementCoordinates(elementData);
 						
 						// Create highlight element
 						const highlight = document.createElement('div');
 						highlight.setAttribute('data-browser-use-highlight', 'element');
 						highlight.setAttribute('data-element-id', elementData.interactive_index);
 						
-						// Determine styling based on element type
+						// Determine styling based on element type and coordinate source
 						const isIframeContent = elementData.is_iframe_content;
 						const baseOutlineColor = isIframeContent ? '#9b59b6' : '#4a90e2';
 						const backgroundStyle = isIframeContent ? 'rgba(155, 89, 182, 0.1)' : 'transparent';
-						const foundIndicator = coords.found ? '' : ' (FALLBACK)';
+						
+						// Enhanced status indicators
+						let statusIndicator = '';
+						let statusColor = baseOutlineColor;
+						
+						if (coords.found) {{
+							switch (coords.source) {{
+								case 'main_document':
+									statusIndicator = ' ✅';
+									statusColor = '#28a745';
+									break;
+								case 'same_origin_iframe':
+								case 'contentWindow_iframe':
+									statusIndicator = ' 🎯';
+									statusColor = '#17a2b8';
+									break;
+								case 'security_bypassed_iframe':
+									statusIndicator = ' 🔓';
+									statusColor = '#fd7e14';
+									break;
+								case 'iframe_transformed':
+									statusIndicator = ' 🔄';
+									statusColor = '#6f42c1';
+									break;
+								default:
+									statusIndicator = ' ✅';
+									statusColor = '#28a745';
+							}}
+						}} else {{
+							switch (coords.source) {{
+								case 'iframe_estimated':
+									statusIndicator = ' ~';
+									statusColor = '#ffc107';
+									break;
+								default:
+									statusIndicator = ' ❌';
+									statusColor = '#dc3545';
+							}}
+						}}
 						
 						highlight.style.cssText = `
 							position: absolute;
@@ -439,7 +603,7 @@ async def inject_highlighting_script(dom_service: DomService, interactive_elemen
 							top: ${{coords.y}}px;
 							width: ${{coords.width}}px;
 							height: ${{coords.height}}px;
-							outline: 2px solid ${{baseOutlineColor}};
+							outline: 2px solid ${{statusColor}};
 							outline-offset: -2px;
 							background: ${{backgroundStyle}};
 							pointer-events: none;
@@ -452,12 +616,12 @@ async def inject_highlighting_script(dom_service: DomService, interactive_elemen
 							z-index: ${{isIframeContent ? HIGHLIGHT_Z_INDEX + 10 : HIGHLIGHT_Z_INDEX}};
 						`;
 						
-						// Create enhanced label
+						// Create enhanced label with status
 						const labelText = isIframeContent ? `[${{elementData.interactive_index}}]🖼️` : elementData.interactive_index;
-						const labelBgColor = isIframeContent ? '#9b59b6' : '#4a90e2';
+						const labelBgColor = statusColor;
 						const labelPosition = isIframeContent ? 'top: -25px; left: -5px;' : 'top: -20px; left: 0;';
 						
-						const label = createTextElement('div', labelText + foundIndicator, `
+						const label = createTextElement('div', labelText + statusIndicator, `
 							position: absolute;
 							${{labelPosition}}
 							background-color: ${{labelBgColor}};
@@ -476,12 +640,12 @@ async def inject_highlighting_script(dom_service: DomService, interactive_elemen
 							line-height: 1.2;
 						`);
 						
-						// Create detailed tooltip
+						// Create detailed tooltip with coordinate source info
 						const tooltip = document.createElement('div');
 						tooltip.setAttribute('data-browser-use-highlight', 'tooltip');
 						tooltip.style.cssText = `
 							position: absolute;
-							top: -120px;
+							top: -140px;
 							left: 50%;
 							transform: translateX(-50%);
 							background-color: rgba(0, 0, 0, 0.95);
@@ -497,19 +661,18 @@ async def inject_highlighting_script(dom_service: DomService, interactive_elemen
 							transition: all 0.3s ease;
 							box-shadow: 0 4px 12px rgba(0,0,0,0.5);
 							border: 1px solid #555;
-							max-width: 350px;
+							max-width: 380px;
 							line-height: 1.3;
-							min-width: 180px;
+							min-width: 200px;
 							margin: 0;
 						`;
 						
-						// Build tooltip content
-						const status = coords.found ? '✅ FOUND' : '❌ FALLBACK';
+						// Build enhanced tooltip content with source info
 						const typeIcon = isIframeContent ? '🖼️' : '🎯';
 						const coordsText = `(${{Math.round(coords.x)}}, ${{Math.round(coords.y)}}) ${{Math.round(coords.width)}}×${{Math.round(coords.height)}}`;
 						
 						const header = createTextElement('div', `${{typeIcon}} [${{elementData.interactive_index}}] ${{elementData.element_name.toUpperCase()}}`, `
-							color: ${{isIframeContent ? '#9b59b6' : '#4a90e2'}};
+							color: ${{statusColor}};
 							font-weight: bold;
 							font-size: 12px;
 							margin-bottom: 6px;
@@ -517,7 +680,8 @@ async def inject_highlighting_script(dom_service: DomService, interactive_elemen
 							padding-bottom: 3px;
 						`);
 						
-						const statusDiv = createTextElement('div', status, `
+						const sourceInfo = coords.source.replace(/_/g, ' ').toUpperCase();
+						const statusDiv = createTextElement('div', `${{coords.found ? '✅ FOUND' : '❌ FALLBACK'}} via ${{sourceInfo}}`, `
 							color: ${{coords.found ? '#28a745' : '#fd7e14'}};
 							font-size: 10px;
 							font-weight: bold;
@@ -552,7 +716,7 @@ async def inject_highlighting_script(dom_service: DomService, interactive_elemen
 						}});
 						
 						highlight.addEventListener('mouseleave', () => {{
-							highlight.style.outline = `2px solid ${{baseOutlineColor}}`;
+							highlight.style.outline = `2px solid ${{statusColor}}`;
 							highlight.style.outlineOffset = '-2px';
 							tooltip.style.opacity = '0';
 							tooltip.style.visibility = 'hidden';
@@ -572,7 +736,7 @@ async def inject_highlighting_script(dom_service: DomService, interactive_elemen
 						// Use requestAnimationFrame to prevent blocking the browser
 						requestAnimationFrame(processBatch);
 					}} else {{
-						console.log('✅ Enhanced coordinate-resolved highlighting complete');
+						console.log('✅ Enhanced iframe-aware highlighting complete');
 						if (totalElementsFound > elementsData.length) {{
 							console.warn('Note: Showing', elementsData.length, 'highlights out of', totalElementsFound, 'total elements for performance');
 						}}
@@ -591,7 +755,7 @@ async def inject_highlighting_script(dom_service: DomService, interactive_elemen
 
 		# Inject the enhanced script via CDP
 		await cdp_client.send.Runtime.evaluate(params={'expression': script, 'returnByValue': True}, session_id=session_id)
-		print(f'✅ Enhanced coordinate-resolved highlighting injected for {len(limited_elements)} elements')
+		print(f'✅ Enhanced iframe-aware highlighting injected for {len(limited_elements)} elements')
 		if total_elements > MAX_HIGHLIGHTS:
 			print(f'⚠️ Performance note: Limited to {MAX_HIGHLIGHTS} out of {total_elements} total elements')
 
