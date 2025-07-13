@@ -193,7 +193,7 @@ async def inject_highlighting_script(dom_service: DomService, interactive_elemen
 
 	try:
 		# Performance safeguards - prevent browser crashes with too many elements
-		MAX_HIGHLIGHTS = 200  # Reasonable limit to prevent timeouts
+		MAX_HIGHLIGHTS = 400  # Reasonable limit to prevent timeouts
 		total_elements = len(interactive_elements)
 
 		if total_elements > MAX_HIGHLIGHTS:
@@ -558,41 +558,33 @@ async def inject_highlighting_script(dom_service: DomService, interactive_elemen
 						const baseOutlineColor = isIframeContent ? '#9b59b6' : '#4a90e2';
 						const backgroundStyle = isIframeContent ? 'rgba(155, 89, 182, 0.1)' : 'transparent';
 						
-						// Enhanced status indicators
-						let statusIndicator = '';
+						// Enhanced status indicators (emojis removed for minimal labels)
 						let statusColor = baseOutlineColor;
 						
 						if (coords.found) {{
 							switch (coords.source) {{
 								case 'main_document':
-									statusIndicator = ' ✅';
 									statusColor = '#28a745';
 									break;
 								case 'same_origin_iframe':
 								case 'contentWindow_iframe':
-									statusIndicator = ' 🎯';
 									statusColor = '#17a2b8';
 									break;
 								case 'security_bypassed_iframe':
-									statusIndicator = ' 🔓';
 									statusColor = '#fd7e14';
 									break;
 								case 'iframe_transformed':
-									statusIndicator = ' 🔄';
 									statusColor = '#6f42c1';
 									break;
 								default:
-									statusIndicator = ' ✅';
 									statusColor = '#28a745';
 							}}
 						}} else {{
 							switch (coords.source) {{
 								case 'iframe_estimated':
-									statusIndicator = ' ~';
 									statusColor = '#ffc107';
 									break;
 								default:
-									statusIndicator = ' ❌';
 									statusColor = '#dc3545';
 							}}
 						}}
@@ -616,12 +608,12 @@ async def inject_highlighting_script(dom_service: DomService, interactive_elemen
 							z-index: ${{isIframeContent ? HIGHLIGHT_Z_INDEX + 10 : HIGHLIGHT_Z_INDEX}};
 						`;
 						
-						// Create enhanced label with status
-						const labelText = isIframeContent ? `[${{elementData.interactive_index}}]🖼️` : elementData.interactive_index;
+						// Create minimal label with just the index
+						const labelText = elementData.interactive_index;
 						const labelBgColor = statusColor;
 						const labelPosition = isIframeContent ? 'top: -25px; left: -5px;' : 'top: -20px; left: 0;';
 						
-						const label = createTextElement('div', labelText + statusIndicator, `
+						const label = createTextElement('div', labelText, `
 							position: absolute;
 							${{labelPosition}}
 							background-color: ${{labelBgColor}};
@@ -667,11 +659,10 @@ async def inject_highlighting_script(dom_service: DomService, interactive_elemen
 							margin: 0;
 						`;
 						
-						// Build enhanced tooltip content with source info
-						const typeIcon = isIframeContent ? '🖼️' : '🎯';
+						// Build tooltip content with source info
 						const coordsText = `(${{Math.round(coords.x)}}, ${{Math.round(coords.y)}}) ${{Math.round(coords.width)}}×${{Math.round(coords.height)}}`;
 						
-						const header = createTextElement('div', `${{typeIcon}} [${{elementData.interactive_index}}] ${{elementData.element_name.toUpperCase()}}`, `
+						const header = createTextElement('div', `[${{elementData.interactive_index}}] ${{elementData.element_name.toUpperCase()}}`, `
 							color: ${{statusColor}};
 							font-weight: bold;
 							font-size: 12px;
@@ -681,7 +672,7 @@ async def inject_highlighting_script(dom_service: DomService, interactive_elemen
 						`);
 						
 						const sourceInfo = coords.source.replace(/_/g, ' ').toUpperCase();
-						const statusDiv = createTextElement('div', `${{coords.found ? '✅ FOUND' : '❌ FALLBACK'}} via ${{sourceInfo}}`, `
+						const statusDiv = createTextElement('div', `${{coords.found ? 'FOUND' : 'FALLBACK'}} via ${{sourceInfo}}`, `
 							color: ${{coords.found ? '#28a745' : '#fd7e14'}};
 							font-size: 10px;
 							font-weight: bold;
