@@ -30,42 +30,38 @@ async def test_focus_vs_all_elements():
 		),
 	)
 
-	# 10 Sample websites with various interactive elements
-	sample_websites = [
-		'https://v0-simple-landing-page-seven-xi.vercel.app/',
-		'https://www.google.com/travel/flights',
-		'https://www.amazon.com/s?k=laptop',
-		'https://github.com/trending',
-		'https://www.reddit.com',
-		'https://www.ycombinator.com/companies',
-		'https://www.kayak.com/flights',
-		'https://www.booking.com',
-		'https://www.airbnb.com',
-		'https://www.linkedin.com/jobs',
-		'https://stackoverflow.com/questions',
+	# Unified website list with descriptions
+	websites = [
+		# Standard websites with various interactive elements
+		('https://www.espn.com', 'Sports news site'),
+		('https://www.eatsure.com/', 'Food delivery platform'),
+		('https://www.kayak.com/', 'Travel booking site'),
+		('https://www.linkedin.com/robots.txt', 'Professional network'),
+		('https://www.rent.com/', 'Rental listings'),
+		('https://web.archive.org/web/20200228210807/https://www.base-search.net/Search/Advanced', 'Archive search'),
+		('https://www.va.gov/find-locations', 'VA locations finder'),
+		('https://www.bbcgoodfood.com', 'Recipe website'),
+		('https://www.napaonline.com/', 'Auto parts store'),
+		('https://v0-simple-landing-page-seven-xi.vercel.app/', 'Simple landing page'),
+		('https://www.google.com/travel/flights', 'Flight search'),
+		('https://www.amazon.com/s?k=laptop', 'E-commerce search'),
+		('https://github.com/trending', 'Code repository'),
+		('https://www.reddit.com', 'Social platform'),
+		('https://www.ycombinator.com/companies', 'Startup directory'),
+		('https://www.kayak.com/flights', 'Flight booking'),
+		('https://www.booking.com', 'Hotel booking'),
+		('https://www.airbnb.com', 'Accommodation platform'),
+		('https://www.linkedin.com/jobs', 'Job listings'),
+		('https://stackoverflow.com/questions', 'Developer Q&A'),
+		# Complex/difficult websites
+		('https://www.w3schools.com/html/tryit.asp?filename=tryhtml_iframe', '🔸 NESTED IFRAMES'),
+		('https://semantic-ui.com/modules/dropdown.html', '🔸 COMPLEX DROPDOWNS'),
+		('https://www.dezlearn.com/nested-iframes-example/', '🔸 CROSS-ORIGIN IFRAMES'),
+		('https://codepen.io/towc/pen/mJzOWJ', '🔸 CANVAS ELEMENTS'),
+		('https://jqueryui.com/accordion/', '🔸 ACCORDION WIDGETS'),
+		('https://www.unesco.org/en', '🔸 COMPLEX LAYOUT'),
 	]
 
-	# 5 Difficult websites with complex elements (iframes, canvas, dropdowns, etc.)
-	difficult_websites = [
-		'https://www.w3schools.com/html/tryit.asp?filename=tryhtml_iframe',  # Nested iframes
-		'https://semantic-ui.com/modules/dropdown.html',  # Complex dropdowns
-		'https://www.dezlearn.com/nested-iframes-example/',  # Cross-origin nested iframes
-		'https://codepen.io/towc/pen/mJzOWJ',  # Canvas elements with interactions
-		'https://jqueryui.com/accordion/',  # Complex accordion/dropdown widgets
-		'https://v0-simple-landing-page-seven-xi.vercel.app/',  # Simple landing page with iframe
-		'https://www.unesco.org/en',
-	]
-
-	# Descriptions for difficult websites
-	difficult_descriptions = {
-		'https://www.w3schools.com/html/tryit.asp?filename=tryhtml_iframe': '🔸 NESTED IFRAMES: Multiple iframe layers',
-		'https://semantic-ui.com/modules/dropdown.html': '🔸 COMPLEX DROPDOWNS: Custom dropdown components',
-		'https://www.dezlearn.com/nested-iframes-example/': '🔸 CROSS-ORIGIN IFRAMES: Different domain iframes',
-		'https://codepen.io/towc/pen/mJzOWJ': '🔸 CANVAS ELEMENTS: Interactive canvas graphics',
-		'https://jqueryui.com/accordion/': '🔸 ACCORDION WIDGETS: Collapsible content sections',
-	}
-
-	websites = sample_websites + difficult_websites
 	current_website_index = 0
 
 	def get_website_list_for_prompt() -> str:
@@ -73,19 +69,13 @@ async def test_focus_vs_all_elements():
 		lines = []
 		lines.append('📋 Websites:')
 
-		# Sample websites (1-10)
-		for i, site in enumerate(sample_websites, 1):
-			current_marker = ' ←' if (i - 1) == current_website_index else ''
-			domain = site.replace('https://', '').split('/')[0]
-			lines.append(f'  {i:2d}.{domain[:15]:<15}{current_marker}')
-
-		# Difficult websites (11-15)
-		for i, site in enumerate(difficult_websites, len(sample_websites) + 1):
-			current_marker = ' ←' if (i - 1) == current_website_index else ''
-			domain = site.replace('https://', '').split('/')[0]
-			desc = difficult_descriptions.get(site, '')
-			challenge = desc.split(': ')[1][:15] if ': ' in desc else ''
-			lines.append(f'  {i:2d}.{domain[:15]:<15} ({challenge}){current_marker}')
+		for i, (url, description) in enumerate(websites):
+			current_marker = ' ←' if i == current_website_index else ''
+			domain = url.replace('https://', '').split('/')[0]
+			# Truncate domain and description for clean display
+			domain_short = domain[:20]
+			desc_short = description[:25] if len(description) > 25 else description
+			lines.append(f'  {i + 1:2d}. {domain_short:<20} ({desc_short}){current_marker}')
 
 		return '\n'.join(lines)
 
@@ -94,19 +84,22 @@ async def test_focus_vs_all_elements():
 
 	# Show startup info
 	print('\n🌐 BROWSER-USE DOM EXTRACTION TESTER')
-	print(f'📊 {len(websites)} websites total: {len(sample_websites)} standard + {len(difficult_websites)} complex')
-	print('🔧 Controls: Type 1-15 to jump | Enter to re-run | "n" next | "q" quit')
+	print(f'📊 {len(websites)} websites total')
+	print('🔧 Controls: Type 1-{} to jump | Enter to re-run | "n" next | "p" previous | "q" quit'.format(len(websites)))
 	print('💾 Outputs: tmp/user_message.txt & tmp/element_tree.json\n')
 
 	while True:
 		# Cycle through websites
 		if current_website_index >= len(websites):
 			current_website_index = 0
-			print('Cycled back to first website!')
+			print('🔄 Cycled back to first website!')
+		elif current_website_index < 0:
+			current_website_index = len(websites) - 1
+			print('🔄 Cycled to last website!')
 
-		website = websites[current_website_index]
+		website_url, website_description = websites[current_website_index]
 		# sleep 2
-		await page.goto(website)
+		await page.goto(website_url)
 		await asyncio.sleep(1)
 
 		last_clicked_index = None  # Track the index for text input
@@ -116,15 +109,9 @@ async def test_focus_vs_all_elements():
 				async with DomService(browser_session, page) as dom_service:
 					await remove_highlighting_script(dom_service)
 
-				# 	all_elements_state = await dom_service.get_serialized_dom_tree()
-
-				# 	await inject_highlighting_script(dom_service, all_elements_state.selector_map)
-
-				website_type = 'DIFFICULT' if website in difficult_websites else 'SAMPLE'
 				print(f'\n{"=" * 60}')
-				print(f'[{current_website_index + 1}/{len(websites)}] [{website_type}] Testing: {website}')
-				if website in difficult_descriptions:
-					print(f'{difficult_descriptions[website]}')
+				print(f'[{current_website_index + 1}/{len(websites)}] Testing: {website_url}')
+				print(f'📝 {website_description}')
 				print(f'{"=" * 60}')
 
 				# Get/refresh the state (includes removing old highlights)
@@ -187,7 +174,7 @@ async def test_focus_vs_all_elements():
 				# Save timing information
 				timing_text = '🔍 DOM EXTRACTION PERFORMANCE ANALYSIS\n'
 				timing_text += f'{"=" * 50}\n\n'
-				timing_text += f'📄 Website: {website}\n'
+				timing_text += f'📄 Website: {website_url}\n'
 				timing_text += f'📊 Total Elements: {total_elements}\n'
 				timing_text += f'🎯 Token Count: {token_count}\n\n'
 
@@ -220,39 +207,38 @@ async def test_focus_vs_all_elements():
 
 				print('Timing analysis written to ./tmp/timing_analysis.txt')
 
-				# also save all_elements_state.element_tree.clickable_elements_to_string() to a file
-				# with open('./tmp/clickable_elements.json', 'w', encoding='utf-8') as f:
-				# 	f.write(json.dumps(all_elements_state.element_tree.__json__(), indent=2))
-				# print('Clickable elements written to ./tmp/clickable_elements.json')
-
 				website_list = get_website_list_for_prompt()
 				answer = input(
-					f"\n{website_list}\n\n🎮 Enter: element index | 'index,text' input | 'c,index' copy | 1-15 jump | Enter re-run | 'n' next | 'q' quit: "
+					f"\n{website_list}\n\n🎮 Enter: element index | 'index,text' input | 'c,index' copy | 1-{len(websites)} jump | Enter re-run | 'n' next | 'p' previous | 'q' quit: "
 				)
 
 				if answer.lower() == 'q':
 					return  # Exit completely
 				elif answer.lower() == 'n':
-					print('Moving to next website...')
+					print('➡️ Moving to next website...')
 					current_website_index += 1
 					break  # Break inner loop to go to next website
+				elif answer.lower() == 'p':
+					print('⬅️ Moving to previous website...')
+					current_website_index -= 1
+					break  # Break inner loop to go to previous website
 				elif answer.strip() == '':
-					print('Re-running extraction on current page state...')
+					print('🔄 Re-running extraction on current page state...')
 					continue  # Continue inner loop to re-extract DOM without reloading page
 				elif answer.strip().isdigit():
-					# Jump to specific website (1-15)
+					# Jump to specific website (1-N)
 					try:
 						target_website = int(answer.strip())
 						if 1 <= target_website <= len(websites):
 							current_website_index = target_website - 1  # Convert to 0-based index
-							target_url = websites[current_website_index]
-							website_type = 'DIFFICULT' if target_url in difficult_websites else 'SAMPLE'
-							print(f'Jumping to website {target_website}: [{website_type}] {target_url}')
+							target_url, target_desc = websites[current_website_index]
+							print(f'🎯 Jumping to website {target_website}: {target_url}')
+							print(f'📝 {target_desc}')
 							break  # Break inner loop to go to new website
 						else:
-							print(f'Invalid website number. Enter 1-{len(websites)}.')
+							print(f'❌ Invalid website number. Enter 1-{len(websites)}.')
 					except ValueError:
-						print(f'Invalid input: {answer}')
+						print(f'❌ Invalid input: {answer}')
 					continue
 
 				try:
@@ -266,13 +252,13 @@ async def test_focus_vs_all_elements():
 									element_node = selector_map[target_index]
 									element_json = json.dumps(element_node.__json__(), indent=2, default=str)
 									pyperclip.copy(element_json)
-									print(f'Copied element {target_index} JSON to clipboard: {element_node.tag_name}')
+									print(f'📋 Copied element {target_index} JSON to clipboard: {element_node.tag_name}')
 								else:
-									print(f'Invalid index: {target_index}')
+									print(f'❌ Invalid index: {target_index}')
 							except ValueError:
-								print(f'Invalid index format: {parts[1]}')
+								print(f'❌ Invalid index format: {parts[1]}')
 						else:
-							print("Invalid input format. Use 'c,index'.")
+							print("❌ Invalid input format. Use 'c,index'.")
 					elif ',' in answer:
 						# Input text format: index,text
 						parts = answer.split(',', 1)
@@ -283,37 +269,37 @@ async def test_focus_vs_all_elements():
 								if target_index in selector_map:
 									element_node = selector_map[target_index]
 									print(
-										f"Inputting text '{text_to_input}' into element {target_index}: {element_node.tag_name}"
+										f"⌨️ Inputting text '{text_to_input}' into element {target_index}: {element_node.tag_name}"
 									)
 									await browser_session._input_text_element_node(element_node, text_to_input)
-									print('Input successful.')
+									print('✅ Input successful.')
 								else:
-									print(f'Invalid index: {target_index}')
+									print(f'❌ Invalid index: {target_index}')
 							except ValueError:
-								print(f'Invalid index format: {parts[0]}')
+								print(f'❌ Invalid index format: {parts[0]}')
 						else:
-							print("Invalid input format. Use 'index,text'.")
+							print("❌ Invalid input format. Use 'index,text'.")
 					else:
 						# Click element format: index
 						try:
 							clicked_index = int(answer)
 							if clicked_index in selector_map:
 								element_node = selector_map[clicked_index]
-								print(f'Clicking element {clicked_index}: {element_node.tag_name}')
+								print(f'👆 Clicking element {clicked_index}: {element_node.tag_name}')
 								await browser_session._click_element_node(element_node)
-								print('Click successful.')
+								print('✅ Click successful.')
 							else:
-								print(f'Invalid index: {clicked_index}')
+								print(f'❌ Invalid index: {clicked_index}')
 						except ValueError:
-							print(f"Invalid input: '{answer}'. Enter an index, 'index,text', 'c,index', or 'q'.")
+							print(f"❌ Invalid input: '{answer}'. Enter an index, 'index,text', 'c,index', or 'q'.")
 
 				except Exception as action_e:
-					print(f'Action failed: {action_e}')
+					print(f'❌ Action failed: {action_e}')
 
 			# No explicit highlight removal here, get_state handles it at the start of the loop
 
 			except Exception as e:
-				print(f'Error in loop: {e}')
+				print(f'❌ Error in loop: {e}')
 				# Optionally add a small delay before retrying
 				await asyncio.sleep(1)
 
