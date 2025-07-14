@@ -1,12 +1,16 @@
 # @file purpose: Serializes enhanced DOM trees to string format for LLM consumption
 
 
+import logging
+
 from browser_use.dom.serializer.clickable_elements import ClickableElementDetector
 from browser_use.dom.serializer.paint_order import PaintOrderRemover
 from browser_use.dom.utils import cap_text_length
 from browser_use.dom.views import DOMSelectorMap, EnhancedDOMTreeNode, NodeType, SerializedDOMState, SimplifiedNode
 from browser_use.observability import observe_debug
 from browser_use.utils import time_execution_sync
+
+logger = logging.getLogger(__name__)
 
 
 class DOMTreeSerializer:
@@ -184,7 +188,7 @@ class DOMTreeSerializer:
 
 		except Exception as e:
 			# Handle any processing errors gracefully
-			print(f'Warning: Could not process iframe content: {e}')
+			logger.debug(f'Warning: Could not process iframe content: {e}')
 			return None
 
 	@time_execution_sync('--optimize_tree')

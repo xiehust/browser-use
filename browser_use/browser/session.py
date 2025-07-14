@@ -16,6 +16,8 @@ from typing import Any, Self
 from urllib.parse import urlparse
 
 import anyio
+import httpx
+from cdp_use import CDPClient
 from typing_extensions import deprecated
 
 from browser_use.config import CONFIG
@@ -267,6 +269,12 @@ class BrowserSession(BaseModel):
 		exclude=True,
 	)
 
+	# Pure cdp websocket connection
+	cdp_client: CDPClient | None = Field(
+		default=None,
+		description='Pure CDP client object to use (initialized by start())',
+	)
+
 	# runtime state: state that changes during the lifecycle of a BrowserSession(), updated by the methods below
 	initialized: bool = Field(
 		default=False,
@@ -469,6 +477,8 @@ class BrowserSession(BaseModel):
 			# Close browser context and browser using retry-decorated methods
 			try:
 				# IMPORTANT: Close context first to ensure HAR/video files are saved
+				await self._close_cdp_client()
+
 				await self._close_browser_context()
 				await self._close_browser()
 			except Exception as e:
@@ -1047,6 +1057,75 @@ class BrowserSession(BaseModel):
 			**self.browser_profile.kwargs_for_connect().model_dump(),
 		)
 		self._set_browser_keep_alive(True)  # we connected to an existing browser, dont kill it at the end
+
+	# region - CDP Client connection
+	async def _initialize_cdp_client(self) -> CDPClient:
+		if self.cdp_client:
+			return self.cdp_client
+
+		connection_string = self.cdp_url or self.wss_url
+
+		if not connection_string:
+			raise ValueError('CDP URL or WSS URL is not set')
+
+		# If the cdp_url is already a websocket URL, use it as-is.
+		if connection_string.startswith('ws'):
+			ws_url = connection_string
+		else:
+			# Otherwise, treat it as the DevTools HTTP root and fetch the websocket URL.
+			url = connection_string.rstrip('/')
+			if not url.endswith('/json/version'):
+				url = url + '/json/version'
+			async with httpx.AsyncClient() as client:
+				version_info = await client.get(url)
+				ws_url = version_info.json()['webSocketDebuggerUrl']
+
+		if self.cdp_client is None:
+			self.cdp_client = CDPClient(ws_url)
+			await self.cdp_client.start()
+
+		return self.cdp_client
+
+	async def _close_cdp_client(self) -> None:
+		"""Stop the CDP client"""
+		if self.cdp_client:
+			await self.cdp_client.stop()
+			self.cdp_client = None
+
+	async def get_cdp_client(self) -> CDPClient:
+		"""Get the CDP client"""
+		if self.cdp_client is None:
+			return await self._initialize_cdp_client()
+
+		return self.cdp_client
+
+	async def get_current_page_cdp_session_id(self) -> str:
+		"""Get the CDP client for the current page
+
+		TODO: add cache for page to sessionId -> right now we just don't initialize it, but we should definitely just make a getter function on the browser session
+
+		TODO: when removing playwright add tab management here as well
+		"""
+		cdp_client = await self.get_cdp_client()
+
+		page = await self.get_current_page()
+
+		targets = await cdp_client.send.Target.getTargets()
+
+		for target in targets['targetInfos']:
+			if target['type'] == 'page' and target['url'] == page.url:
+				# cache the session id for this playwright page
+				# self.playwright_page_to_session_id_store[page_guid] = target['targetId']
+
+				session = await cdp_client.send.Target.attachToTarget(params={'targetId': target['targetId'], 'flatten': True})
+
+				session_id = session['sessionId']
+
+				return session_id
+
+		raise ValueError(f'No session id found for page {page.url}')
+
+	# endregion - CDP Client connection
 
 	@retry(wait=1, retries=2, timeout=45, semaphore_limit=1, semaphore_scope='self', semaphore_lax=False)
 	async def setup_new_browser_context(self) -> None:
@@ -3143,50 +3222,52 @@ class BrowserSession(BaseModel):
 
 			self.logger.debug('🌳 Starting DOM processing...')
 			start_dom_total = time.time()
-			async with DomService(self, page) as dom_service:
-				try:
-					start_remove_highlights = time.time()
-					await self.remove_highlights(dom_service)
-					end_remove_highlights = time.time()
-					print(f'⏱️ remove_highlights() took {end_remove_highlights - start_remove_highlights:.3f} seconds')
-				except Exception as e:
-					self.logger.debug(f'🧹 Removing highlights failed: {type(e).__name__}: {e}')
 
-				try:
-					start_dom_processing = time.time()
-					dom_state, timing_info = await asyncio.wait_for(
-						dom_service.get_serialized_dom_tree(
-							previous_cached_state=self._cached_browser_state_summary.dom_state
-							if self._cached_browser_state_summary
-							else None,
-						),
-						timeout=45.0,  # 45 second timeout for DOM processing - generous for complex pages
-					)
-					end_dom_processing = time.time()
-					print(f'⏱️ DOM serialization took {end_dom_processing - start_dom_processing:.3f} seconds')
+			dom_service = DomService(self)
+			try:
+				start_remove_highlights = time.time()
+				await self.remove_highlights(dom_service)
+				end_remove_highlights = time.time()
+				self.logger.debug(f'⏱️ remove_highlights() took {end_remove_highlights - start_remove_highlights:.3f} seconds')
+			except Exception as e:
+				self.logger.debug(f'🧹 Removing highlights failed: {type(e).__name__}: {e}')
 
-					# Store timing info in dom_state for extraction playground access
-					self.logger.debug(f'📊 Collected timing info: {timing_info.keys()}')
-					dom_state.timing_info = timing_info
+			try:
+				start_dom_processing = time.time()
+				dom_state, timing_info = await asyncio.wait_for(
+					dom_service.get_serialized_dom_tree(
+						previous_cached_state=self._cached_browser_state_summary.dom_state
+						if self._cached_browser_state_summary
+						else None,
+					),
+					timeout=45.0,  # 45 second timeout for DOM processing - generous for complex pages
+				)
+				end_dom_processing = time.time()
+				self.logger.debug(f'⏱️ DOM serialization took {end_dom_processing - start_dom_processing:.3f} seconds')
 
-					# Only inject highlights if requested (default True for backward compatibility)
-					if inject_highlights:
-						start_inject_highlights = time.time()
-						await self.inject_highlights(dom_service, dom_state.selector_map)
-						end_inject_highlights = time.time()
-						print(f'⏱️ inject_highlights() took {end_inject_highlights - start_inject_highlights:.3f} seconds')
+				# Store timing info in dom_state for extraction playground access
+				self.logger.debug(f'📊 Collected timing info: {timing_info.keys()}')
+				dom_state.timing_info = timing_info
 
-					self.logger.debug('✅ DOM processing completed')
-				except TimeoutError:
-					self.logger.warning(f'DOM processing timed out after 45 seconds for {page.url}')
-					self.logger.warning('🔄 Falling back to minimal DOM state to allow basic navigation...')
+				# Only inject highlights if requested (default True for backward compatibility)
+				if inject_highlights:
+					start_inject_highlights = time.time()
+					await self.inject_highlights(dom_service, dom_state.selector_map)
+					end_inject_highlights = time.time()
+					print(f'⏱️ inject_highlights() took {end_inject_highlights - start_inject_highlights:.3f} seconds')
 
-					# Create minimal DOM state for basic navigation
-					from browser_use.dom.views import SerializedDOMState
+				self.logger.debug('✅ DOM processing completed')
 
-					dom_state = SerializedDOMState(_root=None, selector_map={})
-					timing_info = {'timeout_fallback': True}
-					dom_state.timing_info = timing_info
+			except TimeoutError:
+				self.logger.warning(f'DOM processing timed out after 45 seconds for {page.url}')
+				self.logger.warning('🔄 Falling back to minimal DOM state to allow basic navigation...')
+
+				# Create minimal DOM state for basic navigation
+				from browser_use.dom.views import SerializedDOMState
+
+				dom_state = SerializedDOMState(_root=None, selector_map={})
+				timing_info = {'timeout_fallback': True}
+				dom_state.timing_info = timing_info
 
 			end_dom_total = time.time()
 			print(f'⏱️ Total DOM processing took {end_dom_total - start_dom_total:.3f} seconds')

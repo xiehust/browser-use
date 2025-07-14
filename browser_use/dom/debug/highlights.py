@@ -1,20 +1,23 @@
 # Simple and fast highlighting - green boxes with numbers only
 
 import json
+import logging
 import traceback
 
 from browser_use.dom.service import DomService
 from browser_use.dom.views import DOMSelectorMap
+
+logger = logging.getLogger(__name__)
 
 
 async def remove_highlighting_script(dom_service: DomService) -> None:
 	"""Remove all browser-use highlighting elements from the page."""
 	try:
 		# Get CDP client and session ID
-		cdp_client = await dom_service._get_cdp_client()
+		cdp_client = await dom_service.browser.get_cdp_client()
 		session_id = await dom_service._get_current_page_session_id()
 
-		print('🧹 Removing browser-use highlighting elements')
+		logger.debug('🧹 Removing browser-use highlighting elements')
 
 		# Simple removal script
 		script = """
@@ -26,16 +29,16 @@ async def remove_highlighting_script(dom_service: DomService) -> None:
 
 		# Execute the removal script via CDP
 		await cdp_client.send.Runtime.evaluate(params={'expression': script, 'returnByValue': True}, session_id=session_id)
-		print('✅ All browser-use highlighting elements removed')
+		logger.debug('✅ All browser-use highlighting elements removed')
 
 	except Exception as e:
-		print(f'❌ Error removing highlighting elements: {e}')
+		logger.debug(f'❌ Error removing highlighting elements: {e}')
 
 
 async def inject_highlighting_script(dom_service: DomService, interactive_elements: DOMSelectorMap) -> None:
 	"""Inject simple, fast highlighting script - just green boxes with numbers."""
 	if not interactive_elements:
-		print('⚠️ No interactive elements to highlight')
+		logger.debug('⚠️ No interactive elements to highlight')
 		return
 
 	try:
@@ -44,16 +47,16 @@ async def inject_highlighting_script(dom_service: DomService, interactive_elemen
 		total_elements = len(interactive_elements)
 
 		if total_elements > MAX_HIGHLIGHTS:
-			print(f'⚠️ Too many elements ({total_elements}) - limiting to first {MAX_HIGHLIGHTS} for performance')
+			logger.debug(f'⚠️ Too many elements ({total_elements}) - limiting to first {MAX_HIGHLIGHTS} for performance')
 			limited_elements = dict(list(interactive_elements.items())[:MAX_HIGHLIGHTS])
 		else:
 			limited_elements = interactive_elements
 
 		# Get CDP client and session ID
-		cdp_client = await dom_service._get_cdp_client()
+		cdp_client = await dom_service.browser.get_cdp_client()
 		session_id = await dom_service._get_current_page_session_id()
 
-		print(f'📍 Creating simple highlighting for {len(limited_elements)} elements')
+		logger.debug(f'📍 Creating simple highlighting for {len(limited_elements)} elements')
 
 		# Remove any existing highlights first
 		await remove_highlighting_script(dom_service)
@@ -124,8 +127,8 @@ async def inject_highlighting_script(dom_service: DomService, interactive_elemen
 
 		# Inject the simple script
 		await cdp_client.send.Runtime.evaluate(params={'expression': script, 'returnByValue': True}, session_id=session_id)
-		print(f'✅ Simple highlighting injected for {len(limited_elements)} elements')
+		logger.debug(f'✅ Simple highlighting injected for {len(limited_elements)} elements')
 
 	except Exception as e:
-		print(f'❌ Error injecting highlighting script: {e}')
+		logger.debug(f'❌ Error injecting highlighting script: {e}')
 		traceback.print_exc()
