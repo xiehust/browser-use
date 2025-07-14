@@ -24,6 +24,71 @@ from browser_use.dom.views import (
 )
 from browser_use.utils import time_execution_async, time_execution_sync
 
+# Global set of advertising/tracking domains to skip for performance
+_AD_TRACKING_DOMAINS = {
+	'doubleclick.net',
+	'googlesyndication.com',
+	'googletagmanager.com',
+	'facebook.com',
+	'facebook.net',
+	'fbcdn.net',
+	'prebid.adnxs.com',
+	'adnxs.com',
+	'adsystem.com',
+	'criteo.com',
+	'criteo.net',
+	'openx.net',
+	'rubiconproject.com',
+	'amazon-adsystem.com',
+	'adsystem.amazon.com',
+	'spotxchange.com',
+	'spotx.tv',
+	'3lift.com',
+	'pubmatic.com',
+	'ow.pubmatic.com',
+	'ipredictive.com',
+	'yahoo.com/pbs',
+	'taboola.com',
+	'outbrain.com',
+	'revcontent.com',
+	'google-analytics.com',
+	'googleanalytics.com',
+	'hotjar.com',
+	'fullstory.com',
+	'mixpanel.com',
+	'segment.com',
+	'amplitude.com',
+	'intercom.io',
+}
+
+
+def _should_skip_iframe(url: str) -> bool:
+	"""Check if iframe should be skipped for performance reasons."""
+	if not url or url.startswith('about:') or url.startswith('data:'):
+		return True
+
+	try:
+		from urllib.parse import urlparse
+
+		parsed = urlparse(url)
+		domain = parsed.netloc.lower()
+
+		# Skip known ad/tracking domains
+		for ad_domain in _AD_TRACKING_DOMAINS:
+			if ad_domain in domain:
+				return True
+
+		# Skip if domain contains common ad/tracking keywords
+		ad_keywords = ['ads', 'analytics', 'tracking', 'pixel', 'beacon', 'metrics']
+		if any(keyword in domain for keyword in ad_keywords):
+			return True
+
+		return False
+	except Exception:
+		# If parsing fails, include it to be safe
+		return False
+
+
 if TYPE_CHECKING:
 	from browser_use.browser.session import BrowserSession
 	from browser_use.browser.types import Page
@@ -50,7 +115,12 @@ class DomService:
 		if not self.browser.cdp_url:
 			raise ValueError('CDP URL is not set')
 
-		# TODO: MOVE THIS TO BROWSER SESSION (or sth idk)
+		# PERFORMANCE FIX: Reuse persistent CDP client from BrowserSession
+		persistent_client = self.browser._persistent_cdp_client
+		if persistent_client and not getattr(persistent_client, '_closed', True):
+			self.cdp_client = persistent_client
+			return persistent_client
+
 		# If the cdp_url is already a websocket URL, use it as-is.
 		if self.browser.cdp_url.startswith('ws'):
 			ws_url = self.browser.cdp_url
@@ -66,6 +136,8 @@ class DomService:
 		if self.cdp_client is None:
 			self.cdp_client = CDPClient(ws_url)
 			await self.cdp_client.start()
+			# Store in BrowserSession for reuse
+			self.browser._persistent_cdp_client = self.cdp_client
 
 		return self.cdp_client
 
@@ -73,16 +145,47 @@ class DomService:
 		await self._get_cdp_client()
 		return self
 
-	# on self destroy -> stop the cdp client
+	# on self destroy -> don't stop persistent CDP client (reused across operations)
 	async def __aexit__(self, exc_type, exc_value, traceback):
-		if self.cdp_client:
-			await self.cdp_client.stop()
-			self.cdp_client = None
+		# Don't close persistent CDP client - it's managed by BrowserSession
+		self.cdp_client = None
 
 	async def _get_all_frame_session_ids(self) -> dict[str, str]:
 		"""Get session ID for the main frame. Modern Chrome includes iframe content via pierce=true."""
 		session_id = await self._get_current_page_session_id()
-		return {'main': session_id}
+
+		# PERFORMANCE FIX: Skip processing of ad/tracking frames at CDP level
+		cdp_client = await self._get_cdp_client()
+		targets = await cdp_client.send.Target.getTargets()
+
+		filtered_sessions = {'main': session_id}
+		skipped_count = 0
+
+		for target in targets['targetInfos']:
+			if target['type'] == 'page' and target.get('url'):
+				target_url = target['url']
+
+				# Skip ad/tracking iframes early
+				if _should_skip_iframe(target_url):
+					print(f'⚡ Skipping ad/tracking frame: {target_url[:60]}...')
+					skipped_count += 1
+					continue
+
+				# Only process non-main frames that aren't ads
+				if target_url != self.page.url:
+					try:
+						session = await cdp_client.send.Target.attachToTarget(
+							params={'targetId': target['targetId'], 'flatten': True}
+						)
+						frame_session_id = session['sessionId']
+						filtered_sessions[f'frame_{target["targetId"][:8]}'] = frame_session_id
+					except Exception as e:
+						print(f'Warning: Could not attach to frame {target_url}: {e}')
+
+		if skipped_count > 0:
+			print(f'⚡ Performance boost: Skipped {skipped_count} ad/tracking frames')
+
+		return filtered_sessions
 
 	async def _get_current_page_session_id(self) -> str:
 		"""Get the target ID for a playwright page.
@@ -97,7 +200,6 @@ class DomService:
 
 		cdp_client = await self._get_cdp_client()
 
-		# Time individual CDP calls
 		start_get_targets = time.time()
 		targets = await cdp_client.send.Target.getTargets()
 		end_get_targets = time.time()
@@ -131,9 +233,42 @@ class DomService:
 				end_enables = time.time()
 				print(f'⏱️ CDP domain enables took {end_enables - start_enables:.3f} seconds')
 
+				# PERFORMANCE FIX: Add frame event filtering to reduce iframe noise
+				try:
+					await cdp_client.send.Page.addScriptToEvaluateOnNewDocument(
+						params={
+							'source': """
+							// Block ad/tracking frame creation for performance
+							const originalCreateElement = document.createElement;
+							document.createElement = function(tagName) {
+								const element = originalCreateElement.call(this, tagName);
+								if (tagName.toLowerCase() === 'iframe') {
+									const originalSetAttribute = element.setAttribute;
+									element.setAttribute = function(name, value) {
+										if (name === 'src' && value) {
+											const adDomains = ['doubleclick.net', 'googlesyndication.com', 'googletagmanager.com', 
+																'criteo.com', 'prebid.adnxs.com', 'amazon-adsystem.com'];
+											if (adDomains.some(domain => value.includes(domain))) {
+												console.log('⚡ Blocked ad iframe:', value);
+												return; // Don't set src for ad iframes
+											}
+										}
+										return originalSetAttribute.call(this, name, value);
+									};
+								}
+								return element;
+							};
+						"""
+						},
+						session_id=session_id,
+					)
+				except Exception as e:
+					# Non-critical optimization, continue if it fails
+					print(f'Debug: Frame blocking script failed: {e}')
+
 				return session_id
 
-		raise ValueError(f'No session id found for page {self.page.url}')
+		raise ValueError(f'No target found for URL: {self.page.url}')
 
 	def _extract_ax_property_value(self, value) -> str | bool | None:
 		"""Extract value from various formats returned by the accessibility API."""

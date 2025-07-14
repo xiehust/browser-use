@@ -294,6 +294,8 @@ class BrowserSession(BaseModel):
 	_owns_browser_resources: bool = PrivateAttr(default=True)  # True if this instance owns and should clean up browser resources
 	_auto_download_pdfs: bool = PrivateAttr(default=True)  # Auto-download PDFs when detected
 	_subprocess: Any = PrivateAttr(default=None)  # Chrome subprocess reference for error handling
+	# Performance optimization: persistent CDP client
+	_persistent_cdp_client: Any = PrivateAttr(default=None)  # Reuse CDP connection across DOM operations
 
 	@model_validator(mode='after')
 	def apply_session_overrides_to_profile(self) -> Self:
@@ -475,6 +477,15 @@ class BrowserSession(BaseModel):
 				if 'browser has been closed' not in str(e):
 					self.logger.warning(f'❌ Error closing browser: {type(e).__name__}: {e}')
 			finally:
+				# PERFORMANCE FIX: Close persistent CDP client
+				if self._persistent_cdp_client:
+					try:
+						await self._persistent_cdp_client.stop()
+					except Exception as e:
+						self.logger.debug(f'Error closing persistent CDP client: {e}')
+					finally:
+						self._persistent_cdp_client = None
+
 				# Always clear references to ensure a fresh start next time
 				self.browser_context = None
 				self.browser = None

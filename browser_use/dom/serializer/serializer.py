@@ -4,7 +4,17 @@
 from browser_use.dom.serializer.clickable_elements import ClickableElementDetector
 from browser_use.dom.serializer.paint_order import PaintOrderRemover
 from browser_use.dom.utils import cap_text_length
+
+# Import iframe filtering function
 from browser_use.dom.views import DOMSelectorMap, EnhancedDOMTreeNode, NodeType, SerializedDOMState, SimplifiedNode
+
+# PERFORMANCE FIX: Skip ad/tracking iframes
+try:
+	from browser_use.dom.service import _should_skip_iframe
+except ImportError:
+	# Fallback if import fails
+	def _should_skip_iframe(url: str) -> bool:
+		return False
 
 
 class DOMTreeSerializer:
@@ -108,6 +118,13 @@ class DOMTreeSerializer:
 			is_scrollable = node.is_scrollable
 			is_iframe = node.node_name.lower() == 'iframe'
 
+			# PERFORMANCE FIX: Skip ad/tracking iframes early
+			if is_iframe and node.attributes and 'src' in node.attributes:
+				iframe_url = node.attributes['src']
+				if _should_skip_iframe(iframe_url):
+					print(f'⚡ Skipping ad/tracking iframe: {iframe_url}')
+					return None
+
 			# Relaxed inclusion criteria for iframe content
 			if is_iframe_content:
 				# For iframe content, include if interactive OR has children (ignore visibility)
@@ -130,7 +147,7 @@ class DOMTreeSerializer:
 						if simplified_child:
 							simplified.children.append(simplified_child)
 
-				# Handle iframe content piercing
+				# Handle iframe content piercing (only for non-filtered iframes)
 				if is_iframe and node.content_document:
 					iframe_simplified = self._process_iframe_content(node, node.content_document)
 					if iframe_simplified:
@@ -165,8 +182,15 @@ class DOMTreeSerializer:
 	def _process_iframe_content(
 		self, iframe_node: EnhancedDOMTreeNode, content_document: EnhancedDOMTreeNode
 	) -> SimplifiedNode | None:
-		"""Process the content document inside an iframe."""
+		"""Process the content document inside an iframe with performance filtering."""
 		try:
+			# PERFORMANCE FIX: Check iframe URL before processing
+			if iframe_node.attributes and 'src' in iframe_node.attributes:
+				iframe_url = iframe_node.attributes['src']
+				if _should_skip_iframe(iframe_url):
+					print(f'⚡ Skipping iframe content processing for: {iframe_url}')
+					return None
+
 			# For pierced DOM trees, the content document already contains the iframe's DOM structure
 			# We process it with iframe context enabled (relaxed criteria and iframe marking)
 			iframe_content = self._create_simplified_tree(content_document, is_iframe_content=True)
