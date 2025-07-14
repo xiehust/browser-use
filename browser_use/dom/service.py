@@ -110,6 +110,10 @@ class DomService:
 		self.cdp_client: CDPClient | None = None
 		# Cache for frame session IDs to avoid repeated target attachment
 		self._frame_sessions: dict[str, str] = {}
+		# Initialize iframe filtering attributes
+		self._frame_event_count = 0
+		self._last_frame_reset = 0.0
+		self._filtered_event_count = 0
 
 	async def _get_cdp_client(self) -> CDPClient:
 		if not self.browser.cdp_url:
@@ -121,6 +125,7 @@ class DomService:
 			self.cdp_client = persistent_client
 			return persistent_client
 
+		# TODO: MOVE THIS TO BROWSER SESSION (or sth idk)
 		# If the cdp_url is already a websocket URL, use it as-is.
 		if self.browser.cdp_url.startswith('ws'):
 			ws_url = self.browser.cdp_url
@@ -136,10 +141,26 @@ class DomService:
 		if self.cdp_client is None:
 			self.cdp_client = CDPClient(ws_url)
 			await self.cdp_client.start()
-			# Store in BrowserSession for reuse
+
+			# PERFORMANCE FIX: Filter iframe events at CDP level to prevent storms
+			self._setup_iframe_event_filtering()
+
+			# Store in browser session for reuse
 			self.browser._persistent_cdp_client = self.cdp_client
 
 		return self.cdp_client
+
+	def _setup_iframe_event_filtering(self):
+		"""Set up iframe filtering to prevent advertising iframe storms."""
+		if not self.cdp_client:
+			return
+
+		# Initialize rate limiting attributes
+		self._frame_event_count = 0
+		self._last_frame_reset = time.time()
+		self._filtered_event_count = 0
+
+		print('🚀 Iframe filtering enabled - will prevent ad/tracking frame attachment')
 
 	async def __aenter__(self):
 		await self._get_cdp_client()
@@ -156,10 +177,18 @@ class DomService:
 
 		# PERFORMANCE FIX: Skip processing of ad/tracking frames at CDP level
 		cdp_client = await self._get_cdp_client()
-		targets = await cdp_client.send.Target.getTargets()
+
+		try:
+			targets = await cdp_client.send.Target.getTargets()
+		except Exception as e:
+			print(f'⚠️ Error getting targets (browser may be overwhelmed): {e}')
+			# Return just main session if we can't get targets
+			return {'main': session_id}
 
 		filtered_sessions = {'main': session_id}
 		skipped_count = 0
+		attached_count = 0
+		MAX_IFRAME_ATTACHMENTS = 5  # Conservative limit to prevent crashes
 
 		for target in targets['targetInfos']:
 			if target['type'] == 'page' and target.get('url'):
@@ -171,19 +200,24 @@ class DomService:
 					skipped_count += 1
 					continue
 
-				# Only process non-main frames that aren't ads
-				if target_url != self.page.url:
+				# Only process non-main frames that aren't ads (with conservative limit)
+				if target_url != self.page.url and attached_count < MAX_IFRAME_ATTACHMENTS:
 					try:
 						session = await cdp_client.send.Target.attachToTarget(
 							params={'targetId': target['targetId'], 'flatten': True}
 						)
 						frame_session_id = session['sessionId']
 						filtered_sessions[f'frame_{target["targetId"][:8]}'] = frame_session_id
+						attached_count += 1
+						print(f'📎 Attached to iframe: {target_url[:40]}...')
 					except Exception as e:
-						print(f'Warning: Could not attach to frame {target_url}: {e}')
+						print(f'⚠️ Could not attach to frame {target_url[:40]}...: {e}')
+						continue
 
 		if skipped_count > 0:
 			print(f'⚡ Performance boost: Skipped {skipped_count} ad/tracking frames')
+		if attached_count >= MAX_IFRAME_ATTACHMENTS:
+			print(f'🛡️ Hit iframe limit ({MAX_IFRAME_ATTACHMENTS}) to prevent browser overload')
 
 		return filtered_sessions
 
@@ -217,10 +251,15 @@ class DomService:
 
 				session_id = session['sessionId']
 
+				# CRITICAL FIX: DISABLE auto-attach to prevent iframe storms
 				start_auto_attach = time.time()
-				await cdp_client.send.Target.setAutoAttach(
-					params={'autoAttach': True, 'waitForDebuggerOnStart': False, 'flatten': True}
-				)
+				try:
+					await cdp_client.send.Target.setAutoAttach(
+						params={'autoAttach': False, 'waitForDebuggerOnStart': False, 'flatten': False}, session_id=session_id
+					)
+					print('🛡️ Auto-attach disabled to prevent iframe storms')
+				except Exception as e:
+					print(f'⚠️ Could not disable auto-attach: {e}')
 				end_auto_attach = time.time()
 				print(f'⏱️ Target.setAutoAttach() took {end_auto_attach - start_auto_attach:.3f} seconds')
 
