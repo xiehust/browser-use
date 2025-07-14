@@ -3,7 +3,6 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
 
-from cdp_use.cdp.accessibility.types import AXPropertyName
 from cdp_use.cdp.dom.types import ShadowRootType
 
 from browser_use.dom.utils import cap_text_length
@@ -63,8 +62,10 @@ class NodeType(int, Enum):
 	NOTATION_NODE = 12
 
 
-@dataclass(slots=True)
+@dataclass
 class DOMRect:
+	"""Rectangle coordinates for DOM elements."""
+
 	x: float
 	y: float
 	width: float
@@ -78,7 +79,7 @@ class EnhancedAXProperty:
 	TODO: there is probably some way to determine whether it has a value or related nodes or not, but for now it's kinda fine idk
 	"""
 
-	name: AXPropertyName
+	name: str  # Changed from AXPropertyName enum to str since newer CDP doesn't have enums
 	value: str | bool | None
 	# related_nodes: list[EnhancedAXRelatedNode] | None
 

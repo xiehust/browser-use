@@ -143,8 +143,8 @@ async def test_focus_vs_all_elements():
 				# Combine all timing info
 				all_timing = {'get_state_summary_total': get_state_time, **timing_info}
 
-				async with DomService(browser_session, page) as dom_service:
-					await inject_highlighting_script(dom_service, all_elements_state.dom_state.selector_map)
+				dom_service = DomService(browser_session)
+				await inject_highlighting_script(dom_service, all_elements_state.dom_state.selector_map)
 
 				selector_map = all_elements_state.dom_state.selector_map
 				total_elements = len(selector_map.keys())

@@ -1,9 +1,14 @@
 # @file purpose: Serializes enhanced DOM trees to string format for LLM consumption
 
 
+import logging
+
 from browser_use.dom.serializer.clickable_elements import ClickableElementDetector
 from browser_use.dom.utils import cap_text_length
 from browser_use.dom.views import DOMSelectorMap, EnhancedDOMTreeNode, NodeType, SerializedDOMState, SimplifiedNode
+from browser_use.utils.decorators import time_execution_sync
+
+logger = logging.getLogger(__name__)
 
 
 class DOMTreeSerializer:
@@ -130,6 +135,27 @@ class DOMTreeSerializer:
 
 		return None
 
+	def _process_iframe_content(
+		self, iframe_node: EnhancedDOMTreeNode, content_document: EnhancedDOMTreeNode
+	) -> SimplifiedNode | None:
+		"""Process the content document inside an iframe."""
+		try:
+			# For pierced DOM trees, the content document already contains the iframe's DOM structure
+			# We process it with iframe context enabled (relaxed criteria and iframe marking)
+			iframe_content = self._create_simplified_tree(content_document, is_iframe_content=True)
+
+			if iframe_content:
+				# Mark this as iframe boundary for identification
+				iframe_content.is_iframe_boundary = True
+
+			return iframe_content
+
+		except Exception as e:
+			# Handle any processing errors gracefully
+			logger.debug(f'Warning: Could not process iframe content: {e}')
+			return None
+
+	@time_execution_sync('--optimize_tree')
 	def _optimize_tree(self, node: SimplifiedNode | None) -> SimplifiedNode | None:
 		"""Step 2: Optimize tree structure."""
 		if not node:

@@ -1,9 +1,7 @@
 import asyncio
-import time
+import logging
 from typing import TYPE_CHECKING
 
-import httpx
-from cdp_use import CDPClient
 from cdp_use.cdp.accessibility.commands import GetFullAXTreeReturns
 from cdp_use.cdp.accessibility.types import AXNode
 from cdp_use.cdp.dom.commands import GetDocumentReturns
@@ -22,10 +20,12 @@ from browser_use.dom.views import (
 	NodeType,
 	SerializedDOMState,
 )
+from browser_use.utils.decorators import time_execution_async
 
 if TYPE_CHECKING:
 	from browser_use.browser.session import BrowserSession
-	from browser_use.browser.types import Page
+
+logger = logging.getLogger(__name__)
 
 
 class DomService:
@@ -33,116 +33,81 @@ class DomService:
 	Service for getting the DOM tree and other DOM-related information.
 
 	Either browser or page must be provided.
-
-	TODO: currently we start a new websocket connection PER STEP, we should definitely keep this persistent
 	"""
 
-	def __init__(self, browser: 'BrowserSession', page: 'Page'):
+	def __init__(self, browser: 'BrowserSession'):
 		self.browser = browser
-		self.page = page
 
-		self.cdp_client: CDPClient | None = None
-		# self.playwright_page_to_session_id_store: dict[str, str] = {}
-
-	async def _get_cdp_client(self) -> CDPClient:
-		if not self.browser.cdp_url:
-			raise ValueError('CDP URL is not set')
-
-		# TODO: MOVE THIS TO BROWSER SESSION (or sth idk)
-		# If the cdp_url is already a websocket URL, use it as-is.
-		if self.browser.cdp_url.startswith('ws'):
-			ws_url = self.browser.cdp_url
-		else:
-			# Otherwise, treat it as the DevTools HTTP root and fetch the websocket URL.
-			url = self.browser.cdp_url.rstrip('/')
-			if not url.endswith('/json/version'):
-				url = url + '/json/version'
-			async with httpx.AsyncClient() as client:
-				version_info = await client.get(url)
-				ws_url = version_info.json()['webSocketDebuggerUrl']
-
-		if self.cdp_client is None:
-			self.cdp_client = CDPClient(ws_url)
-			await self.cdp_client.start()
-
-		return self.cdp_client
-
-	async def __aenter__(self):
-		await self._get_cdp_client()
-		return self
-
-	# on self destroy -> stop the cdp client
-	async def __aexit__(self, exc_type, exc_value, traceback):
-		if self.cdp_client:
-			await self.cdp_client.stop()
-			self.cdp_client = None
+		self.session_id_initialized_domains_cache: dict[str, bool] = {}
 
 	async def _get_current_page_session_id(self) -> str:
 		"""Get the target ID for a playwright page.
 
 		TODO: this is a REALLY hacky way -> if multiple same urls are open then this will break
 		"""
-		# page_guid = self.page._impl_obj._guid
-		# TODO: add cache for page to sessionId
+		cdp_client = await self.browser.get_cdp_client()
+		session_id = await self.browser.get_current_page_cdp_session_id()
 
-		# if page_guid in self.page_to_session_id_store:
-		# 	return self.page_to_session_id_store[page_guid]
+		if session_id in self.session_id_initialized_domains_cache:
+			return session_id
 
-		cdp_client = await self._get_cdp_client()
+		await cdp_client.send.Target.setAutoAttach(params={'autoAttach': True, 'waitForDebuggerOnStart': False, 'flatten': True})
 
-		targets = await cdp_client.send.Target.getTargets()
-		for target in targets['targetInfos']:
-			if target['type'] == 'page' and target['url'] == self.page.url:
-				# cache the session id for this playwright page
-				# self.playwright_page_to_session_id_store[page_guid] = target['targetId']
+		await cdp_client.send.DOM.enable(session_id=session_id)
+		await cdp_client.send.Accessibility.enable(session_id=session_id)
+		await cdp_client.send.DOMSnapshot.enable(session_id=session_id)
+		await cdp_client.send.Page.enable(session_id=session_id)
 
-				session = await cdp_client.send.Target.attachToTarget(params={'targetId': target['targetId'], 'flatten': True})
-				session_id = session['sessionId']
+		self.session_id_initialized_domains_cache[session_id] = True
 
-				await cdp_client.send.Target.setAutoAttach(
-					params={'autoAttach': True, 'waitForDebuggerOnStart': False, 'flatten': True}
-				)
+		return session_id
 
-				await cdp_client.send.DOM.enable(session_id=session_id)
-				await cdp_client.send.Accessibility.enable(session_id=session_id)
-				await cdp_client.send.DOMSnapshot.enable(session_id=session_id)
-				await cdp_client.send.Page.enable(session_id=session_id)
-
-				return session_id
-
-		raise ValueError(f'No session id found for page {self.page.url}')
+	def _extract_ax_property_value(self, value) -> str | bool | None:
+		"""Extract value from various formats returned by the accessibility API."""
+		if isinstance(value, dict):
+			extracted = value.get('value', value)
+			if isinstance(extracted, (str, bool)) or extracted is None:
+				return extracted
+			return str(extracted)  # Convert to string if not expected type
+		elif isinstance(value, list) and len(value) > 0:
+			# Sometimes values are returned as a list with one element
+			return self._extract_ax_property_value(value[0])
+		elif isinstance(value, (str, bool)) or value is None:
+			return value
+		else:
+			return str(value) if value is not None else None
 
 	def _build_enhanced_ax_node(self, ax_node: AXNode) -> EnhancedAXNode:
-		properties: list[EnhancedAXProperty] | None = None
+		"""Build enhanced accessibility node from CDP AX node."""
+
+		properties = None
 		if 'properties' in ax_node and ax_node['properties']:
 			properties = []
-			for property in ax_node['properties']:
+			for prop in ax_node['properties']:
 				try:
-					# test whether property name can go into the enum (sometimes Chrome returns some random properties)
-					properties.append(
-						EnhancedAXProperty(
-							name=property['name'],
-							value=property.get('value', {}).get('value', None),
-							# related_nodes=[],  # TODO: add related nodes
-						)
-					)
-				except ValueError:
-					pass
+					prop_name = prop.get('name')
+					prop_value = self._extract_ax_property_value(prop.get('value'))
 
-		enhanced_ax_node = EnhancedAXNode(
-			ax_node_id=ax_node['nodeId'],
-			ignored=ax_node['ignored'],
-			role=ax_node.get('role', {}).get('value', None),
-			name=ax_node.get('name', {}).get('value', None),
-			description=ax_node.get('description', {}).get('value', None),
+					if prop_name and prop_value is not None:
+						properties.append(EnhancedAXProperty(name=prop_name, value=prop_value))
+				except Exception as e:
+					# Skip problematic properties
+					logger.debug(f'Warning: Could not process AX property {prop}: {e}')
+					continue
+
+		return EnhancedAXNode(
+			ax_node_id=ax_node.get('nodeId', ''),
+			ignored=ax_node.get('ignored', False),
+			role=ax_node.get('role', {}).get('value') if ax_node.get('role') else None,
+			name=ax_node.get('name', {}).get('value') if ax_node.get('name') else None,
+			description=ax_node.get('description', {}).get('value') if ax_node.get('description') else None,
 			properties=properties,
 		)
-		return enhanced_ax_node
 
 	async def _get_viewport_size(self) -> tuple[float, float, float, float, float]:
 		"""Get viewport dimensions, device pixel ratio, and scroll position using CDP."""
 		try:
-			cdp_client = await self._get_cdp_client()
+			cdp_client = await self.browser.get_cdp_client()
 			session_id = await self._get_current_page_session_id()
 
 			# Get the layout metrics which includes the visual viewport
@@ -172,7 +137,7 @@ class DomService:
 
 			return float(width), float(height), float(device_pixel_ratio), float(scroll_x), float(scroll_y)
 		except Exception as e:
-			print(f'⚠️  Viewport size detection failed: {e}')
+			logger.debug(f'⚠️  Viewport size detection failed: {e}')
 			# Fallback to default viewport size
 			return 1920.0, 1080.0, 1.0, 0.0, 0.0
 
@@ -189,7 +154,6 @@ class DomService:
 		# Get viewport dimensions first for visibility calculation
 		viewport_width, viewport_height, device_pixel_ratio, scroll_x, scroll_y = await self._get_viewport_size()
 
-		# Parse snapshot data with everything calculated upfront
 		# Parse snapshot data with everything calculated upfront
 		snapshot_lookup = build_snapshot_lookup(snapshot, viewport_width, viewport_height, device_pixel_ratio, scroll_x, scroll_y)
 
@@ -262,12 +226,13 @@ class DomService:
 
 		return enhanced_dom_tree_node
 
+	@time_execution_async('--get_all_trees')
 	async def _get_all_trees(self) -> tuple[CaptureSnapshotReturns, GetDocumentReturns, GetFullAXTreeReturns, dict[str, float]]:
 		if not self.browser.cdp_url:
 			raise ValueError('CDP URL is not set')
 
 		session_id = await self._get_current_page_session_id()
-		cdp_client = await self._get_cdp_client()
+		cdp_client = await self.browser.get_cdp_client()
 
 		snapshot_request = cdp_client.send.DOMSnapshot.captureSnapshot(
 			params={
@@ -284,23 +249,19 @@ class DomService:
 
 		ax_tree_request = cdp_client.send.Accessibility.getFullAXTree(session_id=session_id)
 
-		start = time.time()
 		snapshot, dom_tree, ax_tree = await asyncio.gather(snapshot_request, dom_tree_request, ax_tree_request)
-		end = time.time()
-		cdp_timing = {'cdp_calls_total': end - start}
-		print(f'Time taken to get dom tree: {end - start} seconds')
+		cdp_timing = {'cdp_calls_total': 0}
+		logger.debug('Time taken to get dom tree: completed')
 
 		return snapshot, dom_tree, ax_tree, cdp_timing
 
 	async def get_dom_tree(self) -> tuple[EnhancedDOMTreeNode, dict[str, float]]:
 		snapshot, dom_tree, ax_tree, cdp_timing = await self._get_all_trees()
 
-		start = time.time()
 		enhanced_dom_tree = await self._build_enhanced_dom_tree(dom_tree, ax_tree, snapshot)
-		end = time.time()
 
-		build_tree_timing = {'build_enhanced_dom_tree': end - start}
-		print(f'Time taken to build enhanced dom tree: {end - start} seconds')
+		build_tree_timing = {'build_enhanced_dom_tree': 0}
+		logger.debug('Time taken to build enhanced dom tree: completed')
 
 		# Combine timing info
 		all_timing = {**cdp_timing, **build_tree_timing}
@@ -315,14 +276,12 @@ class DomService:
 		"""
 		enhanced_dom_tree, dom_timing = await self.get_dom_tree()
 
-		start = time.time()
 		serialized_dom_state, serializer_timing = DOMTreeSerializer(
 			enhanced_dom_tree, previous_cached_state
 		).serialize_accessible_elements()
 
-		end = time.time()
-		serialize_total_timing = {'serialize_dom_tree_total': end - start}
-		print(f'Time taken to serialize dom tree: {end - start} seconds')
+		serialize_total_timing = {'serialize_dom_tree_total': 0}
+		logger.debug('Time taken to serialize dom tree: completed')
 
 		# Combine all timing info
 		all_timing = {**dom_timing, **serializer_timing, **serialize_total_timing}

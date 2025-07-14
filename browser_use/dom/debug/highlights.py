@@ -1,10 +1,13 @@
 # 100% vibe coded
 
 import json
+import logging
 import traceback
 
 from browser_use.dom.service import DomService
 from browser_use.dom.views import DOMSelectorMap
+
+logger = logging.getLogger(__name__)
 
 
 def analyze_element_interactivity(element: dict) -> dict:
@@ -109,10 +112,10 @@ async def remove_highlighting_script(dom_service: DomService) -> None:
 	"""Remove all browser-use highlighting elements from the page."""
 	try:
 		# Get CDP client and session ID
-		cdp_client = await dom_service._get_cdp_client()
+		cdp_client = await dom_service.browser.get_cdp_client()
 		session_id = await dom_service._get_current_page_session_id()
 
-		print('🧹 Removing browser-use highlighting elements')
+		logger.debug('🧹 Removing browser-use highlighting elements')
 
 		# Create script to remove all highlights
 		script = """
@@ -126,31 +129,40 @@ async def remove_highlighting_script(dom_service: DomService) -> None:
 
 		# Execute the removal script via CDP
 		await cdp_client.send.Runtime.evaluate(params={'expression': script, 'returnByValue': True}, session_id=session_id)
-		print('✅ All browser-use highlighting elements removed')
+		logger.debug('✅ All browser-use highlighting elements removed')
 
 	except Exception as e:
-		print(f'❌ Error removing highlighting elements: {e}')
-		traceback.print_exc()
+		logger.debug(f'❌ Error removing highlighting elements: {e}')
 
 
 async def inject_highlighting_script(dom_service: DomService, interactive_elements: DOMSelectorMap) -> None:
 	"""Inject JavaScript to highlight interactive elements with detailed hover tooltips that work around CSP restrictions."""
 	if not interactive_elements:
-		print('⚠️ No interactive elements to highlight')
+		logger.debug('⚠️ No interactive elements to highlight')
 		return
 
 	try:
-		# Convert DOMSelectorMap to the format expected by the JavaScript
-		converted_elements = convert_dom_selector_map_to_highlight_format(interactive_elements)
+		# Performance safeguard
+		MAX_HIGHLIGHTS = 200
+		total_elements = len(interactive_elements)
+
+		if total_elements > MAX_HIGHLIGHTS:
+			logger.debug(f'⚠️ Too many elements ({total_elements}) - limiting to first {MAX_HIGHLIGHTS} for performance')
+			limited_elements = dict(list(interactive_elements.items())[:MAX_HIGHLIGHTS])
+		else:
+			limited_elements = interactive_elements
 
 		# Get CDP client and session ID
-		cdp_client = await dom_service._get_cdp_client()
+		cdp_client = await dom_service.browser.get_cdp_client()
 		session_id = await dom_service._get_current_page_session_id()
 
-		print(f'📍 Creating CSP-safe highlighting for {len(converted_elements)} elements')
+		logger.debug(f'📍 Creating simple highlighting for {len(limited_elements)} elements')
 
 		# Remove any existing highlights first
 		await remove_highlighting_script(dom_service)
+
+		# Convert interactive elements to highlight format
+		converted_elements = convert_dom_selector_map_to_highlight_format(limited_elements)
 
 		# Create CSP-safe highlighting script using DOM methods instead of innerHTML
 		# Uses outline-only highlights with reasonable z-index to avoid blocking page content
@@ -438,8 +450,8 @@ async def inject_highlighting_script(dom_service: DomService, interactive_elemen
 
 		# Inject the enhanced CSP-safe script via CDP
 		await cdp_client.send.Runtime.evaluate(params={'expression': script, 'returnByValue': True}, session_id=session_id)
-		print(f'✅ Enhanced CSP-safe highlighting injected for {len(converted_elements)} elements')
+		logger.debug(f'✅ Simple highlighting injected for {len(limited_elements)} elements')
 
 	except Exception as e:
-		print(f'❌ Error injecting enhanced highlighting script: {e}')
+		logger.debug(f'❌ Error injecting highlighting script: {e}')
 		traceback.print_exc()
