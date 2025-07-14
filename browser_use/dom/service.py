@@ -21,6 +21,7 @@ from browser_use.dom.views import (
 	NodeType,
 	SerializedDOMState,
 )
+from browser_use.observability import observe_debug
 from browser_use.utils import time_execution_async, time_execution_sync
 
 if TYPE_CHECKING:
@@ -270,7 +271,14 @@ class DomService:
 							break  # Use first available iframe context for now
 							# TODO: Better matching between iframe elements and their frame contexts
 
-				dom_tree_node.content_document = _construct_enhanced_node(node['contentDocument'], content_frame_context)
+				# Process the content document
+				content_doc = _construct_enhanced_node(node['contentDocument'], content_frame_context)
+
+				# CRITICAL FIX: Set up proper parent relationship for iframe content
+				# The content document's parent should be the iframe element, not None
+				# This enables elements inside iframes to trace back to the iframe container
+				content_doc.parent_node = dom_tree_node
+				dom_tree_node.content_document = content_doc
 
 			if 'shadowRoots' in node and node['shadowRoots']:
 				dom_tree_node.shadow_roots = []
@@ -382,6 +390,7 @@ class DomService:
 		return snapshot, dom_tree, ax_tree, cdp_timing
 
 	@time_execution_async('--get_dom_tree')
+	@observe_debug(ignore_input=True, ignore_output=True, name='get_dom_tree')
 	async def get_dom_tree(self) -> tuple[EnhancedDOMTreeNode, dict[str, float]]:
 		"""Get enhanced DOM tree with iframe piercing support."""
 		# Use the new iframe-aware method
@@ -399,6 +408,7 @@ class DomService:
 		return enhanced_dom_tree, all_timing
 
 	@time_execution_async('--get_serialized_dom_tree')
+	@observe_debug(ignore_input=True, ignore_output=True, name='get_serialized_dom_tree')
 	async def get_serialized_dom_tree(
 		self, previous_cached_state: SerializedDOMState | None = None
 	) -> tuple[SerializedDOMState, dict[str, float]]:
