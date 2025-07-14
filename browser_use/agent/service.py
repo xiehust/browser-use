@@ -655,7 +655,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 
 		# Try 1: Full state summary (current implementation) - like main branch
 		try:
-			return await self.browser_session.get_state_summary(cache_clickable_elements_hashes, inject_highlights=False)
+			return await self.browser_session.get_state_summary(cache_clickable_elements_hashes, inject_highlights=True)
 		except Exception as e:
 			if self.state.last_result is None:
 				self.state.last_result = []
@@ -1383,7 +1383,9 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 				break
 
 			if action.get_index() is not None and i != 0:
-				new_browser_state_summary = await self.browser_session.get_state_summary(cache_clickable_elements_hashes=False)
+				new_browser_state_summary = await self.browser_session.get_state_summary(
+					cache_clickable_elements_hashes=False, inject_highlights=False
+				)
 				new_selector_map = new_browser_state_summary.dom_state.selector_map
 
 				# Detect index change after previous action
