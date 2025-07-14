@@ -22,6 +22,7 @@ from browser_use.dom.views import (
 	NodeType,
 	SerializedDOMState,
 )
+from browser_use.utils import time_execution_async, time_execution_sync
 
 if TYPE_CHECKING:
 	from browser_use.browser.session import BrowserSession
@@ -96,23 +97,39 @@ class DomService:
 
 		cdp_client = await self._get_cdp_client()
 
+		# Time individual CDP calls
+		start_get_targets = time.time()
 		targets = await cdp_client.send.Target.getTargets()
+		end_get_targets = time.time()
+		print(f'⏱️ Target.getTargets() took {end_get_targets - start_get_targets:.3f} seconds')
+
 		for target in targets['targetInfos']:
 			if target['type'] == 'page' and target['url'] == self.page.url:
 				# cache the session id for this playwright page
 				# self.playwright_page_to_session_id_store[page_guid] = target['targetId']
 
+				start_attach = time.time()
 				session = await cdp_client.send.Target.attachToTarget(params={'targetId': target['targetId'], 'flatten': True})
+				end_attach = time.time()
+				print(f'⏱️ Target.attachToTarget() took {end_attach - start_attach:.3f} seconds')
+
 				session_id = session['sessionId']
 
+				start_auto_attach = time.time()
 				await cdp_client.send.Target.setAutoAttach(
 					params={'autoAttach': True, 'waitForDebuggerOnStart': False, 'flatten': True}
 				)
+				end_auto_attach = time.time()
+				print(f'⏱️ Target.setAutoAttach() took {end_auto_attach - start_auto_attach:.3f} seconds')
 
+				# Time the enable calls
+				start_enables = time.time()
 				await cdp_client.send.DOM.enable(session_id=session_id)
 				await cdp_client.send.Accessibility.enable(session_id=session_id)
 				await cdp_client.send.DOMSnapshot.enable(session_id=session_id)
 				await cdp_client.send.Page.enable(session_id=session_id)
+				end_enables = time.time()
+				print(f'⏱️ CDP domain enables took {end_enables - start_enables:.3f} seconds')
 
 				return session_id
 
@@ -163,11 +180,14 @@ class DomService:
 	async def _get_viewport_size(self) -> tuple[float, float, float, float, float]:
 		"""Get viewport dimensions, device pixel ratio, and scroll position using CDP."""
 		try:
+			start_viewport = time.time()
 			cdp_client = await self._get_cdp_client()
 			session_id = await self._get_current_page_session_id()
 
 			# Get the layout metrics which includes the visual viewport
 			metrics = await cdp_client.send.Page.getLayoutMetrics(session_id=session_id)
+			end_viewport = time.time()
+			print(f'⏱️ Page.getLayoutMetrics() took {end_viewport - start_viewport:.3f} seconds')
 
 			visual_viewport = metrics.get('visualViewport', {})
 			layout_viewport = metrics.get('layoutViewport', {})
@@ -197,6 +217,7 @@ class DomService:
 			# Fallback to default viewport size
 			return 1920.0, 1080.0, 1.0, 0.0, 0.0
 
+	@time_execution_async('--build_enhanced_dom_tree')
 	async def _build_enhanced_dom_tree(
 		self, all_frame_data: dict[str, tuple[GetDocumentReturns, GetFullAXTreeReturns, CaptureSnapshotReturns]]
 	) -> EnhancedDOMTreeNode:
@@ -240,6 +261,7 @@ class DomService:
 					ax_node['backendDOMNodeId']: ax_node for ax_node in ax_tree['nodes'] if 'backendDOMNodeId' in ax_node
 				}
 
+		@time_execution_sync('--construct_enhanced_node')
 		def _construct_enhanced_node(node: Node, frame_context: str = 'main') -> EnhancedDOMTreeNode:
 			# memoize the mf (I don't know if some nodes are duplicated)
 			if node['nodeId'] in enhanced_dom_tree_node_lookup:
@@ -331,6 +353,7 @@ class DomService:
 
 		return enhanced_dom_tree_node
 
+	@time_execution_async('--get_all_trees_with_iframe_support')
 	async def _get_all_trees_with_iframe_support(
 		self,
 	) -> tuple[dict[str, tuple[GetDocumentReturns, GetFullAXTreeReturns, CaptureSnapshotReturns]], dict[str, float]]:
@@ -342,6 +365,10 @@ class DomService:
 		cdp_client = await self._get_cdp_client()
 
 		# Use pierce=true to get iframe content documents included in the main DOM tree
+		print('⏱️ Starting CDP data retrieval calls...')
+
+		# Time each major CDP call individually
+		start_snapshot = time.time()
 		snapshot_request = cdp_client.send.DOMSnapshot.captureSnapshot(
 			params={
 				'computedStyles': REQUIRED_COMPUTED_STYLES,
@@ -354,20 +381,41 @@ class DomService:
 		)
 
 		# Pierce=true includes iframe content documents
+		start_dom = time.time()
 		dom_tree_request = cdp_client.send.DOM.getDocument(params={'depth': -1, 'pierce': True}, session_id=session_id)
 
+		start_ax = time.time()
 		ax_tree_request = cdp_client.send.Accessibility.getFullAXTree(session_id=session_id)
 
-		start = time.time()
+		print('⏱️ All CDP requests initiated, waiting for responses...')
+		start_gather = time.time()
 		snapshot, dom_tree, ax_tree = await asyncio.gather(snapshot_request, dom_tree_request, ax_tree_request)
-		end = time.time()
-		cdp_timing = {'cdp_calls_total': end - start}
-		print(f'Time taken to get DOM tree with iframe content: {end - start} seconds')
+		end_gather = time.time()
+
+		# Calculate individual timings (approximate since they overlap)
+		snapshot_time = end_gather - start_snapshot
+		dom_time = end_gather - start_dom
+		ax_time = end_gather - start_ax
+		total_time = end_gather - start_snapshot
+
+		print(f'⏱️ DOMSnapshot.captureSnapshot() took ~{snapshot_time:.3f} seconds')
+		print(f'⏱️ DOM.getDocument() took ~{dom_time:.3f} seconds')
+		print(f'⏱️ Accessibility.getFullAXTree() took ~{ax_time:.3f} seconds')
+		print(f'⏱️ Total CDP data retrieval took {total_time:.3f} seconds')
+
+		cdp_timing = {
+			'cdp_calls_total': total_time,
+			'cdp_snapshot_time': snapshot_time,
+			'cdp_dom_time': dom_time,
+			'cdp_ax_time': ax_time,
+		}
+		print(f'⏳ Time taken to get DOM tree with iframe content: {total_time:.3f} seconds')
 
 		# Return single frame data - the iframe content is embedded in the main DOM tree
 		all_frame_data = {'main': (dom_tree, ax_tree, snapshot)}
 		return all_frame_data, cdp_timing
 
+	@time_execution_async('--get_all_trees')
 	async def _get_all_trees(self) -> tuple[CaptureSnapshotReturns, GetDocumentReturns, GetFullAXTreeReturns, dict[str, float]]:
 		if not self.browser.cdp_url:
 			raise ValueError('CDP URL is not set')
@@ -398,6 +446,7 @@ class DomService:
 
 		return snapshot, dom_tree, ax_tree, cdp_timing
 
+	@time_execution_async('--get_dom_tree')
 	async def get_dom_tree(self) -> tuple[EnhancedDOMTreeNode, dict[str, float]]:
 		"""Get enhanced DOM tree with iframe piercing support."""
 		# Use the new iframe-aware method
@@ -414,6 +463,7 @@ class DomService:
 		all_timing = {**cdp_timing, **build_tree_timing}
 		return enhanced_dom_tree, all_timing
 
+	@time_execution_async('--get_serialized_dom_tree')
 	async def get_serialized_dom_tree(
 		self, previous_cached_state: SerializedDOMState | None = None
 	) -> tuple[SerializedDOMState, dict[str, float]]:

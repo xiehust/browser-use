@@ -14,6 +14,7 @@ from cdp_use.cdp.domsnapshot.types import (
 )
 
 from browser_use.dom.views import DOMRect, EnhancedSnapshotNode
+from browser_use.utils import time_execution_sync
 
 # Only the ESSENTIAL computed styles for interactivity and visibility detection
 REQUIRED_COMPUTED_STYLES = [
@@ -109,6 +110,7 @@ def _is_element_visible(
 	return intersects
 
 
+@time_execution_sync('--build_snapshot_lookup')
 def build_snapshot_lookup(
 	snapshot: CaptureSnapshotReturns,
 	viewport_width: float,
@@ -134,72 +136,87 @@ def build_snapshot_lookup(
 		for i, backend_node_id in enumerate(nodes['backendNodeId']):
 			backend_node_to_snapshot_index[backend_node_id] = i
 
+	# 🚀 OPTIMIZATION 1: Pre-build layout lookup table (eliminates O(n²) nested loop)
+	snapshot_index_to_layout_idx = {}
+	layout_node_indices = layout.get('nodeIndex', [])
+	for layout_idx, node_index in enumerate(layout_node_indices):
+		snapshot_index_to_layout_idx[node_index] = layout_idx
+
+	# 🚀 OPTIMIZATION 2: Cache layout arrays (eliminates repeated .get() calls)
+	layout_bounds = layout.get('bounds', [])
+	layout_styles = layout.get('styles', [])
+	layout_paint_orders = layout.get('paintOrders', [])
+	layout_client_rects = layout.get('clientRects', [])
+	layout_stacking_contexts = layout.get('stackingContexts', {})
+	stacking_contexts_indices = layout_stacking_contexts.get('index', [])
+
+	# ⚡ OPTIMIZATION 3: Pre-extract clickable data
+	nodes_is_clickable = nodes.get('isClickable')
+
 	# Build snapshot lookup for each backend node id
 	for backend_node_id, snapshot_index in backend_node_to_snapshot_index.items():
+		# ⚡ Fast clickable check
 		is_clickable = None
-		if 'isClickable' in nodes:
-			is_clickable = _parse_rare_boolean_data(nodes['isClickable'], snapshot_index)
+		if nodes_is_clickable:
+			is_clickable = _parse_rare_boolean_data(nodes_is_clickable, snapshot_index)
 
-		# Find corresponding layout node
+		# 🚀 OPTIMIZATION 4: O(1) layout lookup instead of O(n) search
 		cursor_style = None
 		is_visible = None
 		bounding_box = None
 		computed_styles = {}
-
-		# Look for layout tree node that corresponds to this snapshot node
 		paint_order = None
 		client_rects = None
 		stacking_contexts = None
-		for layout_idx, node_index in enumerate(layout.get('nodeIndex', [])):
-			if node_index == snapshot_index and layout_idx < len(layout.get('bounds', [])):
-				# Parse bounding box
-				bounds = layout['bounds'][layout_idx]
-				if len(bounds) >= 4:
-					# IMPORTANT: CDP coordinates are in device pixels, convert to CSS pixels
-					# by dividing by the device pixel ratio
-					raw_x, raw_y, raw_width, raw_height = bounds[0], bounds[1], bounds[2], bounds[3]
 
-					# Apply device pixel ratio scaling to convert device pixels to CSS pixels
-					bounding_box = DOMRect(
-						x=raw_x / device_pixel_ratio,
-						y=raw_y / device_pixel_ratio,
-						width=raw_width / device_pixel_ratio,
-						height=raw_height / device_pixel_ratio,
+		# Fast layout lookup using pre-built index
+		layout_idx = snapshot_index_to_layout_idx.get(snapshot_index)
+		if layout_idx is not None and layout_idx < len(layout_bounds):
+			# Parse bounding box
+			bounds = layout_bounds[layout_idx]
+			if len(bounds) >= 4:
+				# IMPORTANT: CDP coordinates are in device pixels, convert to CSS pixels
+				# by dividing by the device pixel ratio
+				raw_x, raw_y, raw_width, raw_height = bounds[0], bounds[1], bounds[2], bounds[3]
+
+				# Apply device pixel ratio scaling to convert device pixels to CSS pixels
+				bounding_box = DOMRect(
+					x=raw_x / device_pixel_ratio,
+					y=raw_y / device_pixel_ratio,
+					width=raw_width / device_pixel_ratio,
+					height=raw_height / device_pixel_ratio,
+				)
+
+			# Parse computed styles for this layout node
+			if layout_idx < len(layout_styles):
+				style_indices = layout_styles[layout_idx]
+				computed_styles = _parse_computed_styles(strings, style_indices)
+				cursor_style = computed_styles.get('cursor')
+
+			# Extract paint order if available
+			if layout_idx < len(layout_paint_orders):
+				paint_order = layout_paint_orders[layout_idx]
+
+			# Extract client rects if available
+			if layout_idx < len(layout_client_rects):
+				client_rect_data = layout_client_rects[layout_idx]
+				if client_rect_data and len(client_rect_data) >= 4:
+					client_rects = DOMRect(
+						x=client_rect_data[0],
+						y=client_rect_data[1],
+						width=client_rect_data[2],
+						height=client_rect_data[3],
 					)
 
-				# Parse computed styles for this layout node
-				if layout_idx < len(layout.get('styles', [])):
-					style_indices = layout['styles'][layout_idx]
-					computed_styles = _parse_computed_styles(strings, style_indices)
-					cursor_style = computed_styles.get('cursor')
+			# Extract stacking contexts if available
+			if layout_idx < len(stacking_contexts_indices):
+				stacking_contexts = stacking_contexts_indices[layout_idx]
 
-				# Extract paint order if available
-				if layout_idx < len(layout.get('paintOrders', [])):
-					paint_order = layout.get('paintOrders', [])[layout_idx]
-
-				# Extract client rects if available
-				client_rects_data = layout.get('clientRects', [])
-				if layout_idx < len(client_rects_data):
-					client_rect_data = client_rects_data[layout_idx]
-					if client_rect_data and len(client_rect_data) >= 4:
-						client_rects = DOMRect(
-							x=client_rect_data[0],
-							y=client_rect_data[1],
-							width=client_rect_data[2],
-							height=client_rect_data[3],
-						)
-
-				# Extract stacking contexts if available
-				if layout_idx < len(layout.get('stackingContexts', [])):
-					stacking_contexts = layout.get('stackingContexts', {}).get('index', [])[layout_idx]
-
-				# Calculate scroll-aware visibility if we have bounding box
-				if bounding_box and computed_styles:
-					is_visible = _is_element_visible(
-						bounding_box, computed_styles, viewport_width, viewport_height, scroll_x, scroll_y
-					)
-
-				break
+			# Calculate scroll-aware visibility if we have bounding box
+			if bounding_box and computed_styles:
+				is_visible = _is_element_visible(
+					bounding_box, computed_styles, viewport_width, viewport_height, scroll_x, scroll_y
+				)
 
 		snapshot_lookup[backend_node_id] = EnhancedSnapshotNode(
 			is_clickable=is_clickable,

@@ -655,7 +655,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 
 		# Try 1: Full state summary (current implementation) - like main branch
 		try:
-			return await self.browser_session.get_state_summary(cache_clickable_elements_hashes)
+			return await self.browser_session.get_state_summary(cache_clickable_elements_hashes, inject_highlights=False)
 		except Exception as e:
 			if self.state.last_result is None:
 				self.state.last_result = []

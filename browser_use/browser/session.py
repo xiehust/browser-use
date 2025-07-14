@@ -1949,6 +1949,7 @@ class BrowserSession(BaseModel):
 
 	# --- Tab management ---
 	@observe_debug(name='get_current_page', ignore_input=True)
+	@time_execution_async('--get_current_page')
 	async def get_current_page(self) -> Page:
 		"""Get the current page + ensure it's not None / closed"""
 
@@ -2786,6 +2787,7 @@ class BrowserSession(BaseModel):
 			self.logger.debug(f'💤 Page network traffic calmed down after {now - start_time:.2f} seconds')
 
 	@observe_debug(name='wait_for_page_and_frames_load')
+	@time_execution_async('--wait_for_page_and_frames_load')
 	async def _wait_for_page_and_frames_load(self, timeout_overwrite: float | None = None):
 		"""
 		Ensures page is fully loaded before continuing.
@@ -3103,6 +3105,7 @@ class BrowserSession(BaseModel):
 		)
 
 	@observe_debug(name='get_updated_state', ignore_output=True)
+	@time_execution_async('--get_updated_state')
 	async def _get_updated_state(self, focus_element: int = -1, inject_highlights: bool = True) -> BrowserStateSummary:
 		"""Update and return state."""
 
