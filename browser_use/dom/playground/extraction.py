@@ -3,14 +3,14 @@ import os
 import time
 
 import anyio
-from agent.prompts import AgentMessagePrompt
-from dom.views import DEFAULT_INCLUDE_ATTRIBUTES
-from filesystem.file_system import FileSystem
 
+from browser_use.agent.prompts import AgentMessagePrompt
 from browser_use.browser import BrowserProfile, BrowserSession
 from browser_use.browser.types import ViewportSize
 from browser_use.dom.debug.highlights import inject_highlighting_script
 from browser_use.dom.service import DomService
+from browser_use.dom.views import DEFAULT_INCLUDE_ATTRIBUTES
+from browser_use.filesystem.file_system import FileSystem
 
 TIMEOUT = 60
 
@@ -189,32 +189,41 @@ async def test_focus_vs_all_elements():
 
 				timing_text += '⏱️  TIMING BREAKDOWN:\n'
 				timing_text += f'{"─" * 30}\n'
-				# Filter out cache statistics from timing data
-				timing_only = {k: v for k, v in all_timing.items() if not k.startswith('clickable_cache')}
-				for key, value in timing_only.items():
-					timing_text += f'{key:<35}: {value * 1000:>8.2f} ms\n'
+				# Show only actual timing data (exclude cache statistics)
+				major_components = [
+					'get_state_summary_total',
+					'cdp_calls_total',
+					'build_enhanced_dom_tree',
+					'create_simplified_tree',
+					'optimize_tree',
+					'calculate_paint_order',
+					'assign_interactive_indices',
+					'serialize_accessible_elements_total',
+					'serialize_dom_tree_total',
+				]
+
+				# Filter to major components only
+				for key in major_components:
+					if key in all_timing:
+						value = all_timing[key]
+						timing_text += f'{key:<35}: {value * 1000:>8.2f} ms\n'
 
 				# Calculate percentages only for actual timing data
 				total_time = all_timing.get('get_state_summary_total', 0)
 				if total_time > 0:
 					timing_text += '\n📈 PERCENTAGE BREAKDOWN:\n'
 					timing_text += f'{"─" * 30}\n'
-					for key, value in timing_only.items():
-						if key != 'get_state_summary_total':
+					for key in major_components:
+						if key in all_timing and key != 'get_state_summary_total':
+							value = all_timing[key]
 							percentage = (value / total_time) * 100
 							timing_text += f'{key:<35}: {percentage:>7.1f}%\n'
 
-				timing_text += '\n🎯 CLICKABLE DETECTION ANALYSIS:\n'
-				timing_text += f'{"─" * 35}\n'
-				clickable_time = all_timing.get('clickable_detection_time', 0)
-				if clickable_time > 0 and total_elements > 0:
-					avg_per_element = (clickable_time / total_elements) * 1000000  # microseconds
-					timing_text += f'Total clickable detection time: {clickable_time * 1000:.2f} ms\n'
-					timing_text += f'Average per element: {avg_per_element:.2f} μs\n'
-					timing_text += f'Clickable detection calls: ~{total_elements} (approx)\n'
-				elif total_elements == 0:
-					timing_text += 'No interactive elements found on this page\n'
-					timing_text += f'Total clickable detection time: {clickable_time * 1000:.2f} ms\n'
+				timing_text += '\n🎯 PERFORMANCE SUMMARY:\n'
+				timing_text += f'{"─" * 25}\n'
+				timing_text += f'Total elements found: {total_elements}\n'
+				timing_text += f'DOM processing time: {all_timing.get("build_enhanced_dom_tree", 0) * 1000:.1f} ms\n'
+				timing_text += f'Tree creation time: {all_timing.get("create_simplified_tree", 0) * 1000:.1f} ms\n'
 
 				# Add cache statistics
 				timing_text += '\n🗄️ CACHE PERFORMANCE:\n'

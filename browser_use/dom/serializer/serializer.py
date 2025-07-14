@@ -42,15 +42,6 @@ class DOMTreeSerializer:
 		end_step1 = time.time()
 		self.timing_info['create_simplified_tree'] = end_step1 - start_step1
 
-		# Add batch clickable detection timing
-		clickable_elements_processed = len(self._clickable_cache)
-		if clickable_elements_processed > 0:
-			# Estimate clickable detection time from the tree creation step
-			self.timing_info['clickable_elements_processed'] = clickable_elements_processed
-			self.timing_info['avg_clickable_detection_per_element_ms'] = (
-				(end_step1 - start_step1) / clickable_elements_processed * 1000
-			)
-
 		# Step 2: Optimize tree (remove unnecessary parents)
 		start_step2 = time.time()
 		optimized_tree = self._optimize_tree(simplified_tree)
@@ -58,8 +49,11 @@ class DOMTreeSerializer:
 		self.timing_info['optimize_tree'] = end_step2 - start_step2
 
 		# Step 3: Remove elements based on paint order
+		start_step3 = time.time()
 		if optimized_tree:
 			PaintOrderRemover(optimized_tree).calculate_paint_order()
+		end_step3 = time.time()
+		self.timing_info['calculate_paint_order'] = end_step3 - start_step3
 
 		# Step 4: Assign interactive indices to clickable elements
 		start_step4 = time.time()
