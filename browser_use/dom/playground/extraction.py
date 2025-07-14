@@ -1,9 +1,11 @@
 import asyncio
-import json
+import os
 import time
 
 import anyio
-import pyperclip
+from agent.prompts import AgentMessagePrompt
+from dom.views import DEFAULT_INCLUDE_ATTRIBUTES
+from filesystem.file_system import FileSystem
 
 from browser_use.browser import BrowserProfile, BrowserSession
 from browser_use.browser.types import ViewportSize
@@ -140,30 +142,36 @@ async def test_focus_vs_all_elements():
 				print(f'Total number of elements: {total_elements}')
 
 				# print(all_elements_state.element_tree.clickable_elements_to_string())
-				# prompt = AgentMessagePrompt(
-				# 	browser_state_summary=all_elements_state,
-				# 	file_system=FileSystem(base_dir='./tmp'),
-				# 	include_attributes=DEFAULT_INCLUDE_ATTRIBUTES,
-				# 	step_info=None,
-				# )
-				# # Write the user message to a file for analysis
-				# user_message = prompt.get_user_message(use_vision=False).text
+				prompt = AgentMessagePrompt(
+					browser_state_summary=all_elements_state,
+					file_system=FileSystem(base_dir='./tmp'),
+					include_attributes=DEFAULT_INCLUDE_ATTRIBUTES,
+					step_info=None,
+				)
+				# Write the user message to a file for analysis
+				user_message = prompt.get_user_message(use_vision=False).text
 
-				# # clickable_elements_str = all_elements_state.element_tree.clickable_elements_to_string()
+				# clickable_elements_str = all_elements_state.element_tree.clickable_elements_to_string()
 
-				# text_to_save = user_message
+				text_to_save = user_message  # all_elements_state.element_tree.clickable_elements_to_string() # user_message
 
-				# os.makedirs('./tmp', exist_ok=True)
-				# async with await anyio.open_file('./tmp/user_message.txt', 'w', encoding='utf-8') as f:
-				# 	await f.write(text_to_save)
+				os.makedirs('./tmp', exist_ok=True)
+				async with await anyio.open_file('./tmp/user_message.txt', 'w', encoding='utf-8') as f:
+					await f.write(text_to_save)
 
-				# # save pure clickable elements to a file
+				time_for_prompt = time.time() - time_end_highlighting
+				print(f'time_for_prompt took {time_for_prompt:.2f} seconds')
+
+				# Get cache statistics after processing
+				# cache_stats_after = ClickableElementDetector.get_cache_stats()
+
+				# save pure clickable elements to a file
 				# if all_elements_state.dom_state._root:
 				# 	async with await anyio.open_file('./tmp/element_tree.json', 'w', encoding='utf-8') as f:
 				# 		await f.write(json.dumps(all_elements_state.dom_state._root.__json__(), indent=2))
 
-				# # copy the user message to the clipboard
-				# # pyperclip.copy(text_to_save)
+				# copy the user message to the clipboard
+				# pyperclip.copy(text_to_save)
 
 				# encoding = tiktoken.encoding_for_model('gpt-4o')
 				# token_count = len(encoding.encode(text_to_save))
@@ -172,25 +180,26 @@ async def test_focus_vs_all_elements():
 				# print('User message written to ./tmp/user_message.txt')
 				# print('Element tree written to ./tmp/element_tree.json')
 
-				# # Save timing information
-				# timing_text = '🔍 DOM EXTRACTION PERFORMANCE ANALYSIS\n'
-				# timing_text += f'{"=" * 50}\n\n'
-				# timing_text += f'📄 Website: {website_url}\n'
-				# timing_text += f'📊 Total Elements: {total_elements}\n'
+				# Save timing information
+				timing_text = '🔍 DOM EXTRACTION PERFORMANCE ANALYSIS\n'
+				timing_text += f'{"=" * 50}\n\n'
+				timing_text += f'📄 Website: {website_url}\n'
+				timing_text += f'📊 Total Elements: {total_elements}\n'
 				# timing_text += f'🎯 Token Count: {token_count}\n\n'
 
-				timing_text = ''
 				timing_text += '⏱️  TIMING BREAKDOWN:\n'
 				timing_text += f'{"─" * 30}\n'
-				for key, value in all_timing.items():
+				# Filter out cache statistics from timing data
+				timing_only = {k: v for k, v in all_timing.items() if not k.startswith('clickable_cache')}
+				for key, value in timing_only.items():
 					timing_text += f'{key:<35}: {value * 1000:>8.2f} ms\n'
 
-				# Calculate percentages
+				# Calculate percentages only for actual timing data
 				total_time = all_timing.get('get_state_summary_total', 0)
 				if total_time > 0:
 					timing_text += '\n📈 PERCENTAGE BREAKDOWN:\n'
 					timing_text += f'{"─" * 30}\n'
-					for key, value in all_timing.items():
+					for key, value in timing_only.items():
 						if key != 'get_state_summary_total':
 							percentage = (value / total_time) * 100
 							timing_text += f'{key:<35}: {percentage:>7.1f}%\n'
@@ -207,10 +216,15 @@ async def test_focus_vs_all_elements():
 					timing_text += 'No interactive elements found on this page\n'
 					timing_text += f'Total clickable detection time: {clickable_time * 1000:.2f} ms\n'
 
-				async with await anyio.open_file('./tmp/timing_analysis.txt', 'w', encoding='utf-8') as f:
-					await f.write(timing_text)
+				# Add cache statistics
+				timing_text += '\n🗄️ CACHE PERFORMANCE:\n'
+				timing_text += f'{"─" * 25}\n'
+				# timing_text += f'Cache size: {cache_stats_after["cache_size"]}\n'
+				# timing_text += f'Interactive cached: {cache_stats_after["cached_interactive"]}\n'
+				# timing_text += f'Non-interactive cached: {cache_stats_after["cached_non_interactive"]}\n'
+				# timing_text += f'Current page hash: {cache_stats_after["current_page_hash"]}\n'
 
-				print('Timing analysis written to ./tmp/timing_analysis.txt')
+				print(timing_text)
 
 				website_list = get_website_list_for_prompt()
 				print(f'Total time: {time.time() - current_time:.2f} seconds')
@@ -257,8 +271,8 @@ async def test_focus_vs_all_elements():
 								target_index = int(parts[1].strip())
 								if target_index in selector_map:
 									element_node = selector_map[target_index]
-									element_json = json.dumps(element_node.__json__(), indent=2, default=str)
-									pyperclip.copy(element_json)
+									# element_json = json.dumps(element_node.__json__(), indent=2, default=str)
+									# pyperclip.copy(element_json)
 									print(f'📋 Copied element {target_index} JSON to clipboard: {element_node.tag_name}')
 								else:
 									print(f'❌ Invalid index: {target_index}')
