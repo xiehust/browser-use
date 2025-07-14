@@ -25,9 +25,7 @@ async def main():
 	await browser.create_new_tab('https://select2.org/data-sources/ajax')
 	await browser._wait_for_page_and_frames_load()
 
-	page = await browser.get_current_page()
-
-	dom_service = DomService(browser, page)
+	dom_service = DomService(browser)
 
 	while True:
 		start = time.time()

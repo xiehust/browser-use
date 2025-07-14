@@ -130,8 +130,8 @@ async def test_focus_vs_all_elements():
 				# Now inject highlights with the simple script
 				time_start_highlighting = time.time()
 
-				async with DomService(browser_session, page) as dom_service:
-					await inject_highlighting_script(dom_service, all_elements_state.dom_state.selector_map)
+				dom_service = DomService(browser_session)
+				await inject_highlighting_script(dom_service, all_elements_state.dom_state.selector_map)
 
 				time_end_highlighting = time.time()
 				highlighting_time = time_end_highlighting - time_start_highlighting
