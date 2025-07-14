@@ -1,10 +1,13 @@
 # @file purpose: Serializes enhanced DOM trees to string format for LLM consumption
 
 
+from observability import observe_debug
+
 from browser_use.dom.serializer.clickable_elements import ClickableElementDetector
 from browser_use.dom.serializer.paint_order import PaintOrderRemover
 from browser_use.dom.utils import cap_text_length
 from browser_use.dom.views import DOMSelectorMap, EnhancedDOMTreeNode, NodeType, SerializedDOMState, SimplifiedNode
+from browser_use.utils import time_execution_sync
 
 
 class DOMTreeSerializer:
@@ -23,6 +26,7 @@ class DOMTreeSerializer:
 		self._frame_stack: list[str] = []  # Stack of frame identifiers
 		self._iframe_count = 0  # Counter for unnamed iframes
 
+	@time_execution_sync('--serialize_accessible_elements')
 	def serialize_accessible_elements(self) -> tuple[SerializedDOMState, dict[str, float]]:
 		import time
 
@@ -75,6 +79,7 @@ class DOMTreeSerializer:
 
 		return self._clickable_cache[node.backend_node_id]
 
+	@time_execution_sync('--create_simplified_tree')
 	def _create_simplified_tree(self, node: EnhancedDOMTreeNode, is_iframe_content: bool = False) -> SimplifiedNode | None:
 		"""Step 1: Create a simplified tree with enhanced element detection and iframe piercing."""
 
@@ -182,6 +187,7 @@ class DOMTreeSerializer:
 			print(f'Warning: Could not process iframe content: {e}')
 			return None
 
+	@time_execution_sync('--optimize_tree')
 	def _optimize_tree(self, node: SimplifiedNode | None) -> SimplifiedNode | None:
 		"""Step 2: Optimize tree structure."""
 		if not node:
@@ -219,6 +225,8 @@ class DOMTreeSerializer:
 		for child in node.children:
 			self._collect_interactive_elements(child, elements)
 
+	@time_execution_sync('--assign_interactive_indices_and_mark_new_nodes')
+	@observe_debug(ignore_input=True, ignore_output=True, name='assign_interactive_indices_and_mark_new_nodes')
 	def _assign_interactive_indices_and_mark_new_nodes(self, node: SimplifiedNode | None) -> None:
 		"""Assign interactive indices to clickable elements."""
 		if not node:

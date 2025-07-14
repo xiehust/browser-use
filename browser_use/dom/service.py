@@ -9,6 +9,7 @@ from cdp_use.cdp.accessibility.types import AXNode
 from cdp_use.cdp.dom.commands import GetDocumentReturns
 from cdp_use.cdp.dom.types import Node
 from cdp_use.cdp.domsnapshot.commands import CaptureSnapshotReturns
+from observability import observe_debug
 
 from browser_use.dom.enhanced_snapshot import (
 	REQUIRED_COMPUTED_STYLES,
@@ -454,6 +455,7 @@ class DomService:
 		return snapshot, dom_tree, ax_tree, cdp_timing
 
 	@time_execution_async('--get_dom_tree')
+	@observe_debug(ignore_input=True, ignore_output=True, name='get_dom_tree')
 	async def get_dom_tree(self) -> tuple[EnhancedDOMTreeNode, dict[str, float]]:
 		"""Get enhanced DOM tree with iframe piercing support."""
 		# Use the new iframe-aware method
@@ -471,6 +473,7 @@ class DomService:
 		return enhanced_dom_tree, all_timing
 
 	@time_execution_async('--get_serialized_dom_tree')
+	@observe_debug(ignore_input=True, ignore_output=True, name='get_serialized_dom_tree')
 	async def get_serialized_dom_tree(
 		self, previous_cached_state: SerializedDOMState | None = None
 	) -> tuple[SerializedDOMState, dict[str, float]]:
