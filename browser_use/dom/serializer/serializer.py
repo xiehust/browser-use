@@ -72,12 +72,17 @@ class DOMTreeSerializer:
 
 	def _is_interactive_cached(self, node: EnhancedDOMTreeNode) -> bool:
 		"""Cached version of clickable element detection to avoid redundant calls."""
-		if node.backend_node_id not in self._clickable_cache:
-			# Use backend_node_id for more efficient caching (node_id can vary between sessions)
-			result = ClickableElementDetector.is_interactive(node)
-			self._clickable_cache[node.backend_node_id] = result
-
-		return self._clickable_cache[node.backend_node_id]
+		backend_node_id = node.backend_node_id
+		
+		# Check cache first - avoid dictionary lookup overhead
+		cached_result = self._clickable_cache.get(backend_node_id)
+		if cached_result is not None:
+			return cached_result
+			
+		# Compute and cache the result
+		result = ClickableElementDetector.is_interactive(node)
+		self._clickable_cache[backend_node_id] = result
+		return result
 
 	@time_execution_sync('--create_simplified_tree')
 	def _create_simplified_tree(self, node: EnhancedDOMTreeNode, is_iframe_content: bool = False) -> SimplifiedNode | None:
@@ -226,27 +231,88 @@ class DOMTreeSerializer:
 			self._collect_interactive_elements(child, elements)
 
 	def _assign_interactive_indices_and_mark_new_nodes(self, node: SimplifiedNode | None) -> None:
-		"""Assign interactive indices to clickable elements."""
+		"""Assign interactive indices to clickable elements with optimized performance."""
 		if not node:
 			return
 
-		# Assign index to clickable elements
-		should_assign_index = not node.ignored_by_paint_order and self._is_interactive_cached(node.original_node)
+		# Pre-compute the previous backend node IDs set once to avoid O(n²) complexity
+		previous_backend_node_ids: set[int] | None = None
+		if self._previous_cached_selector_map:
+			previous_backend_node_ids = {node.backend_node_id for node in self._previous_cached_selector_map.values()}
 
-		if should_assign_index:
-			node.interactive_index = self._interactive_counter
-			self._selector_map[self._interactive_counter] = node.original_node
-			self._interactive_counter += 1
+		# Use iterative traversal with stack to avoid deep recursion and improve performance
+		stack = [node]
+		
+		while stack:
+			current_node = stack.pop()
+			
+			# Early filtering: skip nodes that are clearly not interactive
+			# This avoids expensive interactivity checks for obviously non-interactive elements
+			if (not current_node.ignored_by_paint_order and 
+				self._is_potentially_interactive(current_node.original_node)):
+				
+				# Only do the expensive interactivity check for potentially interactive nodes
+				if self._is_interactive_cached(current_node.original_node):
+					current_node.interactive_index = self._interactive_counter
+					self._selector_map[self._interactive_counter] = current_node.original_node
+					self._interactive_counter += 1
 
-			# Check if node is new
-			if self._previous_cached_selector_map:
-				previous_backend_node_ids = {node.backend_node_id for node in self._previous_cached_selector_map.values()}
-				if node.original_node.backend_node_id not in previous_backend_node_ids:
-					node.is_new = True
+					# Check if node is new using pre-computed set
+					if (previous_backend_node_ids is not None and 
+						current_node.original_node.backend_node_id not in previous_backend_node_ids):
+						current_node.is_new = True
 
-		# Process children
-		for child in node.children:
-			self._assign_interactive_indices_and_mark_new_nodes(child)
+			# Add children to stack for processing (reverse order to maintain original traversal order)
+			for child in reversed(current_node.children):
+				stack.append(child)
+
+	def _is_potentially_interactive(self, node: EnhancedDOMTreeNode) -> bool:
+		"""Fast pre-filter to identify nodes that might be interactive.
+		
+		This avoids expensive full interactivity checks on obviously non-interactive nodes.
+		Returns True for nodes that might be interactive, False for nodes that definitely aren't.
+		"""
+		# Skip non-element nodes
+		if node.node_type != NodeType.ELEMENT_NODE:
+			return False
+
+		# Skip structural elements that are never interactive
+		if node.tag_name in {'html', 'body', 'head', 'meta', 'link', 'script', 'style', 'title'}:
+			return False
+
+		# Definitely interactive tags
+		if node.tag_name in {'button', 'input', 'select', 'textarea', 'a', 'label', 'details', 'summary', 'option', 'optgroup'}:
+			return True
+
+		# Check for obviously interactive attributes (quick checks first)
+		if node.attributes:
+			# Interactive event handlers
+			if any(attr in node.attributes for attr in ['onclick', 'onmousedown', 'onmouseup', 'onkeydown', 'onkeyup']):
+				return True
+			
+			# Tabindex makes any element focusable
+			if 'tabindex' in node.attributes:
+				return True
+				
+			# Interactive roles
+			role = node.attributes.get('role', '').lower()
+			if role in {'button', 'link', 'menuitem', 'option', 'radio', 'checkbox', 'tab', 'textbox', 'combobox', 'slider', 'spinbutton'}:
+				return True
+
+		# Check cursor style for pointer (indicates clickability)
+		if (node.snapshot_node and 
+			node.snapshot_node.cursor_style and 
+			node.snapshot_node.cursor_style == 'pointer'):
+			return True
+
+		# Check accessibility role for interactivity
+		if (node.ax_node and 
+			node.ax_node.role and 
+			node.ax_node.role in {'button', 'link', 'menuitem', 'option', 'radio', 'checkbox', 'tab', 'textbox', 'combobox', 'slider', 'spinbutton', 'listbox'}):
+			return True
+
+		# For remaining nodes, we need the full check (mostly divs with click handlers, etc.)
+		return True
 
 	@staticmethod
 	def serialize_tree(node: SimplifiedNode | None, include_attributes: list[str], depth: int = 0) -> str:
