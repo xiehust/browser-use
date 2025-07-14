@@ -226,27 +226,37 @@ class DOMTreeSerializer:
 			self._collect_interactive_elements(child, elements)
 
 	def _assign_interactive_indices_and_mark_new_nodes(self, node: SimplifiedNode | None) -> None:
-		"""Assign interactive indices to clickable elements."""
+		"""Assign interactive indices to clickable elements with performance optimizations."""
 		if not node:
 			return
 
-		# Assign index to clickable elements
-		should_assign_index = not node.ignored_by_paint_order and self._is_interactive_cached(node.original_node)
+		# PERFORMANCE OPTIMIZATION: Pre-compute previous backend node IDs once
+		previous_backend_node_ids = None
+		if self._previous_cached_selector_map:
+			previous_backend_node_ids = {node.backend_node_id for node in self._previous_cached_selector_map.values()}
 
-		if should_assign_index:
-			node.interactive_index = self._interactive_counter
-			self._selector_map[self._interactive_counter] = node.original_node
-			self._interactive_counter += 1
+		# Use iterative approach with stack to avoid recursion overhead for large trees
+		stack = [node]
+		
+		while stack:
+			current_node = stack.pop()
+			
+			# Assign index to clickable elements
+			should_assign_index = not current_node.ignored_by_paint_order and self._is_interactive_cached(current_node.original_node)
 
-			# Check if node is new
-			if self._previous_cached_selector_map:
-				previous_backend_node_ids = {node.backend_node_id for node in self._previous_cached_selector_map.values()}
-				if node.original_node.backend_node_id not in previous_backend_node_ids:
-					node.is_new = True
+			if should_assign_index:
+				current_node.interactive_index = self._interactive_counter
+				self._selector_map[self._interactive_counter] = current_node.original_node
+				self._interactive_counter += 1
 
-		# Process children
-		for child in node.children:
-			self._assign_interactive_indices_and_mark_new_nodes(child)
+				# Check if node is new (only if we have previous data)
+				if previous_backend_node_ids is not None:
+					if current_node.original_node.backend_node_id not in previous_backend_node_ids:
+						current_node.is_new = True
+
+			# Add children to stack (in reverse order to maintain traversal order)
+			for child in reversed(current_node.children):
+				stack.append(child)
 
 	@staticmethod
 	def serialize_tree(node: SimplifiedNode | None, include_attributes: list[str], depth: int = 0) -> str:

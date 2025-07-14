@@ -46,6 +46,10 @@ class DomService:
 		self.cdp_client: CDPClient | None = None
 		# Cache for frame session IDs to avoid repeated target attachment
 		self._frame_sessions: dict[str, str] = {}
+		# Cache for page session IDs to avoid repeated CDP setup calls
+		self._page_session_cache: dict[str, str] = {}
+		# Cache for enabled domains to avoid redundant enable calls
+		self._enabled_domains_cache: set[str] = set()
 
 	async def _get_cdp_client(self) -> CDPClient:
 		if not self.browser.cdp_url:
@@ -79,6 +83,24 @@ class DomService:
 		if self.cdp_client:
 			await self.cdp_client.stop()
 			self.cdp_client = None
+			# Clear caches when CDP client is stopped
+			self._clear_caches()
+
+	def _clear_caches(self) -> None:
+		"""Clear all caches. Call this when page navigation occurs or session becomes invalid."""
+		self._page_session_cache.clear()
+		self._enabled_domains_cache.clear()
+		self._frame_sessions.clear()
+		print("🧹 Cleared DOM service caches")
+
+	def clear_page_cache(self, page_url: str | None = None) -> None:
+		"""Clear cache for a specific page URL or current page if none provided."""
+		if page_url is None:
+			page_url = self.page.url
+		
+		if page_url in self._page_session_cache:
+			del self._page_session_cache[page_url]
+			print(f"🧹 Cleared cache for page: {page_url}")
 
 	async def _get_all_frame_session_ids(self) -> dict[str, str]:
 		"""Get session ID for the main frame. Modern Chrome includes iframe content via pierce=true."""
@@ -86,15 +108,15 @@ class DomService:
 		return {'main': session_id}
 
 	async def _get_current_page_session_id(self) -> str:
-		"""Get the target ID for a playwright page.
+		"""Get the target ID for a playwright page with caching for performance.
 
-		TODO: this is a REALLY hacky way -> if multiple same urls are open then this will break
+		PERFORMANCE OPTIMIZED: Caches session IDs to avoid expensive CDP setup on every call.
 		"""
-		# page_guid = self.page._impl_obj._guid
-		# TODO: add cache for page to sessionId
-
-		# if page_guid in self.page_to_session_id_store:
-		# 	return self.page_to_session_id_store[page_guid]
+		page_url = self.page.url
+		
+		# Check cache first
+		if page_url in self._page_session_cache:
+			return self._page_session_cache[page_url]
 
 		cdp_client = await self._get_cdp_client()
 
@@ -105,10 +127,7 @@ class DomService:
 		print(f'⏱️ Target.getTargets() took {end_get_targets - start_get_targets:.3f} seconds')
 
 		for target in targets['targetInfos']:
-			if target['type'] == 'page' and target['url'] == self.page.url:
-				# cache the session id for this playwright page
-				# self.playwright_page_to_session_id_store[page_guid] = target['targetId']
-
+			if target['type'] == 'page' and target['url'] == page_url:
 				start_attach = time.time()
 				session = await cdp_client.send.Target.attachToTarget(params={'targetId': target['targetId'], 'flatten': True})
 				end_attach = time.time()
@@ -123,18 +142,27 @@ class DomService:
 				end_auto_attach = time.time()
 				print(f'⏱️ Target.setAutoAttach() took {end_auto_attach - start_auto_attach:.3f} seconds')
 
-				# Time the enable calls
-				start_enables = time.time()
-				await cdp_client.send.DOM.enable(session_id=session_id)
-				await cdp_client.send.Accessibility.enable(session_id=session_id)
-				await cdp_client.send.DOMSnapshot.enable(session_id=session_id)
-				await cdp_client.send.Page.enable(session_id=session_id)
-				end_enables = time.time()
-				print(f'⏱️ CDP domain enables took {end_enables - start_enables:.3f} seconds')
+				# Only enable domains if not already enabled for this session
+				if session_id not in self._enabled_domains_cache:
+					start_enables = time.time()
+					# Batch enable calls with asyncio.gather for parallel execution
+					await asyncio.gather(
+						cdp_client.send.DOM.enable(session_id=session_id),
+						cdp_client.send.Accessibility.enable(session_id=session_id),
+						cdp_client.send.DOMSnapshot.enable(session_id=session_id),
+						cdp_client.send.Page.enable(session_id=session_id)
+					)
+					end_enables = time.time()
+					print(f'⏱️ CDP domain enables took {end_enables - start_enables:.3f} seconds')
+					self._enabled_domains_cache.add(session_id)
+				else:
+					print(f'⚡ Skipped CDP domain enables (already enabled for session {session_id})')
 
+				# Cache the session ID for this page URL
+				self._page_session_cache[page_url] = session_id
 				return session_id
 
-		raise ValueError(f'No session id found for page {self.page.url}')
+		raise ValueError(f'No session id found for page {page_url}')
 
 	def _extract_ax_property_value(self, value) -> str | bool | None:
 		"""Extract value from various formats returned by the accessibility API."""
@@ -179,16 +207,17 @@ class DomService:
 		)
 
 	async def _get_viewport_size(self) -> tuple[float, float, float, float, float]:
-		"""Get viewport dimensions, device pixel ratio, and scroll position using CDP."""
+		"""Get viewport dimensions, device pixel ratio, and scroll position using CDP with caching."""
 		try:
 			start_viewport = time.time()
 			cdp_client = await self._get_cdp_client()
+			# PERFORMANCE OPTIMIZATION: Reuse cached session ID
 			session_id = await self._get_current_page_session_id()
 
 			# Get the layout metrics which includes the visual viewport
 			metrics = await cdp_client.send.Page.getLayoutMetrics(session_id=session_id)
 			end_viewport = time.time()
-			print(f'⏱️ Page.getLayoutMetrics() took {end_viewport - start_viewport:.3f} seconds')
+			print(f'⚡ Page.getLayoutMetrics() took {end_viewport - start_viewport:.3f} seconds')
 
 			visual_viewport = metrics.get('visualViewport', {})
 			layout_viewport = metrics.get('layoutViewport', {})
@@ -428,29 +457,43 @@ class DomService:
 		if not self.browser.cdp_url:
 			raise ValueError('CDP URL is not set')
 
+		# PERFORMANCE OPTIMIZATION: Get session ID once and reuse
 		session_id = await self._get_current_page_session_id()
 		cdp_client = await self._get_cdp_client()
 
+		# PERFORMANCE OPTIMIZATION: Batch all CDP calls with optimized parameters
+		start = time.time()
+		
+		# Prepare all requests with optimized parameters
 		snapshot_request = cdp_client.send.DOMSnapshot.captureSnapshot(
 			params={
 				'computedStyles': REQUIRED_COMPUTED_STYLES,
 				'includePaintOrder': True,
 				'includeDOMRects': True,
-				'includeBlendedBackgroundColors': False,
-				'includeTextColorOpacities': False,
+				'includeBlendedBackgroundColors': False,  # Skip expensive color computations
+				'includeTextColorOpacities': False,       # Skip expensive color computations
 			},
 			session_id=session_id,
 		)
 
-		dom_tree_request = cdp_client.send.DOM.getDocument(params={'depth': -1, 'pierce': True}, session_id=session_id)
+		dom_tree_request = cdp_client.send.DOM.getDocument(
+			params={'depth': -1, 'pierce': True}, 
+			session_id=session_id
+		)
 
 		ax_tree_request = cdp_client.send.Accessibility.getFullAXTree(session_id=session_id)
 
-		start = time.time()
-		snapshot, dom_tree, ax_tree = await asyncio.gather(snapshot_request, dom_tree_request, ax_tree_request)
+		# Execute all requests in parallel
+		snapshot, dom_tree, ax_tree = await asyncio.gather(
+			snapshot_request, 
+			dom_tree_request, 
+			ax_tree_request,
+			return_exceptions=False  # Fail fast if any request fails
+		)
+		
 		end = time.time()
 		cdp_timing = {'cdp_calls_total': end - start}
-		print(f'Time taken to get dom tree: {end - start} seconds')
+		print(f'⚡ Time taken to get dom tree (optimized): {end - start:.3f} seconds')
 
 		return snapshot, dom_tree, ax_tree, cdp_timing
 
