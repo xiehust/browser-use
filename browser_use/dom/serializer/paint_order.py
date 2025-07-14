@@ -1,9 +1,8 @@
 from collections import defaultdict
 from dataclasses import dataclass
 
-from observability import observe_debug
-
 from browser_use.dom.views import SimplifiedNode
+from browser_use.observability import observe_debug
 from browser_use.utils import time_execution_sync
 
 """

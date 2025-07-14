@@ -9,7 +9,6 @@ from cdp_use.cdp.accessibility.types import AXNode
 from cdp_use.cdp.dom.commands import GetDocumentReturns
 from cdp_use.cdp.dom.types import Node
 from cdp_use.cdp.domsnapshot.commands import CaptureSnapshotReturns
-from observability import observe_debug
 
 from browser_use.dom.enhanced_snapshot import (
 	REQUIRED_COMPUTED_STYLES,
@@ -23,6 +22,7 @@ from browser_use.dom.views import (
 	NodeType,
 	SerializedDOMState,
 )
+from browser_use.observability import observe_debug
 from browser_use.utils import time_execution_async, time_execution_sync
 
 if TYPE_CHECKING:
