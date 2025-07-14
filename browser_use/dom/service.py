@@ -335,7 +335,14 @@ class DomService:
 							break  # Use first available iframe context for now
 							# TODO: Better matching between iframe elements and their frame contexts
 
-				dom_tree_node.content_document = _construct_enhanced_node(node['contentDocument'], content_frame_context)
+				# Process the content document
+				content_doc = _construct_enhanced_node(node['contentDocument'], content_frame_context)
+
+				# CRITICAL FIX: Set up proper parent relationship for iframe content
+				# The content document's parent should be the iframe element, not None
+				# This enables elements inside iframes to trace back to the iframe container
+				content_doc.parent_node = dom_tree_node
+				dom_tree_node.content_document = content_doc
 
 			if 'shadowRoots' in node and node['shadowRoots']:
 				dom_tree_node.shadow_roots = []
