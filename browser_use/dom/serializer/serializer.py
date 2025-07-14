@@ -26,6 +26,7 @@ class DOMTreeSerializer:
 		self._iframe_count = 0  # Counter for unnamed iframes
 
 	@time_execution_sync('--serialize_accessible_elements')
+	@observe_debug(ignore_input=True, ignore_output=True, name='serialize_accessible_elements')
 	def serialize_accessible_elements(self) -> tuple[SerializedDOMState, dict[str, float]]:
 		import time
 
@@ -224,8 +225,6 @@ class DOMTreeSerializer:
 		for child in node.children:
 			self._collect_interactive_elements(child, elements)
 
-	@time_execution_sync('--assign_interactive_indices_and_mark_new_nodes')
-	@observe_debug(ignore_input=True, ignore_output=True, name='assign_interactive_indices_and_mark_new_nodes')
 	def _assign_interactive_indices_and_mark_new_nodes(self, node: SimplifiedNode | None) -> None:
 		"""Assign interactive indices to clickable elements."""
 		if not node:
