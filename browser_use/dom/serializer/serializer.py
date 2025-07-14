@@ -12,7 +12,7 @@ from browser_use.utils import time_execution_sync
 class DOMTreeSerializer:
 	"""Serializes enhanced DOM trees to string format."""
 
-	def __init__(self, root_node: EnhancedDOMTreeNode, previous_cached_state: SerializedDOMState | None = None):
+	def __init__(self, root_node: EnhancedDOMTreeNode, previous_cached_state: SerializedDOMState | None = None, fast_mode: bool = False):
 		self.root_node = root_node
 		self._interactive_counter = 1
 		self._selector_map: DOMSelectorMap = {}
@@ -24,6 +24,14 @@ class DOMTreeSerializer:
 		# Track frame context for iframe piercing
 		self._frame_stack: list[str] = []  # Stack of frame identifiers
 		self._iframe_count = 0  # Counter for unnamed iframes
+		
+		# Pre-compute cached backend node IDs set once to avoid repeated set creation
+		self._cached_backend_node_ids: set[int] | None = None
+		if self._previous_cached_selector_map:
+			self._cached_backend_node_ids = {node.backend_node_id for node in self._previous_cached_selector_map.values()}
+		
+		# Fast mode skips expensive operations like paint order calculation
+		self._fast_mode = fast_mode
 
 	@time_execution_sync('--serialize_accessible_elements')
 	@observe_debug(ignore_input=True, ignore_output=True, name='serialize_accessible_elements')
@@ -40,7 +48,13 @@ class DOMTreeSerializer:
 		self._frame_stack = []  # Reset frame stack
 		self._iframe_count = 0  # Reset iframe counter
 
-		# Step 1: Create simplified tree (includes clickable element detection)
+		# Pre-compute interactive elements for the entire tree (new optimization)
+		start_batch = time.time()
+		self._batch_compute_interactive_elements(self.root_node)
+		end_batch = time.time()
+		self.timing_info['batch_compute_interactive'] = end_batch - start_batch
+
+		# Step 1: Create simplified tree (interactive detection now cached)
 		start_step1 = time.time()
 		simplified_tree = self._create_simplified_tree(self.root_node)
 		end_step1 = time.time()
@@ -54,7 +68,7 @@ class DOMTreeSerializer:
 
 		# Step 3: Remove elements based on paint order
 		start_step3 = time.time()
-		if optimized_tree:
+		if optimized_tree and not self._fast_mode:
 			PaintOrderRemover(optimized_tree).calculate_paint_order()
 		end_step3 = time.time()
 		self.timing_info['calculate_paint_order'] = end_step3 - start_step3
@@ -78,6 +92,17 @@ class DOMTreeSerializer:
 			self._clickable_cache[node.backend_node_id] = result
 
 		return self._clickable_cache[node.backend_node_id]
+
+	@time_execution_sync('--batch_compute_interactive_elements')
+	def _batch_compute_interactive_elements(self, node: EnhancedDOMTreeNode) -> None:
+		"""Pre-compute interactive status for all nodes in the tree to reduce overhead."""
+		if node.backend_node_id not in self._clickable_cache:
+			self._clickable_cache[node.backend_node_id] = ClickableElementDetector.is_interactive(node)
+		
+		# Recursively process children
+		if node.children_nodes:
+			for child in node.children_nodes:
+				self._batch_compute_interactive_elements(child)
 
 	@time_execution_sync('--create_simplified_tree')
 	def _create_simplified_tree(self, node: EnhancedDOMTreeNode, is_iframe_content: bool = False) -> SimplifiedNode | None:
@@ -239,9 +264,8 @@ class DOMTreeSerializer:
 			self._interactive_counter += 1
 
 			# Check if node is new
-			if self._previous_cached_selector_map:
-				previous_backend_node_ids = {node.backend_node_id for node in self._previous_cached_selector_map.values()}
-				if node.original_node.backend_node_id not in previous_backend_node_ids:
+			if self._cached_backend_node_ids:
+				if node.original_node.backend_node_id not in self._cached_backend_node_ids:
 					node.is_new = True
 
 		# Process children

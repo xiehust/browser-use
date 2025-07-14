@@ -363,7 +363,7 @@ class DomService:
 
 	@time_execution_async('--get_all_trees_with_iframe_support')
 	async def _get_all_trees_with_iframe_support(
-		self,
+		self, include_paint_order: bool = True, include_dom_rects: bool = True
 	) -> tuple[dict[str, tuple[GetDocumentReturns, GetFullAXTreeReturns, CaptureSnapshotReturns]], dict[str, float]]:
 		"""Get DOM, AX, and Snapshot trees with iframe content included via pierce=true."""
 		if not self.browser.cdp_url:
@@ -380,8 +380,8 @@ class DomService:
 		snapshot_request = cdp_client.send.DOMSnapshot.captureSnapshot(
 			params={
 				'computedStyles': REQUIRED_COMPUTED_STYLES,
-				'includePaintOrder': True,
-				'includeDOMRects': True,
+				'includePaintOrder': include_paint_order,
+				'includeDOMRects': include_dom_rects,
 				'includeBlendedBackgroundColors': False,
 				'includeTextColorOpacities': False,
 			},
@@ -456,10 +456,15 @@ class DomService:
 
 	@time_execution_async('--get_dom_tree')
 	@observe_debug(ignore_input=True, ignore_output=True, name='get_dom_tree')
-	async def get_dom_tree(self) -> tuple[EnhancedDOMTreeNode, dict[str, float]]:
+	async def get_dom_tree(self, fast_mode: bool = False) -> tuple[EnhancedDOMTreeNode, dict[str, float]]:
 		"""Get enhanced DOM tree with iframe piercing support."""
-		# Use the new iframe-aware method
-		all_frame_data, cdp_timing = await self._get_all_trees_with_iframe_support()
+		# Use the new iframe-aware method with optional fast mode
+		include_paint_order = not fast_mode  # Paint order is expensive but needed for overlap detection
+		include_dom_rects = True  # DOM rects are always needed for visibility
+		all_frame_data, cdp_timing = await self._get_all_trees_with_iframe_support(
+			include_paint_order=include_paint_order,
+			include_dom_rects=include_dom_rects
+		)
 
 		start = time.time()
 		enhanced_dom_tree = await self._build_enhanced_dom_tree(all_frame_data)
@@ -472,20 +477,65 @@ class DomService:
 		all_timing = {**cdp_timing, **build_tree_timing}
 		return enhanced_dom_tree, all_timing
 
+	def _should_use_fast_mode(self, dom_tree: EnhancedDOMTreeNode) -> bool:
+		"""Determine if fast mode should be used based on page complexity."""
+		def count_nodes(node: EnhancedDOMTreeNode) -> int:
+			count = 1
+			if node.children_nodes:
+				for child in node.children_nodes:
+					count += count_nodes(child)
+			return count
+		
+		total_nodes = count_nodes(dom_tree)
+		# Use fast mode for pages with more than 5000 nodes
+		return total_nodes > 5000
+
+	@time_execution_async('--get_serialized_dom_tree_auto')
+	async def get_serialized_dom_tree_auto(
+		self, previous_cached_state: SerializedDOMState | None = None
+	) -> tuple[SerializedDOMState, dict[str, float]]:
+		"""Get serialized DOM tree with automatic fast mode selection based on complexity."""
+		# First get the tree without paint order to check complexity
+		enhanced_dom_tree, dom_timing = await self.get_dom_tree(fast_mode=True)
+		
+		# Determine if we should use fast mode
+		use_fast_mode = self._should_use_fast_mode(enhanced_dom_tree)
+		
+		if use_fast_mode:
+			print(f'📊 Large page detected, using fast mode (skipping paint order calculations)')
+			# Use the already fetched tree
+			start = time.time()
+			serialized_dom_state, serializer_timing = DOMTreeSerializer(
+				enhanced_dom_tree, previous_cached_state, fast_mode=True
+			).serialize_accessible_elements()
+			end = time.time()
+			serialize_total_timing = {'serialize_dom_tree_total': end - start}
+			print(f'Time taken to serialize dom tree (fast mode): {end - start} seconds')
+			
+			# Combine all timing info
+			all_timing = {**dom_timing, **serializer_timing, **serialize_total_timing}
+			return serialized_dom_state, all_timing
+		else:
+			# Re-fetch with full features for smaller pages
+			print(f'📊 Small page detected, using full mode (including paint order)')
+			return await self.get_serialized_dom_tree(previous_cached_state, fast_mode=False)
+
 	@time_execution_async('--get_serialized_dom_tree')
 	@observe_debug(ignore_input=True, ignore_output=True, name='get_serialized_dom_tree')
 	async def get_serialized_dom_tree(
-		self, previous_cached_state: SerializedDOMState | None = None
+		self, previous_cached_state: SerializedDOMState | None = None, fast_mode: bool = False
 	) -> tuple[SerializedDOMState, dict[str, float]]:
 		"""Get the serialized DOM tree representation for LLM consumption.
 
-		TODO: this is a bit of a hack, we should probably have a better way to do this
+		Args:
+			previous_cached_state: Previous DOM state for change detection
+			fast_mode: Skip expensive paint order calculations for faster processing
 		"""
-		enhanced_dom_tree, dom_timing = await self.get_dom_tree()
+		enhanced_dom_tree, dom_timing = await self.get_dom_tree(fast_mode=fast_mode)
 
 		start = time.time()
 		serialized_dom_state, serializer_timing = DOMTreeSerializer(
-			enhanced_dom_tree, previous_cached_state
+			enhanced_dom_tree, previous_cached_state, fast_mode=fast_mode
 		).serialize_accessible_elements()
 
 		end = time.time()

@@ -18,32 +18,15 @@ from browser_use.utils import time_execution_sync
 
 # Only the ESSENTIAL computed styles for interactivity and visibility detection
 REQUIRED_COMPUTED_STYLES = [
-	# Essential for visibility
+	# Essential for visibility detection (reduced from 24 to 8 properties)
 	'display',
-	'visibility',
+	'visibility', 
 	'opacity',
-	'position',
-	'z-index',
 	'pointer-events',
 	'cursor',
+	'position',
+	'z-index',
 	'overflow',
-	'overflow-x',
-	'overflow-y',
-	'width',
-	'height',
-	'top',
-	'left',
-	'right',
-	'bottom',
-	'transform',
-	'clip',
-	'clip-path',
-	'user-select',
-	'background-color',
-	'color',
-	'border',
-	'margin',
-	'padding',
 ]
 
 
