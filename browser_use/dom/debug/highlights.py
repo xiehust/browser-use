@@ -3,8 +3,7 @@
 import json
 import traceback
 
-from browser.session import require_healthy_browser
-
+from browser_use.browser.session import require_healthy_browser
 from browser_use.dom.service import DomService
 from browser_use.dom.views import DOMSelectorMap
 from browser_use.observability import observe_debug
