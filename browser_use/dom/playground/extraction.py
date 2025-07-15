@@ -112,8 +112,8 @@ async def test_focus_vs_all_elements():
 		while True:
 			try:
 				page = await browser_session.get_current_page()
-				async with DomService(browser_session, page) as dom_service:
-					await remove_highlighting_script(dom_service)
+				dom_service = DomService(browser_session)
+				await remove_highlighting_script(dom_service)
 
 				# 	all_elements_state = await dom_service.get_serialized_dom_tree()
 
@@ -137,14 +137,13 @@ async def test_focus_vs_all_elements():
 
 				# Get detailed timing info from DOM service
 				print('\nGetting detailed DOM timing...')
-				async with DomService(browser_session, page) as dom_service:
-					serialized_state, timing_info = await dom_service.get_serialized_dom_tree()
+				serialized_state, timing_info = await dom_service.get_serialized_dom_tree()
 
 				# Combine all timing info
 				all_timing = {'get_state_summary_total': get_state_time, **timing_info}
 
-				async with DomService(browser_session, page) as dom_service:
-					await inject_highlighting_script(dom_service, all_elements_state.dom_state.selector_map)
+				dom_service = DomService(browser_session)
+				await inject_highlighting_script(dom_service, all_elements_state.dom_state.selector_map)
 
 				selector_map = all_elements_state.dom_state.selector_map
 				total_elements = len(selector_map.keys())

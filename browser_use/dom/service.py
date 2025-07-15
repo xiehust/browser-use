@@ -1,9 +1,8 @@
 import asyncio
+import logging
 import time
 from typing import TYPE_CHECKING
 
-import httpx
-from cdp_use import CDPClient
 from cdp_use.cdp.accessibility.commands import GetFullAXTreeReturns
 from cdp_use.cdp.accessibility.types import AXNode
 from cdp_use.cdp.dom.commands import GetDocumentReturns
@@ -25,7 +24,8 @@ from browser_use.dom.views import (
 
 if TYPE_CHECKING:
 	from browser_use.browser.session import BrowserSession
-	from browser_use.browser.types import Page
+
+logger = logging.getLogger(__name__)
 
 
 class DomService:
@@ -37,45 +37,10 @@ class DomService:
 	TODO: currently we start a new websocket connection PER STEP, we should definitely keep this persistent
 	"""
 
-	def __init__(self, browser: 'BrowserSession', page: 'Page'):
+	def __init__(self, browser: 'BrowserSession'):
 		self.browser = browser
-		self.page = page
 
-		self.cdp_client: CDPClient | None = None
-		# self.playwright_page_to_session_id_store: dict[str, str] = {}
-
-	async def _get_cdp_client(self) -> CDPClient:
-		if not self.browser.cdp_url:
-			raise ValueError('CDP URL is not set')
-
-		# TODO: MOVE THIS TO BROWSER SESSION (or sth idk)
-		# If the cdp_url is already a websocket URL, use it as-is.
-		if self.browser.cdp_url.startswith('ws'):
-			ws_url = self.browser.cdp_url
-		else:
-			# Otherwise, treat it as the DevTools HTTP root and fetch the websocket URL.
-			url = self.browser.cdp_url.rstrip('/')
-			if not url.endswith('/json/version'):
-				url = url + '/json/version'
-			async with httpx.AsyncClient() as client:
-				version_info = await client.get(url)
-				ws_url = version_info.json()['webSocketDebuggerUrl']
-
-		if self.cdp_client is None:
-			self.cdp_client = CDPClient(ws_url)
-			await self.cdp_client.start()
-
-		return self.cdp_client
-
-	async def __aenter__(self):
-		await self._get_cdp_client()
-		return self
-
-	# on self destroy -> stop the cdp client
-	async def __aexit__(self, exc_type, exc_value, traceback):
-		if self.cdp_client:
-			await self.cdp_client.stop()
-			self.cdp_client = None
+		self.session_id_initialized_domains_cache: dict[str, bool] = {}
 
 	async def _get_current_page_session_id(self) -> str:
 		"""Get the target ID for a playwright page.
@@ -88,29 +53,29 @@ class DomService:
 		# if page_guid in self.page_to_session_id_store:
 		# 	return self.page_to_session_id_store[page_guid]
 
-		cdp_client = await self._get_cdp_client()
+		cdp_client = await self.browser.get_cdp_client()
+		session_id = await self.browser.get_current_page_cdp_session_id()
 
-		targets = await cdp_client.send.Target.getTargets()
-		for target in targets['targetInfos']:
-			if target['type'] == 'page' and target['url'] == self.page.url:
-				# cache the session id for this playwright page
-				# self.playwright_page_to_session_id_store[page_guid] = target['targetId']
+		if session_id in self.session_id_initialized_domains_cache:
+			return session_id
 
-				session = await cdp_client.send.Target.attachToTarget(params={'targetId': target['targetId'], 'flatten': True})
-				session_id = session['sessionId']
+		start_auto_attach = time.time()
+		await cdp_client.send.Target.setAutoAttach(params={'autoAttach': True, 'waitForDebuggerOnStart': False, 'flatten': True})
+		end_auto_attach = time.time()
+		logger.debug(f'⏱️ Target.setAutoAttach() took {end_auto_attach - start_auto_attach:.3f} seconds')
 
-				await cdp_client.send.Target.setAutoAttach(
-					params={'autoAttach': True, 'waitForDebuggerOnStart': False, 'flatten': True}
-				)
+		# Time the enable calls
+		start_enables = time.time()
+		await cdp_client.send.DOM.enable(session_id=session_id)
+		await cdp_client.send.Accessibility.enable(session_id=session_id)
+		await cdp_client.send.DOMSnapshot.enable(session_id=session_id)
+		await cdp_client.send.Page.enable(session_id=session_id)
+		end_enables = time.time()
+		logger.debug(f'⏱️ CDP domain enables took {end_enables - start_enables:.3f} seconds')
 
-				await cdp_client.send.DOM.enable(session_id=session_id)
-				await cdp_client.send.Accessibility.enable(session_id=session_id)
-				await cdp_client.send.DOMSnapshot.enable(session_id=session_id)
-				await cdp_client.send.Page.enable(session_id=session_id)
+		self.session_id_initialized_domains_cache[session_id] = True
 
-				return session_id
-
-		raise ValueError(f'No session id found for page {self.page.url}')
+		return session_id
 
 	def _build_enhanced_ax_node(self, ax_node: AXNode) -> EnhancedAXNode:
 		properties: list[EnhancedAXProperty] | None = None
@@ -142,7 +107,7 @@ class DomService:
 	async def _get_viewport_size(self) -> tuple[float, float, float, float, float]:
 		"""Get viewport dimensions, device pixel ratio, and scroll position using CDP."""
 		try:
-			cdp_client = await self._get_cdp_client()
+			cdp_client = await self.browser.get_cdp_client()
 			session_id = await self._get_current_page_session_id()
 
 			# Get the layout metrics which includes the visual viewport
@@ -172,7 +137,7 @@ class DomService:
 
 			return float(width), float(height), float(device_pixel_ratio), float(scroll_x), float(scroll_y)
 		except Exception as e:
-			print(f'⚠️  Viewport size detection failed: {e}')
+			logger.warning(f'⚠️  Viewport size detection failed: {e}')
 			# Fallback to default viewport size
 			return 1920.0, 1080.0, 1.0, 0.0, 0.0
 
@@ -267,7 +232,7 @@ class DomService:
 			raise ValueError('CDP URL is not set')
 
 		session_id = await self._get_current_page_session_id()
-		cdp_client = await self._get_cdp_client()
+		cdp_client = await self.browser.get_cdp_client()
 
 		snapshot_request = cdp_client.send.DOMSnapshot.captureSnapshot(
 			params={
@@ -288,7 +253,7 @@ class DomService:
 		snapshot, dom_tree, ax_tree = await asyncio.gather(snapshot_request, dom_tree_request, ax_tree_request)
 		end = time.time()
 		cdp_timing = {'cdp_calls_total': end - start}
-		print(f'Time taken to get dom tree: {end - start} seconds')
+		logger.debug(f'⏱️ Time taken to get dom tree: {end - start} seconds')
 
 		return snapshot, dom_tree, ax_tree, cdp_timing
 
@@ -300,7 +265,7 @@ class DomService:
 		end = time.time()
 
 		build_tree_timing = {'build_enhanced_dom_tree': end - start}
-		print(f'Time taken to build enhanced dom tree: {end - start} seconds')
+		logger.debug(f'⏱️ Time taken to build enhanced dom tree: {end - start} seconds')
 
 		# Combine timing info
 		all_timing = {**cdp_timing, **build_tree_timing}
@@ -322,7 +287,7 @@ class DomService:
 
 		end = time.time()
 		serialize_total_timing = {'serialize_dom_tree_total': end - start}
-		print(f'Time taken to serialize dom tree: {end - start} seconds')
+		logger.debug(f'⏱️ Time taken to serialize dom tree: {end - start} seconds')
 
 		# Combine all timing info
 		all_timing = {**dom_timing, **serializer_timing, **serialize_total_timing}
