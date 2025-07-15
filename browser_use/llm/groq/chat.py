@@ -27,7 +27,7 @@ from browser_use.llm.messages import BaseMessage
 from browser_use.llm.views import ChatInvokeUsage
 
 GroqVerifiedModels = Literal[
-	'meta-llama/llama-4-maverick-17b-128e-instruct', 'meta-llama/llama-4-scout-17b-16e-instruct', 'qwen/qwen3-32b'
+	'meta-llama/llama-4-maverick-17b-128e-instruct', 'meta-llama/llama-4-scout-17b-16e-instruct', 'qwen/qwen3-32b', 'moonshotai/kimi-k2-instruct'
 ]
 
 T = TypeVar('T', bound=BaseModel)
