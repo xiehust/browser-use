@@ -178,10 +178,15 @@ class DOMTreeSerializer:
 			self._selector_map[self._interactive_counter] = node.original_node
 			self._interactive_counter += 1
 
-			# Check if node is new
+			# Check if node is new (optimized with cached set)
 			if self._previous_cached_selector_map:
-				previous_backend_node_ids = {node.backend_node_id for node in self._previous_cached_selector_map.values()}
-				if node.original_node.backend_node_id not in previous_backend_node_ids:
+				# Create cached set once instead of rebuilding for each node
+				if not hasattr(self, '_previous_backend_node_ids'):
+					self._previous_backend_node_ids = {
+						node.backend_node_id for node in self._previous_cached_selector_map.values()
+					}
+
+				if node.original_node.backend_node_id not in self._previous_backend_node_ids:
 					node.is_new = True
 
 		# Process children

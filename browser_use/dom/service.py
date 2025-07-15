@@ -37,12 +37,21 @@ class DomService:
 	TODO: currently we start a new websocket connection PER STEP, we should definitely keep this persistent
 	"""
 
+	# Class-level caches to persist across instances
+	_page_session_cache: dict[str, str] = {}
+	_enabled_domains_cache: dict[str, set[str]] = {}
+
+	@classmethod
+	def clear_cache(cls) -> None:
+		"""Clear all caches. Useful for testing or when sessions become invalid."""
+		cls._page_session_cache.clear()
+		cls._enabled_domains_cache.clear()
+
 	def __init__(self, browser: 'BrowserSession', page: 'Page'):
 		self.browser = browser
 		self.page = page
 
 		self.cdp_client: CDPClient | None = None
-		# self.playwright_page_to_session_id_store: dict[str, str] = {}
 
 	async def _get_cdp_client(self) -> CDPClient:
 		if not self.browser.cdp_url:
@@ -78,24 +87,21 @@ class DomService:
 			self.cdp_client = None
 
 	async def _get_current_page_session_id(self) -> str:
-		"""Get the target ID for a playwright page.
+		"""Get the target ID for a playwright page with caching.
 
-		TODO: this is a REALLY hacky way -> if multiple same urls are open then this will break
+		Uses class-level cache to persist across DomService instances.
 		"""
-		# page_guid = self.page._impl_obj._guid
-		# TODO: add cache for page to sessionId
+		cache_key = f'{self.page.url}:{self.browser.cdp_url}'
 
-		# if page_guid in self.page_to_session_id_store:
-		# 	return self.page_to_session_id_store[page_guid]
+		# Check class-level cache first
+		if cache_key in self._page_session_cache:
+			return self._page_session_cache[cache_key]
 
 		cdp_client = await self._get_cdp_client()
 
 		targets = await cdp_client.send.Target.getTargets()
 		for target in targets['targetInfos']:
 			if target['type'] == 'page' and target['url'] == self.page.url:
-				# cache the session id for this playwright page
-				# self.playwright_page_to_session_id_store[page_guid] = target['targetId']
-
 				session = await cdp_client.send.Target.attachToTarget(params={'targetId': target['targetId'], 'flatten': True})
 				session_id = session['sessionId']
 
@@ -103,14 +109,32 @@ class DomService:
 					params={'autoAttach': True, 'waitForDebuggerOnStart': False, 'flatten': True}
 				)
 
-				await cdp_client.send.DOM.enable(session_id=session_id)
-				await cdp_client.send.Accessibility.enable(session_id=session_id)
-				await cdp_client.send.DOMSnapshot.enable(session_id=session_id)
-				await cdp_client.send.Page.enable(session_id=session_id)
+				# Enable domains in parallel and cache
+				await self._enable_domains_cached(session_id)
 
+				# Cache the session ID at class level
+				self._page_session_cache[cache_key] = session_id
 				return session_id
 
 		raise ValueError(f'No session id found for page {self.page.url}')
+
+	async def _enable_domains_cached(self, session_id: str) -> None:
+		"""Enable CDP domains with caching to avoid redundant calls."""
+		if session_id in self._enabled_domains_cache:
+			return  # Already enabled for this session
+
+		cdp_client = await self._get_cdp_client()
+
+		# Enable all domains in parallel
+		await asyncio.gather(
+			cdp_client.send.DOM.enable(session_id=session_id),
+			cdp_client.send.Accessibility.enable(session_id=session_id),
+			cdp_client.send.DOMSnapshot.enable(session_id=session_id),
+			cdp_client.send.Page.enable(session_id=session_id),
+		)
+
+		# Mark as enabled
+		self._enabled_domains_cache[session_id] = {'DOM', 'Accessibility', 'DOMSnapshot', 'Page'}
 
 	def _build_enhanced_ax_node(self, ax_node: AXNode) -> EnhancedAXNode:
 		properties: list[EnhancedAXProperty] | None = None

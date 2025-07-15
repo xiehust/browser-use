@@ -3,8 +3,11 @@
 import json
 import traceback
 
+from browser.session import require_healthy_browser
+
 from browser_use.dom.service import DomService
 from browser_use.dom.views import DOMSelectorMap
+from browser_use.observability import observe_debug
 
 
 def analyze_element_interactivity(element: dict) -> dict:
@@ -105,6 +108,8 @@ def convert_dom_selector_map_to_highlight_format(selector_map: DOMSelectorMap) -
 	return elements
 
 
+@observe_debug(ignore_input=True, ignore_output=True)
+@require_healthy_browser(usable_page=True)
 async def remove_highlighting_script(dom_service: DomService) -> None:
 	"""Remove all browser-use highlighting elements from the page."""
 	try:
