@@ -2,6 +2,7 @@
 
 
 from browser_use.dom.serializer.clickable_elements import ClickableElementDetector
+from browser_use.dom.serializer.paint_order import PaintOrderRemover
 from browser_use.dom.utils import cap_text_length
 from browser_use.dom.views import DOMSelectorMap, EnhancedDOMTreeNode, NodeType, SerializedDOMState, SimplifiedNode
 
@@ -42,9 +43,9 @@ class DOMTreeSerializer:
 		end_step2 = time.time()
 		self.timing_info['optimize_tree'] = end_step2 - start_step2
 
-		# # Step 3: Detect and group semantic elements
-		# if optimized_tree:
-		# 	self._detect_semantic_groups(optimized_tree)
+		# Step 3: Remove elements based on paint order
+		if optimized_tree:
+			PaintOrderRemover(optimized_tree).calculate_paint_order()
 
 		# Step 4: Assign interactive indices to clickable elements
 		start_step4 = time.time()
@@ -171,9 +172,9 @@ class DOMTreeSerializer:
 			return
 
 		# Assign index to clickable elements
-		is_interactive_assign = self._is_interactive_cached(node.original_node)
+		should_assign_index = not node.ignored_by_paint_order and self._is_interactive_cached(node.original_node)
 
-		if is_interactive_assign:
+		if should_assign_index:
 			node.interactive_index = self._interactive_counter
 			self._selector_map[self._interactive_counter] = node.original_node
 			self._interactive_counter += 1

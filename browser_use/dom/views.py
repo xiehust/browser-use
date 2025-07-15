@@ -37,6 +37,8 @@ class SimplifiedNode:
 
 	is_new: bool = False
 
+	ignored_by_paint_order: bool = False
+
 	def __json__(self) -> dict:
 		return {
 			'should_display': self.should_display,
@@ -69,6 +71,10 @@ class DOMRect:
 	y: float
 	width: float
 	height: float
+
+	@property
+	def center(self) -> tuple[float, float]:
+		return self.x + self.width / 2, self.y + self.height / 2
 
 
 @dataclass(slots=True)

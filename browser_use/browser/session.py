@@ -2316,11 +2316,11 @@ class BrowserSession(BaseModel):
 							try:
 								# TODO: instead of using the cached center, we should use the actual center of the element (easy, just get it by nodeBackendId)
 								self.logger.warning(
-									f'⚠️ Element click failed, falling back to coordinate click at ({element_node.snapshot_node.bounds.x}, {element_node.snapshot_node.bounds.y})'
+									f'⚠️ Element click failed, falling back to coordinate click at ({element_node.snapshot_node.bounds.center})'
 								)
 								await page.mouse.click(
-									element_node.snapshot_node.bounds.x,
-									element_node.snapshot_node.bounds.y,
+									element_node.snapshot_node.bounds.center[0],
+									element_node.snapshot_node.bounds.center[1],
 								)
 								try:
 									await page.wait_for_load_state()
