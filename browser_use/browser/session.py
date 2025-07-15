@@ -294,6 +294,11 @@ class BrowserSession(BaseModel):
 		default=None,
 		description='Pure CDP client object to use (initialized by start())',
 	)
+	# 1 DOM service per session
+	dom_service: DomService | None = Field(
+		default=None,
+		description='DomService object to use (initialized by start())',
+	)
 
 	# runtime state: state that changes during the lifecycle of a BrowserSession(), updated by the methods below
 	initialized: bool = Field(
@@ -315,6 +320,8 @@ class BrowserSession(BaseModel):
 
 	_cached_browser_state_summary: BrowserStateSummary | None = PrivateAttr(default=None)
 	_cached_clickable_element_hashes: CachedClickableElementHashes | None = PrivateAttr(default=None)
+	_cdp_session_id_initialized_domains_cache: dict[str, bool] = PrivateAttr(default={})
+
 	_tab_visibility_callback: Any = PrivateAttr(default=None)
 	_logger: logging.Logger | None = PrivateAttr(default=None)
 	_downloaded_files: list[str] = PrivateAttr(default_factory=list)
@@ -1160,16 +1167,41 @@ class BrowserSession(BaseModel):
 
 		for target in targets['targetInfos']:
 			if target['type'] == 'page' and target['url'] == page.url:
-				# cache the session id for this playwright page
-				# self.playwright_page_to_session_id_store[page_guid] = target['targetId']
-
 				session = await cdp_client.send.Target.attachToTarget(params={'targetId': target['targetId'], 'flatten': True})
 
 				session_id = session['sessionId']
 
+				if session_id in self._cdp_session_id_initialized_domains_cache:
+					return session_id
+
+				start_auto_attach = time.time()
+				await cdp_client.send.Target.setAutoAttach(
+					params={'autoAttach': True, 'waitForDebuggerOnStart': False, 'flatten': True}
+				)
+
+				end_auto_attach = time.time()
+				self.logger.debug(f'⏱️ Target.setAutoAttach() took {end_auto_attach - start_auto_attach:.3f} seconds')
+
+				await self._enable_required_cdp_domains(session_id)
+
+				self._cdp_session_id_initialized_domains_cache[session_id] = True
+
 				return session_id
 
 		raise ValueError(f'No session id found for page {page.url}')
+
+	async def _enable_required_cdp_domains(self, session_id: str) -> None:
+		"""Enable the CDP domains for a given session id"""
+		cdp_client = await self.get_cdp_client()
+		start_enables = time.time()
+
+		await cdp_client.send.DOM.enable(session_id=session_id)
+		await cdp_client.send.Accessibility.enable(session_id=session_id)
+		await cdp_client.send.DOMSnapshot.enable(session_id=session_id)
+		await cdp_client.send.Page.enable(session_id=session_id)
+
+		end_enables = time.time()
+		self.logger.debug(f'⏱️ CDP domain enables took {end_enables - start_enables:.3f} seconds')
 
 	# endregion - CDP Client connection
 

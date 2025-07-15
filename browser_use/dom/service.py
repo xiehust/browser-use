@@ -31,51 +31,10 @@ logger = logging.getLogger(__name__)
 class DomService:
 	"""
 	Service for getting the DOM tree and other DOM-related information.
-
-	Either browser or page must be provided.
-
-	TODO: currently we start a new websocket connection PER STEP, we should definitely keep this persistent
 	"""
 
 	def __init__(self, browser: 'BrowserSession'):
 		self.browser = browser
-
-		self.session_id_initialized_domains_cache: dict[str, bool] = {}
-
-	async def _get_current_page_session_id(self) -> str:
-		"""Get the target ID for a playwright page.
-
-		TODO: this is a REALLY hacky way -> if multiple same urls are open then this will break
-		"""
-		# page_guid = self.page._impl_obj._guid
-		# TODO: add cache for page to sessionId
-
-		# if page_guid in self.page_to_session_id_store:
-		# 	return self.page_to_session_id_store[page_guid]
-
-		cdp_client = await self.browser.get_cdp_client()
-		session_id = await self.browser.get_current_page_cdp_session_id()
-
-		if session_id in self.session_id_initialized_domains_cache:
-			return session_id
-
-		start_auto_attach = time.time()
-		await cdp_client.send.Target.setAutoAttach(params={'autoAttach': True, 'waitForDebuggerOnStart': False, 'flatten': True})
-		end_auto_attach = time.time()
-		logger.debug(f'⏱️ Target.setAutoAttach() took {end_auto_attach - start_auto_attach:.3f} seconds')
-
-		# Time the enable calls
-		start_enables = time.time()
-		await cdp_client.send.DOM.enable(session_id=session_id)
-		await cdp_client.send.Accessibility.enable(session_id=session_id)
-		await cdp_client.send.DOMSnapshot.enable(session_id=session_id)
-		await cdp_client.send.Page.enable(session_id=session_id)
-		end_enables = time.time()
-		logger.debug(f'⏱️ CDP domain enables took {end_enables - start_enables:.3f} seconds')
-
-		self.session_id_initialized_domains_cache[session_id] = True
-
-		return session_id
 
 	def _build_enhanced_ax_node(self, ax_node: AXNode) -> EnhancedAXNode:
 		properties: list[EnhancedAXProperty] | None = None
@@ -108,7 +67,7 @@ class DomService:
 		"""Get viewport dimensions, device pixel ratio, and scroll position using CDP."""
 		try:
 			cdp_client = await self.browser.get_cdp_client()
-			session_id = await self._get_current_page_session_id()
+			session_id = await self.browser.get_current_page_cdp_session_id()
 
 			# Get the layout metrics which includes the visual viewport
 			metrics = await cdp_client.send.Page.getLayoutMetrics(session_id=session_id)
@@ -231,7 +190,7 @@ class DomService:
 		if not self.browser.cdp_url:
 			raise ValueError('CDP URL is not set')
 
-		session_id = await self._get_current_page_session_id()
+		session_id = await self.browser.get_current_page_cdp_session_id()
 		cdp_client = await self.browser.get_cdp_client()
 
 		snapshot_request = cdp_client.send.DOMSnapshot.captureSnapshot(
