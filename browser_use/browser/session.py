@@ -1154,69 +1154,298 @@ class BrowserSession(BaseModel):
 
 		return self.cdp_client
 
-	@observe_debug(name='get_current_page_cdp_session_id')
+	@observe_debug(name='get_current_page_cdp_session_id', ignore_input=True, ignore_output=True)
 	async def get_current_page_cdp_session_id(self) -> str:
-		"""Get the CDP client for the current page
+		"""Get the CDP session ID for the current page with caching and timeout protection."""
+		try:
+			return await asyncio.wait_for(self._get_current_page_cdp_session_id_impl(), timeout=5.0)
+		except asyncio.TimeoutError:
+			self.logger.error('💥 CDP session retrieval timed out after 5s')
+			raise TimeoutError('CDP session retrieval timed out')
+		except Exception as e:
+			self.logger.error(f'💥 CDP session retrieval failed: {type(e).__name__}: {e}')
+			raise
 
-		Uses caching to avoid creating new sessions for the same page/target.
-		"""
+	async def _get_current_page_cdp_session_id_impl(self) -> str:
+		"""Internal implementation of CDP session ID retrieval."""
 		cdp_client = await self.get_cdp_client()
 		page = await self.get_current_page()
 
-		# Check cache first - key by page URL to reuse sessions for same page
-		cache_key = page.url
+		# Use page URL as cache key since it's more stable than page object ID
+		cache_key = f'url_{page.url}'
+
+		# Check cache first - reuse sessions for same URL
 		if cache_key in self._cdp_session_cache:
 			cached_session_id = self._cdp_session_cache[cache_key]
 
-			# Verify the cached session is still valid by checking if it's in initialized domains
-			if cached_session_id in self._cdp_session_id_initialized_domains_cache:
+			# Verify the cached session is still valid with a simple test
+			try:
+				# Test if session is still active with a lightweight call
+				await asyncio.wait_for(
+					cdp_client.send.Runtime.evaluate(
+						params={'expression': '1', 'returnByValue': True}, session_id=cached_session_id
+					),
+					timeout=1.0,
+				)
+				self.logger.debug(f'✅ Reusing cached CDP session: {cached_session_id}')
 				return cached_session_id
-			else:
-				# Session is stale, remove from cache
+			except Exception as e:
+				self.logger.debug(
+					f'❌ Cached CDP session {cached_session_id} no longer valid ({type(e).__name__}), creating new one'
+				)
 				del self._cdp_session_cache[cache_key]
+				if cached_session_id in self._cdp_session_id_initialized_domains_cache:
+					del self._cdp_session_id_initialized_domains_cache[cached_session_id]
 
+		# Get current target info
 		targets = await cdp_client.send.Target.getTargets()
 
+		# Find the target for this page
+		page_target = None
 		for target in targets['targetInfos']:
 			if target['type'] == 'page' and target['url'] == page.url:
-				session = await cdp_client.send.Target.attachToTarget(params={'targetId': target['targetId'], 'flatten': True})
+				page_target = target
+				break
 
-				session_id = session['sessionId']
+		if not page_target:
+			raise ValueError(f'Could not find CDP target for page URL: {page.url}')
 
-				# Cache the session for this page
-				self._cdp_session_cache[cache_key] = session_id
+		# Attach to target to get session ID
+		response = await cdp_client.send.Target.attachToTarget(params={'targetId': page_target['targetId'], 'flatten': True})
+		session_id = response['sessionId']
 
-				if session_id in self._cdp_session_id_initialized_domains_cache:
-					return session_id
+		# Initialize CDP domains for this session
+		await self._enable_required_cdp_domains(session_id)
 
-				start_auto_attach = time.time()
-				await cdp_client.send.Target.setAutoAttach(
-					params={'autoAttach': True, 'waitForDebuggerOnStart': False, 'flatten': True}
-				)
+		# Cache the session
+		self._cdp_session_cache[cache_key] = session_id
+		self._cdp_session_id_initialized_domains_cache[session_id] = True
+		self.logger.debug(f'✅ Created and cached new CDP session: {session_id}')
 
-				end_auto_attach = time.time()
-				self.logger.debug(f'⏱️ Target.setAutoAttach() took {end_auto_attach - start_auto_attach:.3f} seconds')
-
-				await self._enable_required_cdp_domains(session_id)
-
-				self._cdp_session_id_initialized_domains_cache[session_id] = True
-
-				return session_id
-
-		raise ValueError(f'No session id found for page {page.url}')
+		return session_id
 
 	async def _enable_required_cdp_domains(self, session_id: str) -> None:
 		"""Enable the CDP domains for a given session id"""
 		cdp_client = await self.get_cdp_client()
-		start_enables = time.time()
 
-		await cdp_client.send.DOM.enable(session_id=session_id)
-		await cdp_client.send.Accessibility.enable(session_id=session_id)
-		await cdp_client.send.DOMSnapshot.enable(session_id=session_id)
-		await cdp_client.send.Page.enable(session_id=session_id)
+		# Enable domains with individual timeout protection
+		try:
+			# Enable essential domains for DOM processing
+			await asyncio.gather(
+				asyncio.wait_for(cdp_client.send.DOM.enable(session_id=session_id), timeout=3.0),
+				asyncio.wait_for(cdp_client.send.Accessibility.enable(session_id=session_id), timeout=3.0),
+				asyncio.wait_for(cdp_client.send.DOMSnapshot.enable(session_id=session_id), timeout=3.0),
+				asyncio.wait_for(cdp_client.send.Page.enable(session_id=session_id), timeout=3.0),
+				return_exceptions=True,
+			)
 
-		end_enables = time.time()
-		self.logger.debug(f'⏱️ CDP domain enables took {end_enables - start_enables:.3f} seconds')
+			self.logger.debug(f'✅ Enabled CDP domains for session {session_id[:8]}')
+		except Exception as e:
+			self.logger.warning(f'⚠️ Failed to enable CDP domains for session {session_id[:8]}: {type(e).__name__}: {e}')
+			raise
+
+		# Configure DOM event filtering with timeout protection
+		try:
+			await asyncio.wait_for(self._configure_dom_event_filtering(session_id), timeout=5.0)
+		except Exception as e:
+			self.logger.debug(f'⚠️ Failed to configure DOM event filtering: {type(e).__name__}: {e}')
+			# Don't fail the whole session if filtering setup fails
+			pass
+
+	async def _disable_dom_events_temporarily(self, session_id: str) -> None:
+		"""Temporarily disable DOM events to reduce noise when not actively processing DOM"""
+		if not self.browser_profile.filter_dom_events:
+			return
+
+		try:
+			cdp_client = await self.get_cdp_client()
+			await asyncio.wait_for(cdp_client.send.DOM.disable(session_id=session_id), timeout=2.0)
+			self.logger.debug('🔇 DOM events temporarily disabled')
+		except Exception as e:
+			self.logger.debug(f'⚠️ Failed to disable DOM events: {type(e).__name__}: {e}')
+
+	async def _enable_dom_events_for_processing(self, session_id: str) -> None:
+		"""Re-enable DOM events for active DOM processing"""
+		if not self.browser_profile.filter_dom_events:
+			return
+
+		try:
+			cdp_client = await self.get_cdp_client()
+			await asyncio.wait_for(cdp_client.send.DOM.enable(session_id=session_id), timeout=2.0)
+			self.logger.debug('🔊 DOM events re-enabled for processing')
+		except Exception as e:
+			self.logger.debug(f'⚠️ Failed to re-enable DOM events: {type(e).__name__}: {e}')
+
+	async def _configure_dom_event_filtering(self, session_id: str) -> None:
+		"""Configure aggressive CDP and DOM event filtering to reduce noise."""
+		if not self.browser_profile.filter_dom_events:
+			return
+
+		try:
+			cdp_client = await self.get_cdp_client()
+
+			# 1. DISABLE EXPENSIVE CDP EVENTS AT SOURCE
+			# These events flood the connection and cause performance issues
+			try:
+				# Disable CSS domain to reduce style invalidation events
+				await asyncio.wait_for(
+					cdp_client.send.CSS.disable(session_id=session_id),
+					timeout=2.0,
+				)
+				self.logger.debug('🚫 Disabled CSS domain to reduce style events')
+			except Exception as e:
+				self.logger.debug(f'⚠️ Failed to disable CSS domain: {type(e).__name__}: {e}')
+
+			# 2. DISABLE DOM DOMAIN EVENTS TEMPORARILY
+			# DOM events like inlineStyleInvalidated can flood the connection
+			try:
+				# Temporarily disable DOM domain to stop the flood
+				await asyncio.wait_for(
+					cdp_client.send.DOM.disable(session_id=session_id),
+					timeout=2.0,
+				)
+				# Re-enable DOM domain for essential operations
+				await asyncio.wait_for(
+					cdp_client.send.DOM.enable(session_id=session_id),
+					timeout=2.0,
+				)
+				self.logger.debug('🚫 Reset DOM domain to reduce noise')
+			except Exception as e:
+				self.logger.debug(f'⚠️ Failed to reset DOM domain: {type(e).__name__}: {e}')
+
+			# 3. DISABLE OTHER NOISY CDP EVENTS
+			try:
+				# Disable runtime events that aren't essential
+				await asyncio.wait_for(
+					cdp_client.send.Runtime.disable(session_id=session_id),
+					timeout=2.0,
+				)
+				# Re-enable only essential runtime features
+				await asyncio.wait_for(
+					cdp_client.send.Runtime.enable(session_id=session_id),
+					timeout=2.0,
+				)
+				self.logger.debug('🚫 Reset Runtime domain to reduce noise')
+			except Exception as e:
+				self.logger.debug(f'⚠️ Failed to reset Runtime domain: {type(e).__name__}: {e}')
+
+			# 4. DISABLE ANIMATION AND LAYOUT EVENTS
+			try:
+				# Disable Animation domain to reduce animation events
+				await asyncio.wait_for(
+					cdp_client.send.Animation.disable(session_id=session_id),
+					timeout=2.0,
+				)
+				self.logger.debug('🚫 Disabled Animation domain to reduce animation events')
+			except Exception as e:
+				self.logger.debug(f'⚠️ Failed to disable Animation domain: {type(e).__name__}: {e}')
+
+			try:
+				# Disable LayerTree domain to reduce layer events
+				await asyncio.wait_for(
+					cdp_client.send.LayerTree.disable(session_id=session_id),
+					timeout=2.0,
+				)
+				self.logger.debug('🚫 Disabled LayerTree domain to reduce layer events')
+			except Exception as e:
+				self.logger.debug(f'⚠️ Failed to disable LayerTree domain: {type(e).__name__}: {e}')
+
+			# 5. JAVASCRIPT-LEVEL FILTERING (for remaining events)
+			script = """
+			(function() {
+				if (window._browserUseEventFilteringEnabled) return;
+				window._browserUseEventFilteringEnabled = true;
+				
+				// Intercept and filter DOM mutations more aggressively
+				const OriginalMutationObserver = window.MutationObserver;
+				window.MutationObserver = function(callback) {
+					return new OriginalMutationObserver(function(mutations) {
+						// Filter out all mutations from non-essential elements
+						const filteredMutations = mutations.filter(mutation => {
+							const target = mutation.target;
+							if (!target || !target.tagName) return false;
+							
+							// Skip ads, tracking, and analytics completely
+							const tagName = target.tagName.toLowerCase();
+							if (['script', 'style', 'link', 'meta', 'noscript'].includes(tagName)) return false;
+							
+							const className = target.className || '';
+							const id = target.id || '';
+							const combined = (className + ' ' + id).toLowerCase();
+							
+							// Block common ad and tracking patterns
+							if (combined.includes('ad') || combined.includes('tracking') || 
+								combined.includes('analytics') || combined.includes('beacon') ||
+								combined.includes('metric') || combined.includes('telemetry') ||
+								combined.includes('gpt') || combined.includes('doubleclick') ||
+								combined.includes('adsystem') || combined.includes('gtag') ||
+								combined.includes('facebook') || combined.includes('twitter') ||
+								combined.includes('instagram') || combined.includes('linkedin') ||
+								combined.includes('youtube') || combined.includes('googlesyndication')) return false;
+							
+							// Block frequent style mutations that cause noise
+							if (mutation.type === 'attributes' && mutation.attributeName === 'style') {
+								return false;
+							}
+							
+							return true;
+						});
+						
+						// Only call callback if we have meaningful mutations
+						if (filteredMutations.length > 0) {
+							callback(filteredMutations);
+						}
+					});
+				};
+				
+				// Override requestAnimationFrame to reduce animation noise
+				const originalRAF = window.requestAnimationFrame;
+				window.requestAnimationFrame = function(callback) {
+					// Throttle animation frames to reduce noise
+					return originalRAF.call(this, function(...args) {
+						try {
+							callback(...args);
+						} catch (e) {
+							// Ignore animation errors to prevent noise
+						}
+					});
+				};
+				
+				// Override setTimeout/setInterval for excessive timers
+				const originalSetTimeout = window.setTimeout;
+				const originalSetInterval = window.setInterval;
+				
+				window.setTimeout = function(callback, delay, ...args) {
+					// Block very frequent timeouts (less than 16ms)
+					if (delay < 16) {
+						delay = 16;
+					}
+					return originalSetTimeout.call(this, callback, delay, ...args);
+				};
+				
+				window.setInterval = function(callback, delay, ...args) {
+					// Block very frequent intervals (less than 100ms)
+					if (delay < 100) {
+						delay = 100;
+					}
+					return originalSetInterval.call(this, callback, delay, ...args);
+				};
+				
+				console.log('✅ Aggressive DOM event filtering enabled');
+			})();
+			"""
+
+			# Inject the filtering script with timeout
+			await asyncio.wait_for(
+				cdp_client.send.Runtime.evaluate(params={'expression': script, 'returnByValue': True}, session_id=session_id),
+				timeout=3.0,
+			)
+			self.logger.debug('📋 DOM event filtering configured for session')
+
+		except Exception as e:
+			self.logger.debug(f'⚠️ Failed to configure DOM event filtering: {type(e).__name__}: {e}')
+			# Don't fail the whole session if filtering setup fails
+			pass
 
 	# endregion - CDP Client connection
 
@@ -2219,27 +2448,31 @@ class BrowserSession(BaseModel):
 
 	@observe_debug(name='inject_highlights', ignore_output=True, ignore_input=True)
 	@time_execution_async('--inject_highlights')
-	@retry(timeout=10, retries=0)
 	async def inject_highlights(self, dom_service: DomService, selector_map: DOMSelectorMap):
-		"""Inject highlights into the page."""
-		await inject_highlighting_script(dom_service, selector_map)
+		"""Inject highlights into the page with timeout protection."""
+		try:
+			# Use aggressive timeout to prevent hanging
+			await asyncio.wait_for(inject_highlighting_script(dom_service, selector_map), timeout=1.5)
+		except asyncio.TimeoutError:
+			self.logger.warning('⚠️ Highlighting injection timed out after 1.5s, continuing')
+		except Exception as e:
+			self.logger.debug(f'❌ Highlighting injection failed: {type(e).__name__}: {e}')
 
 	@observe_debug(name='remove_highlights', ignore_output=True, ignore_input=True)
-	@require_healthy_browser(usable_page=True, reopen_page=True)
 	@time_execution_async('--remove_highlights')
-	@retry(timeout=10, retries=0)
 	async def remove_highlights(self, dom_service: DomService):
-		"""
-		DEPRECATED
-
-		Removes all highlight overlays and labels created by the highlightElement function.
-		Handles cases where the page might be closed or inaccessible.
-		"""
-		await remove_highlighting_script(dom_service)
+		"""Remove highlights from the page with timeout protection."""
+		try:
+			# Use aggressive timeout to prevent hanging
+			await asyncio.wait_for(remove_highlighting_script(dom_service), timeout=1.0)
+		except asyncio.TimeoutError:
+			self.logger.warning('⚠️ Highlighting removal timed out after 1.0s, continuing')
+		except Exception as e:
+			self.logger.debug(f'❌ Highlighting removal failed: {type(e).__name__}: {e}')
 
 	async def get_dom_element_by_index(self, index: int) -> EnhancedDOMTreeNode | None:
 		"""Get DOM element by index."""
-		selector_map = await self.get_selector_map()
+		selector_map = await self.get_validated_selector_map()
 		return selector_map.get(index)
 
 	@require_healthy_browser(usable_page=True, reopen_page=True)
@@ -3102,7 +3335,7 @@ class BrowserSession(BaseModel):
 				self.logger.error(f'⛔️ Failed to go back after detecting non-allowed URL: {type(e).__name__}: {e}')
 			raise URLNotAllowedError(f'Navigation to non-allowed URL: {page.url}')
 
-	@observe_debug()
+	@observe_debug(ignore_input=True, ignore_output=True)
 	async def refresh_page(self):
 		"""Refresh the agent's current page"""
 
@@ -3265,28 +3498,78 @@ class BrowserSession(BaseModel):
 	@observe_debug(ignore_input=True, ignore_output=True)
 	@time_execution_async('--get_state_summary')
 	@require_healthy_browser(usable_page=True, reopen_page=True)
-	async def get_state_summary(self, cache_clickable_elements_hashes: bool) -> BrowserStateSummary:
-		self.logger.debug('🔄 Starting get_state_summary...')
-		"""Get a summary of the current browser state
+	async def get_state_summary(self, cache_clickable_elements_hashes: bool = False) -> BrowserStateSummary:
+		"""Get a summary of the current browser state with timeout protection."""
+		try:
+			# Use aggressive timeout to prevent hanging on DOM processing
+			updated_state = await asyncio.wait_for(
+				self._get_state_summary_impl(cache_clickable_elements_hashes),
+				timeout=25.0,  # Reduced from 45s to 25s
+			)
 
-		This method builds a BrowserStateSummary object that captures the current state
-		of the browser, including url, title, tabs, screenshot, and DOM tree.
+			# Cache the result so get_selector_map can access it
+			self._cached_browser_state_summary = updated_state
 
-		Parameters:
-		-----------
-		cache_clickable_elements_hashes: bool
-			If True, cache the clickable elements hashes for the current state.
-			This is used to calculate which elements are new to the LLM since the last message,
-			which helps reduce token usage.
-		"""
-		await self._wait_for_page_and_frames_load()
-		updated_state = await self._get_updated_state()
+			return self._cached_browser_state_summary
+		except asyncio.TimeoutError:
+			self.logger.error('💥 State summary timed out after 25s')
+			raise TimeoutError('State summary timed out after 25 seconds')
+		except Exception as e:
+			self.logger.error(f'💥 State summary failed: {type(e).__name__}: {e}')
+			raise
 
-		self._cached_browser_state_summary = updated_state
+	async def _get_state_summary_impl(self, cache_clickable_elements_hashes: bool = False) -> BrowserStateSummary:
+		"""Internal implementation of state summary."""
+		page = await self.get_current_page()
 
-		return self._cached_browser_state_summary
+		# Get screenshot with timeout
+		screenshot_task = asyncio.create_task(self.take_screenshot())
 
-	@observe_debug(ignore_input=True, ignore_output=True, name='get_minimal_state_summary')
+		# Start DOM service with viewport-only optimization by default
+		dom_service = DomService(self)
+
+		# Get DOM tree with timeout
+		dom_tree_task = asyncio.create_task(dom_service.get_serialized_dom_tree())
+
+		try:
+			# Run screenshot and DOM processing concurrently with timeouts
+			screenshot_result = await asyncio.wait_for(screenshot_task, timeout=5.0)
+			dom_result = await asyncio.wait_for(dom_tree_task, timeout=15.0)
+
+			# Extract results
+			screenshot_base64 = screenshot_result
+			dom_state, timing_info = dom_result
+
+			# Apply highlights with timeout protection
+			await self.remove_highlights(dom_service)
+			await self.inject_highlights(dom_service, dom_state.selector_map)
+
+			# Get URL and title
+			url = page.url
+			try:
+				title = await asyncio.wait_for(page.title(), timeout=3.0)
+			except Exception:
+				title = 'Title unavailable'
+
+			# Get tabs info
+			tabs_info = await self.get_tabs_info()
+
+			return BrowserStateSummary(
+				url=url,
+				title=title,
+				screenshot=screenshot_base64,
+				dom_state=dom_state,
+				tabs=tabs_info,
+			)
+
+		except asyncio.TimeoutError as e:
+			self.logger.error(f'⚠️ State summary component timed out: {e}')
+			raise
+		except Exception as e:
+			self.logger.error(f'💥 State summary component failed: {type(e).__name__}: {e}')
+			raise
+
+	@observe_debug(name='get_minimal_state_summary', ignore_input=True, ignore_output=True)
 	@require_healthy_browser(usable_page=True, reopen_page=True)
 	@time_execution_async('--get_minimal_state_summary')
 	async def get_minimal_state_summary(self) -> BrowserStateSummary:
@@ -3454,7 +3737,7 @@ class BrowserSession(BaseModel):
 			await self.remove_highlights(dom_service)
 
 	# region - Page Health Check Helpers
-	@observe_debug(ignore_input=True)
+	@observe_debug(ignore_input=True, ignore_output=True)
 	async def _is_page_responsive(self, page: Page, timeout: float = 5.0) -> bool:
 		"""Check if a page is responsive by trying to evaluate simple JavaScript."""
 		eval_task = None
@@ -3710,7 +3993,7 @@ class BrowserSession(BaseModel):
 			self._in_recovery = False
 
 	# region - Browser Actions
-	@observe_debug(name='take_screenshot', ignore_output=True)
+	@observe_debug(name='take_screenshot', ignore_output=True, ignore_input=True)
 	@retry(
 		retries=1,  # try up to 1 time to take the screenshot (2 total attempts)
 		timeout=30,  # allow up to 30s for each attempt (includes recovery time)
@@ -4293,21 +4576,92 @@ class BrowserSession(BaseModel):
 	@observe_debug(name='get_selector_map', ignore_output=True, ignore_input=True)
 	@require_healthy_browser(usable_page=True, reopen_page=True)
 	async def get_selector_map(self) -> DOMSelectorMap:
+		"""Get the current selector map from cache without validation."""
 		if self._cached_browser_state_summary is None:
 			return {}
 		return self._cached_browser_state_summary.dom_state.selector_map
 
+	async def _validate_selector_map_sample(self, selector_map: DOMSelectorMap) -> None:
+		"""Validate a small sample of elements to detect if DOM has changed significantly."""
+		if not selector_map:
+			return
+
+		# Get a sample of up to 3 elements to check
+		sample_indices = list(selector_map.keys())[:3]
+
+		page = await self.get_current_page()
+
+		# Check if elements still exist using their XPath
+		missing_count = 0
+		for index in sample_indices:
+			element = selector_map[index]
+			try:
+				# Quick existence check using XPath
+				exists = await asyncio.wait_for(
+					page.evaluate(f"""
+						() => {{
+							const element = document.evaluate(
+								'{element.xpath}', 
+								document, 
+								null, 
+								XPathResult.FIRST_ORDERED_NODE_TYPE, 
+								null
+							).singleNodeValue;
+							return element !== null;
+						}}
+					"""),
+					timeout=1.0,
+				)
+				if not exists:
+					missing_count += 1
+			except Exception:
+				# Element not found or validation failed
+				missing_count += 1
+
+		# Only invalidate cache if most elements are missing (more than 50%)
+		# This prevents cache invalidation due to minor DOM changes
+		if missing_count > len(sample_indices) * 0.5:
+			raise ValueError(
+				f'{missing_count}/{len(sample_indices)} sample elements no longer exist - DOM has changed significantly'
+			)
+
+	@require_healthy_browser(usable_page=True, reopen_page=True)
+	async def get_validated_selector_map(self) -> DOMSelectorMap:
+		"""Get selector map with automatic refresh if cache is stale."""
+		selector_map = await self.get_selector_map()
+
+		# If empty, try to refresh the cache
+		if not selector_map:
+			self.logger.debug('🔄 Selector map is empty, refreshing DOM state...')
+			await self.get_state_summary(cache_clickable_elements_hashes=True)
+			selector_map = await self.get_selector_map()
+			return selector_map
+
+		# Validate that the cached state is still valid
+		try:
+			# Quick validation: check if a few random elements from the cache still exist
+			await self._validate_selector_map_sample(selector_map)
+			return selector_map
+		except Exception as e:
+			# Cache is stale, log and refresh
+			self.logger.debug(f'⚠️ Cached selector map is stale: {type(e).__name__}: {e}')
+			self.logger.debug('🔄 Refreshing DOM state due to stale cache...')
+			self._cached_browser_state_summary = None
+			await self.get_state_summary(cache_clickable_elements_hashes=True)
+			selector_map = await self.get_selector_map()
+			return selector_map
+
 	@observe_debug(ignore_input=True, ignore_output=True, name='get_element_by_index')
 	@require_healthy_browser(usable_page=True, reopen_page=True)
 	async def get_element_by_index(self, index: int) -> ElementHandle | None:
-		selector_map = await self.get_selector_map()
+		selector_map = await self.get_validated_selector_map()
 		element_handle = await self.get_locate_element(selector_map[index])
 		return element_handle
 
 	@observe_debug(ignore_input=True, ignore_output=True, name='is_file_input_by_index')
 	async def is_file_input_by_index(self, index: int) -> bool:
 		try:
-			selector_map = await self.get_selector_map()
+			selector_map = await self.get_validated_selector_map()
 			node = selector_map[index]
 			return self.is_file_input(node)
 		except Exception as e:
@@ -4331,7 +4685,7 @@ class BrowserSession(BaseModel):
 		Returns the first file input found, or None if not found.
 		"""
 		try:
-			selector_map = await self.get_selector_map()
+			selector_map = await self.get_validated_selector_map()
 			if index not in selector_map:
 				return None
 

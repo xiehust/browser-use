@@ -154,21 +154,13 @@ class Controller(Generic[Context]):
 		async def click_element_by_index(params: ClickElementAction, browser_session: BrowserSession):
 			# Browser is now a BrowserSession itself
 
-			# Check if element exists in current selector map
-			selector_map = await browser_session.get_selector_map()
+			# Use validated selector map that detects stale cache
+			selector_map = await browser_session.get_validated_selector_map()
 			if params.index not in selector_map:
-				# Force a state refresh in case the cache is stale
-				logger.info(f'Element with index {params.index} not found in selector map, refreshing state...')
-				await browser_session.get_state_summary(
-					cache_clickable_elements_hashes=True
-				)  # This will refresh the cached state
-				selector_map = await browser_session.get_selector_map()
-
-				if params.index not in selector_map:
-					# Return informative message with the new state instead of error
-					max_index = max(selector_map.keys()) if selector_map else -1
-					msg = f'Element with index {params.index} does not exist. Page has {len(selector_map)} interactive elements (indices 0-{max_index}). State has been refreshed - please use the updated element indices or scroll to see more elements'
-					return ActionResult(extracted_content=msg, include_in_memory=True, success=False, long_term_memory=msg)
+				# Return informative message with the current state instead of error
+				max_index = max(selector_map.keys()) if selector_map else -1
+				msg = f'Element index {params.index} does not exist - page has {len(selector_map)} interactive elements (indices 1-{max_index}). The page may have changed - please use current element indices or scroll to see more elements'
+				return ActionResult(extracted_content=msg, include_in_memory=True, success=False, long_term_memory=msg)
 
 			element_node = await browser_session.get_dom_element_by_index(params.index)
 			initial_pages = len(browser_session.tabs)
@@ -217,8 +209,14 @@ class Controller(Generic[Context]):
 			param_model=InputTextAction,
 		)
 		async def input_text(params: InputTextAction, browser_session: BrowserSession, has_sensitive_data: bool = False):
-			if params.index not in await browser_session.get_selector_map():
-				raise Exception(f'Element index {params.index} does not exist - retry or use alternative actions')
+			# Use validated selector map that detects stale cache
+			selector_map = await browser_session.get_validated_selector_map()
+
+			if params.index not in selector_map:
+				# If element doesn't exist, provide informative error with current state
+				max_index = max(selector_map.keys()) if selector_map else -1
+				msg = f'Element index {params.index} does not exist - page has {len(selector_map)} interactive elements (indices 1-{max_index}). The page may have changed - please use current element indices.'
+				raise BrowserError(msg)
 
 			element_node = await browser_session.get_dom_element_by_index(params.index)
 			assert element_node is not None, f'Element with index {params.index} does not exist'
@@ -508,25 +506,17 @@ Explain the content of the page and that the requested information is not availa
 			# Element-specific scrolling if index is provided
 			if params.index is not None:
 				try:
-					# Check if element exists in current selector map
-					selector_map = await browser_session.get_selector_map()
+					# Use validated selector map that detects stale cache
+					selector_map = await browser_session.get_validated_selector_map()
 					element_node = None  # Initialize to avoid undefined variable
 
 					if params.index not in selector_map:
-						# Force a state refresh in case the cache is stale
-						logger.info(f'Element with index {params.index} not found in selector map, refreshing state...')
-						await browser_session.get_state_summary(cache_clickable_elements_hashes=True)
-						selector_map = await browser_session.get_selector_map()
-
-						if params.index not in selector_map:
-							# Return informative message about invalid index
-							max_index = max(selector_map.keys()) if selector_map else -1
-							msg = f'❌ Element with index {params.index} does not exist. Page has {len(selector_map)} interactive elements (indices 0-{max_index}). Using page-level scroll instead.'
-							logger.warning(msg)
-							scroll_target = 'the page'
-							# Skip element-specific scrolling
-						else:
-							element_node = await browser_session.get_dom_element_by_index(params.index)
+						# Return informative message about invalid index
+						max_index = max(selector_map.keys()) if selector_map else -1
+						msg = f'❌ Element index {params.index} does not exist - page has {len(selector_map)} interactive elements (indices 1-{max_index}). Using page-level scroll instead.'
+						logger.warning(msg)
+						scroll_target = 'the page'
+						# Skip element-specific scrolling
 					else:
 						element_node = await browser_session.get_dom_element_by_index(params.index)
 
@@ -816,7 +806,7 @@ Explain the content of the page and that the requested information is not availa
 		async def get_dropdown_options(index: int, browser_session: BrowserSession) -> ActionResult:
 			"""Get all options from a native dropdown"""
 			page = await browser_session.get_current_page()
-			selector_map = await browser_session.get_selector_map()
+			selector_map = await browser_session.get_validated_selector_map()
 			dom_element = selector_map[index]
 
 			try:
@@ -897,7 +887,7 @@ Explain the content of the page and that the requested information is not availa
 		) -> ActionResult:
 			"""Select dropdown option by the text of the option you want to select"""
 			page = await browser_session.get_current_page()
-			selector_map = await browser_session.get_selector_map()
+			selector_map = await browser_session.get_validated_selector_map()
 			dom_element = selector_map[index]
 
 			# Validate that we're working with a select element

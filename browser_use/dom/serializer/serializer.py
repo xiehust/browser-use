@@ -1,11 +1,15 @@
 # @file purpose: Serializes enhanced DOM trees to string format for LLM consumption
 
 
+import time
+from collections import deque
+
 from browser_use.dom.serializer.clickable_elements import ClickableElementDetector
 from browser_use.dom.serializer.paint_order import PaintOrderRemover
 from browser_use.dom.utils import cap_text_length
 from browser_use.dom.views import DOMSelectorMap, EnhancedDOMTreeNode, NodeType, SerializedDOMState, SimplifiedNode
 from browser_use.observability import observe_debug
+from browser_use.utils import time_execution_async, time_execution_sync
 
 
 class DOMTreeSerializer:
@@ -21,10 +25,9 @@ class DOMTreeSerializer:
 		# Cache for clickable element detection to avoid redundant calls
 		self._clickable_cache: dict[int, bool] = {}
 
+	@time_execution_async('-- serialize_accessible_elements')
 	@observe_debug(name='serialize_accessible_elements', ignore_input=True, ignore_output=True)
-	def serialize_accessible_elements(self) -> tuple[SerializedDOMState, dict[str, float]]:
-		import time
-
+	async def serialize_accessible_elements(self) -> tuple[SerializedDOMState, dict[str, float]]:
 		start_total = time.time()
 
 		# Reset state
@@ -33,25 +36,19 @@ class DOMTreeSerializer:
 		self._semantic_groups = []
 		self._clickable_cache = {}  # Clear cache for new serialization
 
-		# Step 1: Create simplified tree (includes clickable element detection)
-		start_step1 = time.time()
-		simplified_tree = self._create_simplified_tree(self.root_node)
-		end_step1 = time.time()
-		self.timing_info['create_simplified_tree'] = end_step1 - start_step1
-
-		# Step 2: Optimize tree (remove unnecessary parents)
-		start_step2 = time.time()
-		optimized_tree = self._optimize_tree(simplified_tree)
-		end_step2 = time.time()
-		self.timing_info['optimize_tree'] = end_step2 - start_step2
+		# NEW: Combined non-recursive tree processing
+		start_combined = time.time()
+		optimized_tree = self._process_tree_iteratively(self.root_node)
+		end_combined = time.time()
+		self.timing_info['combined_tree_processing'] = end_combined - start_combined
 
 		# Step 3: Remove elements based on paint order
 		if optimized_tree:
-			PaintOrderRemover(optimized_tree).calculate_paint_order()
+			await PaintOrderRemover(optimized_tree).calculate_paint_order()
 
-		# Step 4: Assign interactive indices to clickable elements
+		# Step 4: Assign interactive indices to clickable elements (now non-recursive)
 		start_step4 = time.time()
-		self._assign_interactive_indices_and_mark_new_nodes(optimized_tree)
+		self._assign_interactive_indices_iteratively(optimized_tree)
 		end_step4 = time.time()
 		self.timing_info['assign_interactive_indices'] = end_step4 - start_step4
 
@@ -59,6 +56,34 @@ class DOMTreeSerializer:
 		self.timing_info['serialize_accessible_elements_total'] = end_total - start_total
 
 		return SerializedDOMState(_root=optimized_tree, selector_map=self._selector_map), self.timing_info
+
+	@observe_debug(name='process_tree_recursive_pipeline', ignore_input=True, ignore_output=True)
+	@time_execution_sync('--process_tree_recursive_pipeline')
+	def process_tree_recursive_pipeline(
+		self, root: EnhancedDOMTreeNode, previous_cached_state: SerializedDOMState | None = None
+	) -> SimplifiedNode | None:
+		"""
+		Process the DOM tree through the complete recursive pipeline:
+		1. Create simplified tree (recursive)
+		2. Optimize tree (recursive)
+		3. Assign interactive indices and mark new nodes (recursive)
+
+		This wrapper allows timing measurement of the entire recursive tree processing pipeline.
+		"""
+		# Step 1: Create simplified tree
+		simplified_tree = self._create_simplified_tree(root)
+		if not simplified_tree:
+			return None
+
+		# Step 2: Optimize tree
+		optimized_tree = self._optimize_tree(simplified_tree)
+		if not optimized_tree:
+			return None
+
+		# Step 3: Assign interactive indices and mark new nodes (using iterative version since recursive doesn't exist)
+		self._assign_interactive_indices_iteratively(optimized_tree)
+
+		return optimized_tree
 
 	def _is_interactive_cached(self, node: EnhancedDOMTreeNode) -> bool:
 		"""Cached version of clickable element detection to avoid redundant calls."""
@@ -77,6 +102,207 @@ class DOMTreeSerializer:
 
 		return self._clickable_cache[node.node_id]
 
+	def _process_tree_iteratively(self, root: EnhancedDOMTreeNode) -> SimplifiedNode | None:
+		"""
+		Non-recursive function that combines _create_simplified_tree and _optimize_tree.
+		Uses iterative approach with explicit stack management for better performance measurement.
+		"""
+		if not root:
+			return None
+
+		# Step 1: Create simplified tree iteratively
+		start_step1 = time.time()
+		simplified_tree = self._create_simplified_tree_iteratively(root)
+		end_step1 = time.time()
+		self.timing_info['create_simplified_tree'] = end_step1 - start_step1
+
+		# Step 2: Optimize tree iteratively
+		start_step2 = time.time()
+		optimized_tree = self._optimize_tree_iteratively(simplified_tree)
+		end_step2 = time.time()
+		self.timing_info['optimize_tree'] = end_step2 - start_step2
+
+		return optimized_tree
+
+	@time_execution_sync('-- create_simplified_tree_iteratively')
+	@observe_debug(name='create_simplified_tree_iteratively', ignore_input=True, ignore_output=True)
+	def _create_simplified_tree_iteratively(self, root: EnhancedDOMTreeNode) -> SimplifiedNode | None:
+		"""
+		Non-recursive implementation of _create_simplified_tree using a stack-based approach.
+		"""
+		if not root:
+			return None
+
+		# Stack contains: (node, parent_simplified, is_processing_children)
+		# Using explicit list type to handle mixed SimplifiedNode | None
+		stack: list[tuple[EnhancedDOMTreeNode, SimplifiedNode | None, bool]] = []
+		stack.append((root, None, False))
+		node_to_simplified: dict[int, SimplifiedNode] = {}
+		result: SimplifiedNode | None = None
+
+		while stack:
+			node, parent_simplified, is_processing_children = stack.pop()
+
+			if is_processing_children:
+				# We're done processing children, now decide what to return
+				simplified = node_to_simplified.get(id(node))
+				if simplified and parent_simplified is not None:
+					parent_simplified.children.append(simplified)
+				elif simplified and parent_simplified is None:
+					result = simplified
+				continue
+
+			# Process current node
+			if node.node_type == NodeType.DOCUMENT_NODE:
+				# Push children for processing
+				if node.children_nodes:
+					stack.append((node, parent_simplified, True))  # Mark as processing children
+					for child in reversed(node.children_nodes):  # Reverse to maintain order
+						stack.append((child, parent_simplified, False))
+				continue
+
+			elif node.node_type == NodeType.ELEMENT_NODE:
+				if node.node_name == '#document':
+					# Push children for processing
+					if node.children_nodes:
+						stack.append((node, parent_simplified, True))  # Mark as processing children
+						for child in reversed(node.children_nodes):  # Reverse to maintain order
+							stack.append((child, parent_simplified, False))
+					continue
+
+				# Skip non-content elements
+				if node.node_name.lower() in ['style', 'script', 'head', 'meta', 'link', 'title']:
+					continue
+
+				# Use enhanced scoring for inclusion decision
+				is_interactive = self._is_interactive_cached(node)
+				is_visible = node.snapshot_node and node.snapshot_node.is_visible
+				is_scrollable = node.is_scrollable
+
+				# Include if interactive (regardless of visibility), or scrollable, or has children to process
+				should_include = (is_interactive and is_visible) or is_scrollable or node.children_nodes
+
+				if should_include:
+					simplified = SimplifiedNode(original_node=node)
+					node_to_simplified[id(node)] = simplified
+
+					# Mark for processing children
+					stack.append((node, parent_simplified, True))
+
+					# Process children
+					if node.children_nodes:
+						for child in reversed(node.children_nodes):  # Reverse to maintain order
+							stack.append((child, simplified, False))
+
+					# Return if meaningful or has meaningful children will be decided later
+					if (is_interactive and is_visible) or is_scrollable:
+						# This node is meaningful by itself
+						pass
+
+			elif node.node_type == NodeType.TEXT_NODE:
+				# Include meaningful text nodes
+				is_visible = node.snapshot_node and node.snapshot_node.is_visible
+				if is_visible and node.node_value and node.node_value.strip() and len(node.node_value.strip()) > 1:
+					simplified = SimplifiedNode(original_node=node)
+					node_to_simplified[id(node)] = simplified
+					if parent_simplified is not None:
+						parent_simplified.children.append(simplified)
+					elif result is None:
+						result = simplified
+
+		return result
+
+	@time_execution_sync('-- optimize_tree_iteratively')
+	@observe_debug(name='optimize_tree_iteratively', ignore_input=True, ignore_output=True)
+	def _optimize_tree_iteratively(self, root: SimplifiedNode | None) -> SimplifiedNode | None:
+		"""
+		Non-recursive implementation of _optimize_tree using a stack-based approach.
+		"""
+		if not root:
+			return None
+
+		# Stack contains: (node, is_processing_children)
+		stack = [(root, False)]
+		processed_nodes = set()
+
+		while stack:
+			node, is_processing_children = stack.pop()
+
+			if is_processing_children:
+				# We're done processing children, now optimize current node
+				processed_nodes.add(id(node))
+
+				# Keep only optimized children
+				optimized_children = []
+				for child in node.children:
+					if id(child) in processed_nodes:
+						optimized_children.append(child)
+
+				node.children = optimized_children
+
+				# Keep meaningful nodes
+				is_interactive_opt = self._is_interactive_cached(node.original_node)
+
+				if not (
+					is_interactive_opt
+					or node.original_node.is_scrollable
+					or node.original_node.node_type == NodeType.TEXT_NODE
+					or node.children
+				):
+					# This node should be removed
+					processed_nodes.discard(id(node))
+
+				continue
+
+			# First time processing this node
+			stack.append((node, True))  # Mark as processing children
+
+			# Process children first
+			for child in reversed(node.children):  # Reverse to maintain order
+				stack.append((child, False))
+
+		return root if id(root) in processed_nodes else None
+
+	def _collect_interactive_elements(self, node: SimplifiedNode, elements: list[SimplifiedNode]) -> None:
+		"""Recursively collect interactive elements."""
+		if self._is_interactive_cached(node.original_node):
+			elements.append(node)
+
+		for child in node.children:
+			self._collect_interactive_elements(child, elements)
+
+	def _assign_interactive_indices_iteratively(self, root: SimplifiedNode | None) -> None:
+		"""
+		Non-recursive implementation of _assign_interactive_indices_and_mark_new_nodes.
+		"""
+		if not root:
+			return
+
+		# Use breadth-first traversal to maintain consistent ordering
+		queue = deque([root])
+
+		while queue:
+			node = queue.popleft()
+
+			# Assign index to clickable elements
+			should_assign_index = not node.ignored_by_paint_order and self._is_interactive_cached(node.original_node)
+
+			if should_assign_index:
+				node.interactive_index = self._interactive_counter
+				self._selector_map[self._interactive_counter] = node.original_node
+				self._interactive_counter += 1
+
+				# Check if node is new
+				if self._previous_cached_selector_map:
+					previous_backend_node_ids = {node.backend_node_id for node in self._previous_cached_selector_map.values()}
+					if node.original_node.backend_node_id not in previous_backend_node_ids:
+						node.is_new = True
+
+			# Add children to queue
+			for child in node.children:
+				queue.append(child)
+
+	# Keep original recursive methods for compatibility/fallback
 	def _create_simplified_tree(self, node: EnhancedDOMTreeNode) -> SimplifiedNode | None:
 		"""Step 1: Create a simplified tree with enhanced element detection."""
 
@@ -159,37 +385,6 @@ class DOMTreeSerializer:
 			return node
 
 		return None
-
-	def _collect_interactive_elements(self, node: SimplifiedNode, elements: list[SimplifiedNode]) -> None:
-		"""Recursively collect interactive elements."""
-		if self._is_interactive_cached(node.original_node):
-			elements.append(node)
-
-		for child in node.children:
-			self._collect_interactive_elements(child, elements)
-
-	def _assign_interactive_indices_and_mark_new_nodes(self, node: SimplifiedNode | None) -> None:
-		"""Assign interactive indices to clickable elements."""
-		if not node:
-			return
-
-		# Assign index to clickable elements
-		should_assign_index = not node.ignored_by_paint_order and self._is_interactive_cached(node.original_node)
-
-		if should_assign_index:
-			node.interactive_index = self._interactive_counter
-			self._selector_map[self._interactive_counter] = node.original_node
-			self._interactive_counter += 1
-
-			# Check if node is new
-			if self._previous_cached_selector_map:
-				previous_backend_node_ids = {node.backend_node_id for node in self._previous_cached_selector_map.values()}
-				if node.original_node.backend_node_id not in previous_backend_node_ids:
-					node.is_new = True
-
-		# Process children
-		for child in node.children:
-			self._assign_interactive_indices_and_mark_new_nodes(child)
 
 	@staticmethod
 	def serialize_tree(node: SimplifiedNode | None, include_attributes: list[str], depth: int = 0) -> str:

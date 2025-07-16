@@ -1167,7 +1167,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 
 		return False, False
 
-	@observe(name='agent.run', metadata={'task': '{{task}}', 'debug': '{{debug}}'})
+	@observe(name='agent.run', metadata={'task': '{{task}}', 'debug': '{{debug}}'}, ignore_input=True, ignore_output=True)
 	@time_execution_async('--run')
 	async def run(
 		self,
@@ -1394,7 +1394,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		results: list[ActionResult] = []
 
 		assert self.browser_session is not None, 'BrowserSession is not set up'
-		cached_selector_map = await self.browser_session.get_selector_map()
+		cached_selector_map = await self.browser_session.get_validated_selector_map()
 		cached_element_hashes = {hash(e) for e in cached_selector_map.values()}
 
 		# await self.browser_session.remove_highlights()

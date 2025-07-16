@@ -581,6 +581,9 @@ class BrowserProfile(BrowserConnectArgs, BrowserLaunchPersistentContextArgs, Bro
 	include_dynamic_attributes: bool = Field(default=True, description='Include dynamic attributes in selectors.')
 	highlight_elements: bool = Field(default=True, description='Highlight interactive elements on the page.')
 	viewport_expansion: int = Field(default=500, description='Viewport expansion in pixels for LLM context.')
+	filter_dom_events: bool = Field(
+		default=True, description='Filter non-essential DOM events from ads, tracking, and dynamic content.'
+	)
 
 	profile_directory: str = 'Default'  # e.g. 'Profile 1', 'Profile 2', 'Custom Profile', etc.
 

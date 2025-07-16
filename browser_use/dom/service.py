@@ -244,7 +244,7 @@ class DomService:
 		enhanced_dom_tree, dom_timing = await self.get_dom_tree()
 
 		start = time.time()
-		serialized_dom_state, serializer_timing = DOMTreeSerializer(
+		serialized_dom_state, serializer_timing = await DOMTreeSerializer(
 			enhanced_dom_tree, previous_cached_state
 		).serialize_accessible_elements()
 

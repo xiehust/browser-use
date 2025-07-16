@@ -2,6 +2,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 from browser_use.dom.views import SimplifiedNode
+from browser_use.observability import observe_debug
+from browser_use.utils import time_execution_async
 
 """
 Helper class for maintaining a union of rectangles (used for order of elements calculation)
@@ -136,7 +138,9 @@ class PaintOrderRemover:
 	def __init__(self, root: SimplifiedNode):
 		self.root = root
 
-	def calculate_paint_order(self) -> None:
+	@time_execution_async('-- calculate_paint_order')
+	@observe_debug(name='calculate_paint_order', ignore_input=True, ignore_output=True)
+	async def calculate_paint_order(self) -> None:
 		all_simplified_nodes_with_paint_order: list[SimplifiedNode] = []
 
 		def collect_paint_order(node: SimplifiedNode) -> None:
