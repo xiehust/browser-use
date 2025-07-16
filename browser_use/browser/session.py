@@ -3574,7 +3574,7 @@ class BrowserSession(BaseModel):
 			# Use aggressive timeout to prevent hanging on DOM processing
 			updated_state = await asyncio.wait_for(
 				self._get_state_summary_impl(cache_clickable_elements_hashes),
-				timeout=25.0,  # Reduced from 45s to 25s
+				timeout=120.0,  # Reduced from 45s to 25s
 			)
 
 			# Cache the result so get_selector_map can access it
@@ -3608,43 +3608,52 @@ class BrowserSession(BaseModel):
 			# Get DOM tree with timeout
 			dom_tree_task = asyncio.create_task(dom_service.get_serialized_dom_tree())
 
+			# Run screenshot and DOM processing concurrently with timeouts
+			screenshot_result = await asyncio.wait_for(screenshot_task, timeout=5.0)
+			dom_result = await asyncio.wait_for(dom_tree_task, timeout=55.0)
+
+			# Extract results
+			screenshot_base64 = screenshot_result
+			dom_state, timing_info = dom_result
+
+			# Apply highlights with timeout protection
+			await self.inject_highlights(dom_service, dom_state.selector_map)
+
+			# Get URL and title
+			url = page.url
 			try:
-				# Run screenshot and DOM processing concurrently with timeouts
-				screenshot_result = await asyncio.wait_for(screenshot_task, timeout=5.0)
-				dom_result = await asyncio.wait_for(dom_tree_task, timeout=15.0)
+				title = await asyncio.wait_for(page.title(), timeout=3.0)
+			except Exception:
+				title = 'Title unavailable'
 
-				# Extract results
-				screenshot_base64 = screenshot_result
-				dom_state, timing_info = dom_result
+			# Get tabs info
+			tabs_info = await asyncio.wait_for(self.get_tabs_info(), timeout=10.0)
 
-				# Apply highlights with timeout protection
-				await self.remove_highlights(dom_service)
-				await self.inject_highlights(dom_service, dom_state.selector_map)
+			# Create summary
+			browser_state_summary = BrowserStateSummary(
+				screenshot=screenshot_base64,
+				dom_state=dom_state,
+				url=url,
+				title=title,
+				tabs=tabs_info,
+			)
 
-				# Get URL and title
-				url = page.url
-				try:
-					title = await asyncio.wait_for(page.title(), timeout=3.0)
-				except Exception:
-					title = 'Title unavailable'
+			# Update cached state
+			self._cached_browser_state_summary = browser_state_summary
 
-				# Get tabs info
-				tabs_info = await self.get_tabs_info()
-
-				return BrowserStateSummary(
+			# Cache clickable element hashes if requested
+			if cache_clickable_elements_hashes:
+				element_hashes = {str(hash(e)) for e in dom_state.selector_map.values()}
+				self._cached_clickable_element_hashes = CachedClickableElementHashes(
 					url=url,
-					title=title,
-					screenshot=screenshot_base64,
-					dom_state=dom_state,
-					tabs=tabs_info,
+					hashes=element_hashes,
 				)
 
-			except asyncio.TimeoutError as e:
-				self.logger.error(f'⚠️ State summary component timed out: {e}')
-				raise
-			except Exception as e:
-				self.logger.error(f'💥 State summary component failed: {type(e).__name__}: {e}')
-				raise
+			return browser_state_summary
+
+		except Exception as e:
+			self.logger.error(f'💥 State summary failed: {type(e).__name__}: {e}')
+			raise
 
 		finally:
 			# Always disable DOM events after processing to prevent flooding
@@ -3713,7 +3722,6 @@ class BrowserSession(BaseModel):
 
 			self.logger.debug('🌳 Starting DOM processing...')
 			dom_service = DomService(self)
-			await self.remove_highlights(dom_service)
 			try:
 				dom_state, timing_info = await asyncio.wait_for(
 					dom_service.get_serialized_dom_tree(
@@ -3815,7 +3823,7 @@ class BrowserSession(BaseModel):
 				return self.browser_state_summary
 			raise
 		finally:
-			await self.remove_highlights(dom_service)
+			pass
 
 	# region - Page Health Check Helpers
 	@observe_debug(ignore_input=True, ignore_output=True)
