@@ -321,6 +321,7 @@ class BrowserSession(BaseModel):
 	_cached_browser_state_summary: BrowserStateSummary | None = PrivateAttr(default=None)
 	_cached_clickable_element_hashes: CachedClickableElementHashes | None = PrivateAttr(default=None)
 	_cdp_session_id_initialized_domains_cache: dict[str, bool] = PrivateAttr(default={})
+	_cdp_session_cache: dict[str, str] = PrivateAttr(default={})
 
 	_tab_visibility_callback: Any = PrivateAttr(default=None)
 	_logger: logging.Logger | None = PrivateAttr(default=None)
@@ -1135,7 +1136,7 @@ class BrowserSession(BaseModel):
 
 		if self.cdp_client is None:
 			self.cdp_client = CDPClient(ws_url)
-			await self.cdp_client.start()
+			await self.cdp_client.start()  # type: ignore
 
 		return self.cdp_client
 
@@ -1152,16 +1153,26 @@ class BrowserSession(BaseModel):
 
 		return self.cdp_client
 
+	@observe_debug(name='get_current_page_cdp_session_id')
 	async def get_current_page_cdp_session_id(self) -> str:
 		"""Get the CDP client for the current page
 
-		TODO: add cache for page to sessionId -> right now we just don't initialize it, but we should definitely just make a getter function on the browser session
-
-		TODO: when removing playwright add tab management here as well
+		Uses caching to avoid creating new sessions for the same page/target.
 		"""
 		cdp_client = await self.get_cdp_client()
-
 		page = await self.get_current_page()
+
+		# Check cache first - key by page URL to reuse sessions for same page
+		cache_key = page.url
+		if cache_key in self._cdp_session_cache:
+			cached_session_id = self._cdp_session_cache[cache_key]
+
+			# Verify the cached session is still valid by checking if it's in initialized domains
+			if cached_session_id in self._cdp_session_id_initialized_domains_cache:
+				return cached_session_id
+			else:
+				# Session is stale, remove from cache
+				del self._cdp_session_cache[cache_key]
 
 		targets = await cdp_client.send.Target.getTargets()
 
@@ -1170,6 +1181,9 @@ class BrowserSession(BaseModel):
 				session = await cdp_client.send.Target.attachToTarget(params={'targetId': target['targetId'], 'flatten': True})
 
 				session_id = session['sessionId']
+
+				# Cache the session for this page
+				self._cdp_session_cache[cache_key] = session_id
 
 				if session_id in self._cdp_session_id_initialized_domains_cache:
 					return session_id
@@ -1931,6 +1945,9 @@ class BrowserSession(BaseModel):
 		self.cdp_url = None
 		self.browser_pid = None
 		self._cached_browser_state_summary = None
+		# Clear CDP session caches on reset
+		self._cdp_session_cache.clear()
+		self._cdp_session_id_initialized_domains_cache.clear()
 		# Don't clear self.playwright here - it should be cleared explicitly in kill()
 
 		if self.browser_pid:
