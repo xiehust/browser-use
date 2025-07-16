@@ -316,23 +316,23 @@ class TestControllerIntegration:
 			""",
 			content_type='text/html',
 		)
-		
+
 		# Navigate to test page
 		page = await browser_session.get_current_page()
 		await page.goto(httpserver.url_for('/input_test'))
 		await page.wait_for_load_state()
 		await asyncio.sleep(0.5)  # Give iframe time to load
-		
+
 		# Get page state
 		state = await browser_session.get_state_summary(cache_clickable_elements_hashes=True)
 		selector_map = state.dom_state.selector_map
-		
+
 		# Find indices for different input elements
 		text_input_idx = None
 		textarea_idx = None
 		prefilled_idx = None
 		contenteditable_idx = None
-		
+
 		for idx, element in selector_map.items():
 			if element.tag_name.lower() == 'input' and element.attributes.get('id') == 'text-input':
 				text_input_idx = idx
@@ -342,77 +342,72 @@ class TestControllerIntegration:
 				prefilled_idx = idx
 			elif element.tag_name.lower() == 'div' and element.attributes.get('contenteditable') == 'true':
 				contenteditable_idx = idx
-		
+
 		# Test 1: Basic text input with CDP
-		assert text_input_idx is not None, "Could not find text input"
+		assert text_input_idx is not None, 'Could not find text input'
 		test_text = 'Hello CDP!'
-		
+
 		class InputTextActionModel(ActionModel):
 			input_text: InputTextAction | None = None
-		
+
 		result = await controller.act(
-			InputTextActionModel(input_text=InputTextAction(index=text_input_idx, text=test_text)),
-			browser_session
+			InputTextActionModel(input_text=InputTextAction(index=text_input_idx, text=test_text)), browser_session
 		)
-		
+
 		assert isinstance(result, ActionResult)
 		assert '⌨️  Input' in result.extracted_content
 		assert str(text_input_idx) in result.extracted_content
 		assert result.error is None
-		
+
 		# Verify text was entered
 		await asyncio.sleep(0.3)
 		input_value = await page.evaluate('document.getElementById("text-input").value')
 		assert input_value == test_text
-		
+
 		# Test 2: Textarea input
 		if textarea_idx is not None:
 			textarea_text = 'Multi\nline\ntext'
 			result2 = await controller.act(
-				InputTextActionModel(input_text=InputTextAction(index=textarea_idx, text=textarea_text)),
-				browser_session
+				InputTextActionModel(input_text=InputTextAction(index=textarea_idx, text=textarea_text)), browser_session
 			)
-			
+
 			assert result2.error is None
 			await asyncio.sleep(0.3)
 			textarea_value = await page.evaluate('document.getElementById("textarea-input").value')
 			assert textarea_value == textarea_text
-		
+
 		# Test 3: Replace existing text (tests Ctrl+A and Delete)
 		if prefilled_idx is not None:
 			new_text = 'Replaced text'
 			result3 = await controller.act(
-				InputTextActionModel(input_text=InputTextAction(index=prefilled_idx, text=new_text)),
-				browser_session
+				InputTextActionModel(input_text=InputTextAction(index=prefilled_idx, text=new_text)), browser_session
 			)
-			
+
 			assert result3.error is None
 			await asyncio.sleep(0.3)
 			replaced_value = await page.evaluate('document.getElementById("prefilled-input").value')
 			assert replaced_value == new_text
 			assert 'Existing text' not in replaced_value  # Old text should be gone
-		
+
 		# Test 4: Contenteditable div (different element type)
 		if contenteditable_idx is not None:
 			content_text = 'New editable content'
 			result4 = await controller.act(
-				InputTextActionModel(input_text=InputTextAction(index=contenteditable_idx, text=content_text)),
-				browser_session
+				InputTextActionModel(input_text=InputTextAction(index=contenteditable_idx, text=content_text)), browser_session
 			)
-			
+
 			# Even if it fails with CDP, should fall back to browser method
 			assert result4.extracted_content is not None
-		
+
 		# Test 5: Invalid index (error handling)
 		invalid_idx = 99999
 		result5 = await controller.act(
-			InputTextActionModel(input_text=InputTextAction(index=invalid_idx, text='test')),
-			browser_session
+			InputTextActionModel(input_text=InputTextAction(index=invalid_idx, text='test')), browser_session
 		)
-		
+
 		# Should get an error or exception
 		assert result5.error is not None or result5.success is False
-		
+
 	async def test_input_text_cdp_fallback(self, controller, browser_session, httpserver):
 		"""Test CDP fallback scenarios for input_text action."""
 		# Create a page that might cause CDP issues
@@ -437,11 +432,11 @@ class TestControllerIntegration:
 			""",
 			content_type='text/html',
 		)
-		
+
 		page = await browser_session.get_current_page()
 		await page.goto(httpserver.url_for('/complex_input'))
 		await page.wait_for_load_state()
-		
+
 		# Get input element index
 		state = await browser_session.get_state_summary(cache_clickable_elements_hashes=True)
 		input_idx = None
@@ -449,36 +444,35 @@ class TestControllerIntegration:
 			if element.tag_name.lower() == 'input':
 				input_idx = idx
 				break
-		
+
 		assert input_idx is not None
-		
+
 		# Mock CDP failure by temporarily breaking the CDP client
 		# This will force fallback to browser_session method
 		original_get_cdp_client = browser_session.get_cdp_client
-		
+
 		async def mock_cdp_failure():
-			raise Exception("Mock CDP failure")
-		
+			raise Exception('Mock CDP failure')
+
 		browser_session.get_cdp_client = mock_cdp_failure
-		
+
 		try:
 			# This should fall back to browser method
 			class InputTextActionModel(ActionModel):
 				input_text: InputTextAction | None = None
-			
+
 			result = await controller.act(
-				InputTextActionModel(input_text=InputTextAction(index=input_idx, text='Fallback test')),
-				browser_session
+				InputTextActionModel(input_text=InputTextAction(index=input_idx, text='Fallback test')), browser_session
 			)
-			
+
 			# Should still succeed with fallback
 			assert '⌨️  Input' in result.extracted_content
-			
+
 			# Verify text was entered via fallback
 			await asyncio.sleep(0.3)
 			value = await page.evaluate('document.getElementById("test-input").value')
 			assert value == 'Fallback test'
-		
+
 		finally:
 			# Restore original method
 			browser_session.get_cdp_client = original_get_cdp_client
@@ -587,32 +581,35 @@ class TestControllerIntegration:
 		"""Test go_back action when there's no history to go back to."""
 		# Open a new tab to get a clean history
 		open_tab_action = {'go_to_url': GoToUrlAction(url=f'{base_url}/page1', new_tab=True)}
+
 		class GoToUrlActionModel(ActionModel):
 			go_to_url: GoToUrlAction | None = None
-		
+
 		result = await controller.act(GoToUrlActionModel(**open_tab_action), browser_session)
-		
+
 		# Switch to the new tab
 		page = await browser_session.get_current_page()
 		tab_index = browser_session.tabs.index(page)
-		
+
 		# Now we're on a new tab with only one history entry
 		# Try to go back - should fail since we're at the beginning
 		go_back_action = {'go_back': NoParamsAction()}
+
 		class GoBackActionModel(ActionModel):
 			go_back: NoParamsAction | None = None
-		
+
 		result = await controller.act(GoBackActionModel(**go_back_action), browser_session)
-		
+
 		# Should indicate cannot go back
 		assert isinstance(result, ActionResult)
 		assert result.extracted_content is not None
 		# The result could be either "Cannot go back" or it navigated to about:blank
 		# depending on the browser's initial state
-		assert ('Cannot go back' in result.extracted_content or 
-		        'about:blank' in result.extracted_content or
-		        'chrome://new-tab-page' in result.extracted_content), \
-		       f"Unexpected result: {result.extracted_content}"
+		assert (
+			'Cannot go back' in result.extracted_content
+			or 'about:blank' in result.extracted_content
+			or 'chrome://new-tab-page' in result.extracted_content
+		), f'Unexpected result: {result.extracted_content}'
 
 	async def test_go_back_spa_navigation(self, controller, browser_session, httpserver):
 		"""Test go_back with SPA using history.pushState."""
@@ -657,45 +654,48 @@ class TestControllerIntegration:
 			""",
 			content_type='text/html',
 		)
-		
+
 		# Navigate to SPA
 		goto_action = {'go_to_url': GoToUrlAction(url=httpserver.url_for('/spa'), new_tab=False)}
+
 		class GoToUrlActionModel(ActionModel):
 			go_to_url: GoToUrlAction | None = None
+
 		await controller.act(GoToUrlActionModel(**goto_action), browser_session)
-		
+
 		page = await browser_session.get_current_page()
-		
+
 		# Click About button (pushState navigation)
 		await page.click('#about')
 		await asyncio.sleep(0.5)  # Wait for JS to execute
-		
+
 		# Verify we're on about page
 		assert '/spa/about' in page.url
 		title_text = await page.text_content('#title')
 		assert title_text == 'About'
-		
+
 		# Click Contact button
 		await page.click('#contact')
 		await asyncio.sleep(0.5)
-		
+
 		# Verify we're on contact page
 		assert '/spa/contact' in page.url
 		title_text = await page.text_content('#title')
 		assert title_text == 'Contact'
-		
+
 		# Go back using CDP
 		go_back_action = {'go_back': NoParamsAction()}
+
 		class GoBackActionModel(ActionModel):
 			go_back: NoParamsAction | None = None
-		
+
 		result = await controller.act(GoBackActionModel(**go_back_action), browser_session)
-		
+
 		# Verify we're back on About
 		assert isinstance(result, ActionResult)
 		assert 'Navigated back' in result.extracted_content
 		assert '/spa/about' in result.extracted_content
-		
+
 		# Wait for popstate handler to update the page
 		await asyncio.sleep(0.5)
 		assert '/spa/about' in page.url
@@ -706,42 +706,45 @@ class TestControllerIntegration:
 		"""Test that go_back falls back to browser_session method if CDP fails."""
 		# Navigate to two pages to have history
 		goto_action1 = {'go_to_url': GoToUrlAction(url=f'{base_url}/page1', new_tab=False)}
+
 		class GoToUrlActionModel(ActionModel):
 			go_to_url: GoToUrlAction | None = None
+
 		await controller.act(GoToUrlActionModel(**goto_action1), browser_session)
-		
+
 		goto_action2 = {'go_to_url': GoToUrlAction(url=f'{base_url}/page2', new_tab=False)}
 		await controller.act(GoToUrlActionModel(**goto_action2), browser_session)
-		
+
 		# Temporarily break CDP client to test fallback
 		original_get_cdp_client = browser_session.get_cdp_client
-		
+
 		async def failing_cdp_client():
-			raise Exception("CDP client unavailable for testing")
-		
+			raise Exception('CDP client unavailable for testing')
+
 		browser_session.get_cdp_client = failing_cdp_client
-		
+
 		try:
 			# Execute go back - should use fallback
 			go_back_action = {'go_back': NoParamsAction()}
+
 			class GoBackActionModel(ActionModel):
 				go_back: NoParamsAction | None = None
-			
+
 			result = await controller.act(GoBackActionModel(**go_back_action), browser_session)
-			
+
 			# Should still succeed using fallback
 			assert isinstance(result, ActionResult)
 			assert result.extracted_content is not None
 			assert 'Navigated back' in result.extracted_content
 			assert result.error is None
-			
+
 			# Wait for navigation
 			await asyncio.sleep(1)
-			
+
 			# Verify we're back on page1
 			page = await browser_session.get_current_page()
 			assert f'{base_url}/page1' in page.url
-			
+
 		finally:
 			# Restore original method
 			browser_session.get_cdp_client = original_get_cdp_client
@@ -1124,6 +1127,103 @@ class TestControllerIntegration:
 		# Verify the test input still has its value
 		input_value = await page.evaluate('() => document.getElementById("textInput").value')
 		assert input_value == test_text, "Input value shouldn't have changed after tabbing"
+
+	@pytest.mark.asyncio
+	async def test_send_keys_cdp_fallback(self, controller, browser_session, base_url, http_server, monkeypatch):
+		"""Test that send_keys falls back to Playwright when CDP fails."""
+		# Add route for a simple input page
+		http_server.expect_request('/keys-fallback').respond_with_data(
+			"""
+			<!DOCTYPE html>
+			<html>
+			<head>
+				<title>Keys Fallback Test</title>
+			</head>
+			<body>
+				<h1>Keys Fallback Test</h1>
+				<input type="text" id="test-input" />
+				<div id="result"></div>
+			</body>
+			</html>
+			""",
+			content_type='text/html',
+		)
+
+		# Navigate to the test page
+		goto_action = {'go_to_url': GoToUrlAction(url=f'{base_url}/keys-fallback', new_tab=False)}
+
+		class GoToUrlActionModel(ActionModel):
+			go_to_url: GoToUrlAction | None = None
+
+		await controller.act(GoToUrlActionModel(**goto_action), browser_session)
+		await asyncio.sleep(0.1)
+
+		page = await browser_session.get_current_page()
+		
+		# Click on the input to focus it
+		await page.click('#test-input')
+		
+		# Mock CDP client to raise an exception when sending key events
+		original_get_cdp_client = browser_session.get_cdp_client
+
+		async def mock_cdp_client():
+			"""Mock CDP client that raises exception for Input.dispatchKeyEvent"""
+			cdp_client = await original_get_cdp_client()
+			original_send_input = cdp_client.send.Input.dispatchKeyEvent
+
+			async def failing_dispatch_key_event(*args, **kwargs):
+				raise Exception('CDP key dispatch failed for testing')
+
+			cdp_client.send.Input.dispatchKeyEvent = failing_dispatch_key_event
+			return cdp_client
+
+		monkeypatch.setattr(browser_session, 'get_cdp_client', mock_cdp_client)
+
+		# Test send_keys with CDP failure - should fall back to Playwright
+		test_keys = 'test123'
+		send_keys_action = {'send_keys': SendKeysAction(keys=test_keys)}
+
+		class SendKeysActionModel(ActionModel):
+			send_keys: SendKeysAction | None = None
+
+		result = await controller.act(SendKeysActionModel(**send_keys_action), browser_session)
+		await asyncio.sleep(0.1)
+
+		# Verify action succeeded despite CDP failure
+		assert isinstance(result, ActionResult)
+		assert result.extracted_content is not None
+		assert f'Sent keys: {test_keys}' in result.extracted_content
+		assert result.error is None
+		assert result.is_done is False
+
+		# Verify text was entered (via Playwright fallback)
+		input_value = await page.evaluate('() => document.getElementById("test-input").value')
+		assert input_value == test_keys, f"Expected input value '{test_keys}', got '{input_value}'"
+
+		# Test special keys with CDP failure - should fall back to Playwright
+		enter_action = {'send_keys': SendKeysAction(keys='Enter')}
+		enter_result = await controller.act(SendKeysActionModel(**enter_action), browser_session)
+		
+		assert isinstance(enter_result, ActionResult)
+		assert enter_result.extracted_content is not None
+		assert 'Sent keys: Enter' in enter_result.extracted_content
+		assert enter_result.error is None
+
+		# Test keyboard shortcuts with CDP failure
+		select_all_action = {'send_keys': SendKeysAction(keys='ControlOrMeta+a')}
+		select_result = await controller.act(SendKeysActionModel(**select_all_action), browser_session)
+		
+		assert isinstance(select_result, ActionResult)
+		assert select_result.extracted_content is not None
+		assert 'Sent keys: ControlOrMeta+a' in select_result.extracted_content
+		assert select_result.error is None
+
+		# Verify selection via Playwright fallback
+		await asyncio.sleep(0.1)
+		selection_length = await page.evaluate(
+			'() => { const el = document.getElementById("test-input"); return el.selectionEnd - el.selectionStart; }'
+		)
+		assert selection_length == len(test_keys), f'Expected selection length {len(test_keys)}, got {selection_length}'
 
 	async def test_get_dropdown_options(self, controller, browser_session, base_url, http_server):
 		"""Test that get_dropdown_options correctly retrieves options from a dropdown."""

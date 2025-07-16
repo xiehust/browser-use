@@ -132,43 +132,40 @@ class Controller(Generic[Context]):
 				# Get CDP client and session ID
 				cdp_client = await browser_session.get_cdp_client()
 				session_id = await browser_session.get_current_page_cdp_session_id()
-				
+
 				# Get navigation history
 				history = await cdp_client.send.Page.getNavigationHistory(session_id=session_id)
 				current_index = history['currentIndex']
 				entries = history['entries']
-				
+
 				# Check if we can go back
 				if current_index <= 0:
 					msg = '⚠️  Cannot go back - no previous page in history'
 					logger.warning(msg)
 					return ActionResult(
-						extracted_content=msg, 
-						include_in_memory=True, 
-						long_term_memory='Attempted to go back but no history available'
+						extracted_content=msg,
+						include_in_memory=True,
+						long_term_memory='Attempted to go back but no history available',
 					)
-				
+
 				# Get the previous entry
 				previous_entry = entries[current_index - 1]
 				previous_entry_id = previous_entry['id']
 				previous_url = previous_entry['url']
-				
+
 				# Navigate to the previous history entry
-				await cdp_client.send.Page.navigateToHistoryEntry(
-					params={'entryId': previous_entry_id},
-					session_id=session_id
-				)
-				
+				await cdp_client.send.Page.navigateToHistoryEntry(params={'entryId': previous_entry_id}, session_id=session_id)
+
 				# For SPAs using history.pushState, the URL changes immediately but no load event fires
 				# For real navigations, we need to wait for the page to load
 				# We'll use a hybrid approach: wait a bit, then check if URL changed
-				
+
 				await asyncio.sleep(0.3)  # Give browser time to start navigation
-				
+
 				# Check if we're on the expected URL now
 				page = await browser_session.get_current_page()
 				current_url = page.url
-				
+
 				if current_url != previous_url:
 					# URL changed but might still be loading
 					# For real navigations, wait a bit more for content to load
@@ -187,15 +184,13 @@ class Controller(Generic[Context]):
 								break
 					except Exception as e:
 						logger.debug(f'Error while waiting for navigation: {e}')
-				
+
 				msg = f'🔙  Navigated back to {previous_url}'
 				logger.info(msg)
 				return ActionResult(
-					extracted_content=msg, 
-					include_in_memory=True, 
-					long_term_memory=f'Navigated back to {previous_url}'
+					extracted_content=msg, include_in_memory=True, long_term_memory=f'Navigated back to {previous_url}'
 				)
-				
+
 			except Exception as e:
 				# Fallback to browser_session method if CDP fails
 				logger.debug(f'⚠️  CDP navigation failed: {type(e).__name__}: {e}, falling back to browser method')
@@ -298,19 +293,16 @@ class Controller(Generic[Context]):
 				# Try CDP-based input first
 				cdp_client = await browser_session.get_cdp_client()
 				session_id = await browser_session.get_current_page_cdp_session_id()
-				
+
 				# Get the backend node ID for the element
 				backend_node_id = element_node.backend_node_id
-				
+
 				# First focus the element using CDP
-				await cdp_client.send.DOM.focus(
-					params={'backendNodeId': backend_node_id},
-					session_id=session_id
-				)
-				
+				await cdp_client.send.DOM.focus(params={'backendNodeId': backend_node_id}, session_id=session_id)
+
 				# Wait a bit for focus to take effect
 				await asyncio.sleep(0.1)
-				
+
 				# Clear existing text by selecting all and deleting
 				# Send Ctrl+A (or Cmd+A on Mac) to select all
 				modifiers = 2  # Ctrl key (use 4 for Meta/Cmd on Mac if needed)
@@ -321,7 +313,7 @@ class Controller(Generic[Context]):
 						'code': 'KeyA',
 						'modifiers': modifiers,
 					},
-					session_id=session_id
+					session_id=session_id,
 				)
 				await cdp_client.send.Input.dispatchKeyEvent(
 					params={
@@ -330,56 +322,52 @@ class Controller(Generic[Context]):
 						'code': 'KeyA',
 						'modifiers': modifiers,
 					},
-					session_id=session_id
+					session_id=session_id,
 				)
-				
+
 				# Delete selected text
 				await cdp_client.send.Input.dispatchKeyEvent(
 					params={
 						'type': 'keyDown',
-						'key': 'Delete',
-						'code': 'Delete',
+						'key': 'Backspace',
+						'code': 'Backspace',
 					},
-					session_id=session_id
+					session_id=session_id,
 				)
 				await cdp_client.send.Input.dispatchKeyEvent(
 					params={
 						'type': 'keyUp',
-						'key': 'Delete',
-						'code': 'Delete',
+						'key': 'Backspace',
+						'code': 'Backspace',
 					},
-					session_id=session_id
+					session_id=session_id,
 				)
-				
+
 				# Small delay after clearing
 				await asyncio.sleep(0.05)
-				
+
 				# Insert the new text using CDP
-				await cdp_client.send.Input.insertText(
-					params={'text': params.text},
-					session_id=session_id
-				)
-				
+				await cdp_client.send.Input.insertText(params={'text': params.text}, session_id=session_id)
+
 				# Resolve the node to get a remote object ID that we can use with Runtime
 				try:
 					resolved_node = await cdp_client.send.DOM.resolveNode(
-						params={'backendNodeId': backend_node_id},
-						session_id=session_id
+						params={'backendNodeId': backend_node_id}, session_id=session_id
 					)
 					object_id = resolved_node['object']['objectId']
-					
+
 					# Dispatch input and change events using the resolved node
 					await cdp_client.send.Runtime.callFunctionOn(
 						params={
-							'functionDeclaration': '''
+							'functionDeclaration': """
 								function() {
 									this.dispatchEvent(new Event('input', { bubbles: true }));
 									this.dispatchEvent(new Event('change', { bubbles: true }));
 								}
-							''',
+							""",
 							'objectId': object_id,
 						},
-						session_id=session_id
+						session_id=session_id,
 					)
 				except Exception as e:
 					# If resolveNode fails (e.g., element in iframe), try a more generic approach
@@ -387,7 +375,7 @@ class Controller(Generic[Context]):
 					# Use Runtime.evaluate to find and trigger events on the focused element
 					await cdp_client.send.Runtime.evaluate(
 						params={
-							'expression': '''
+							'expression': """
 								(() => {
 									const activeElement = document.activeElement;
 									if (activeElement && (activeElement.tagName === 'INPUT' || 
@@ -397,11 +385,11 @@ class Controller(Generic[Context]):
 										activeElement.dispatchEvent(new Event('change', { bubbles: true }));
 									}
 								})()
-							'''
+							"""
 						},
-						session_id=session_id
+						session_id=session_id,
 					)
-				
+
 			except Exception as e:
 				# Fallback to browser_session method if CDP fails
 				logger.debug(f'CDP input failed: {type(e).__name__}: {e}, falling back to browser method')
@@ -873,16 +861,19 @@ Explain the content of the page and that the requested information is not availa
 				# Get CDP client and session ID
 				cdp_client = await browser_session.get_cdp_client()
 				session_id = await browser_session.get_current_page_cdp_session_id()
-				
+
 				# Parse the key string to handle modifiers and special keys
 				keys_to_send = params.keys
-				
+
 				# Check if it's a keyboard shortcut with modifiers
 				modifiers = 0
 				parts = keys_to_send.split('+')
-				
+
+				# Check if it's a special key or shortcut
+				is_special_key = False
 				if len(parts) > 1:
 					# Handle shortcuts like Control+o, Control+Shift+T
+					is_special_key = True
 					for part in parts[:-1]:  # All but the last part are modifiers
 						part_lower = part.lower()
 						if part_lower in ['ctrl', 'control']:
@@ -893,50 +884,105 @@ Explain the content of the page and that the requested information is not availa
 							modifiers |= 1  # Alt
 						elif part_lower in ['meta', 'command', 'cmd']:
 							modifiers |= 4  # Meta/Command
-					
+						elif part_lower == 'controlormeta':
+							# Use Control on non-Mac, Meta on Mac
+							import platform
+							if platform.system() == 'Darwin':
+								modifiers |= 4  # Meta/Command on Mac
+							else:
+								modifiers |= 2  # Control on Windows/Linux
+
 					# The last part is the actual key
 					main_key = parts[-1]
 				else:
-					main_key = keys_to_send
-				
-				# Determine key and code values
-				# For most special keys, the key and code are the same
-				if main_key == ' ':
-					key = ' '
-					code = 'Space'
-				elif len(main_key) == 1:
-					# Single character
-					key = main_key
-					code = f'Key{main_key.upper()}' if main_key.isalpha() else f'Digit{main_key}' if main_key.isdigit() else main_key
-				else:
-					# Multi-character keys like Enter, Escape, F1, etc.
-					# For most keys, the key name and code are the same
-					key = main_key
-					code = main_key
-				
-				# Send keyDown event
-				await cdp_client.send.Input.dispatchKeyEvent(
-					params={
+					# Check if it's a single special key (Tab, Enter, etc.) or regular text
+					special_keys = ['Tab', 'Enter', 'Escape', 'Backspace', 'Delete', 'PageDown', 'PageUp', 
+									'Home', 'End', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+									'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12']
+					if keys_to_send in special_keys:
+						is_special_key = True
+						main_key = keys_to_send
+					else:
+						# It's regular text to type - handle each character
+						for char in keys_to_send:
+							# Determine key and code for each character
+							if char == ' ':
+								key = ' '
+								code = 'Space'
+							elif char.isalpha():
+								key = char
+								code = f'Key{char.upper()}'
+							elif char.isdigit():
+								key = char
+								code = f'Digit{char}'
+							else:
+								key = char
+								code = char
+							
+							# Send keyDown
+							keydown_params = {
+								'type': 'keyDown',
+								'key': key,
+								'code': code,
+								'modifiers': 0,
+								'text': char
+							}
+							await cdp_client.send.Input.dispatchKeyEvent(params=keydown_params, session_id=session_id)
+							
+							# Send keyUp
+							await cdp_client.send.Input.dispatchKeyEvent(
+								params={
+									'type': 'keyUp',
+									'key': key,
+									'code': code,
+									'modifiers': 0,
+								},
+								session_id=session_id,
+							)
+						# We've handled all characters, return early
+						msg = f'⌨️  Sent keys: {params.keys}'
+						logger.info(msg)
+						return ActionResult(extracted_content=msg, include_in_memory=True, long_term_memory=f'Sent keys: {params.keys}')
+
+				# If we get here, it's a special key or shortcut
+				if is_special_key:
+					# Determine key and code values
+					if main_key == ' ':
+						key = ' '
+						code = 'Space'
+					elif len(main_key) == 1:
+						# Single character with modifier
+						key = main_key
+						code = f'Key{main_key.upper()}' if main_key.isalpha() else f'Digit{main_key}' if main_key.isdigit() else main_key
+					else:
+						# Multi-character keys like Enter, Escape, F1, etc.
+						key = main_key
+						code = main_key
+
+					# Send keyDown event
+					keydown_params = {
 						'type': 'keyDown',
 						'key': key,
 						'code': code,
 						'modifiers': modifiers,
-						'text': key if len(key) == 1 and modifiers == 0 else None,
-					},
-					session_id=session_id
-				)
-				
-				# Send keyUp event
-				await cdp_client.send.Input.dispatchKeyEvent(
-					params={
-						'type': 'keyUp',
-						'key': key,
-						'code': code,
-						'modifiers': modifiers,
-					},
-					session_id=session_id
-				)
-				
+					}
+					# Only include text for single character keys without modifiers
+					if len(key) == 1 and modifiers == 0:
+						keydown_params['text'] = key
+					
+					await cdp_client.send.Input.dispatchKeyEvent(params=keydown_params, session_id=session_id)
+
+					# Send keyUp event
+					await cdp_client.send.Input.dispatchKeyEvent(
+						params={
+							'type': 'keyUp',
+							'key': key,
+							'code': code,
+							'modifiers': modifiers,
+						},
+						session_id=session_id,
+					)
+
 			except Exception as e:
 				# Fallback to playwright method if CDP fails
 				logger.debug(f'CDP send_keys failed: {type(e).__name__}: {e}, falling back to browser method')
@@ -954,7 +1000,7 @@ Explain the content of the page and that the requested information is not availa
 								raise e3
 					else:
 						raise e2
-			
+
 			msg = f'⌨️  Sent keys: {params.keys}'
 			logger.info(msg)
 			return ActionResult(extracted_content=msg, include_in_memory=True, long_term_memory=f'Sent keys: {params.keys}')
