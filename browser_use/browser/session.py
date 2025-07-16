@@ -1228,23 +1228,22 @@ class BrowserSession(BaseModel):
 		"""Enable the CDP domains for a given session id"""
 		cdp_client = await self.get_cdp_client()
 
-		# Enable domains with individual timeout protection
+		# Enable only minimal essential domains
+		# Note: DOM domain is intentionally NOT enabled here to prevent event flooding
 		try:
-			# Enable essential domains for DOM processing
+			# Enable only essential domains for basic functionality
 			await asyncio.gather(
-				asyncio.wait_for(cdp_client.send.DOM.enable(session_id=session_id), timeout=3.0),
-				asyncio.wait_for(cdp_client.send.Accessibility.enable(session_id=session_id), timeout=3.0),
-				asyncio.wait_for(cdp_client.send.DOMSnapshot.enable(session_id=session_id), timeout=3.0),
 				asyncio.wait_for(cdp_client.send.Page.enable(session_id=session_id), timeout=3.0),
+				asyncio.wait_for(cdp_client.send.Runtime.enable(session_id=session_id), timeout=3.0),
 				return_exceptions=True,
 			)
 
-			self.logger.debug(f'✅ Enabled CDP domains for session {session_id[:8]}')
+			self.logger.debug(f'✅ Enabled minimal CDP domains for session {session_id[:8]}')
 		except Exception as e:
 			self.logger.warning(f'⚠️ Failed to enable CDP domains for session {session_id[:8]}: {type(e).__name__}: {e}')
 			raise
 
-		# Configure DOM event filtering with timeout protection
+		# Configure aggressive DOM event filtering with timeout protection
 		try:
 			await asyncio.wait_for(self._configure_dom_event_filtering(session_id), timeout=5.0)
 		except Exception as e:
@@ -1252,29 +1251,45 @@ class BrowserSession(BaseModel):
 			# Don't fail the whole session if filtering setup fails
 			pass
 
-	async def _disable_dom_events_temporarily(self, session_id: str) -> None:
-		"""Temporarily disable DOM events to reduce noise when not actively processing DOM"""
+	async def _enable_dom_events_for_processing(self, session_id: str) -> None:
+		"""Enable DOM events for active DOM processing"""
 		if not self.browser_profile.filter_dom_events:
 			return
 
 		try:
 			cdp_client = await self.get_cdp_client()
-			await asyncio.wait_for(cdp_client.send.DOM.disable(session_id=session_id), timeout=2.0)
-			self.logger.debug('🔇 DOM events temporarily disabled')
+
+			# Enable DOM, Accessibility, and DOMSnapshot domains for processing
+			await asyncio.gather(
+				asyncio.wait_for(cdp_client.send.DOM.enable(session_id=session_id), timeout=3.0),
+				asyncio.wait_for(cdp_client.send.Accessibility.enable(session_id=session_id), timeout=3.0),
+				asyncio.wait_for(cdp_client.send.DOMSnapshot.enable(session_id=session_id), timeout=3.0),
+				return_exceptions=True,
+			)
+
+			self.logger.debug('🔊 DOM events enabled for processing')
+		except Exception as e:
+			self.logger.debug(f'⚠️ Failed to enable DOM events: {type(e).__name__}: {e}')
+
+	async def _disable_dom_events_after_processing(self, session_id: str) -> None:
+		"""Disable DOM events after processing to reduce noise"""
+		if not self.browser_profile.filter_dom_events:
+			return
+
+		try:
+			cdp_client = await self.get_cdp_client()
+
+			# Disable DOM events that cause flooding
+			await asyncio.gather(
+				asyncio.wait_for(cdp_client.send.DOM.disable(session_id=session_id), timeout=2.0),
+				asyncio.wait_for(cdp_client.send.Accessibility.disable(session_id=session_id), timeout=2.0),
+				asyncio.wait_for(cdp_client.send.DOMSnapshot.disable(session_id=session_id), timeout=2.0),
+				return_exceptions=True,
+			)
+
+			self.logger.debug('🔇 DOM events disabled after processing')
 		except Exception as e:
 			self.logger.debug(f'⚠️ Failed to disable DOM events: {type(e).__name__}: {e}')
-
-	async def _enable_dom_events_for_processing(self, session_id: str) -> None:
-		"""Re-enable DOM events for active DOM processing"""
-		if not self.browser_profile.filter_dom_events:
-			return
-
-		try:
-			cdp_client = await self.get_cdp_client()
-			await asyncio.wait_for(cdp_client.send.DOM.enable(session_id=session_id), timeout=2.0)
-			self.logger.debug('🔊 DOM events re-enabled for processing')
-		except Exception as e:
-			self.logger.debug(f'⚠️ Failed to re-enable DOM events: {type(e).__name__}: {e}')
 
 	async def _configure_dom_event_filtering(self, session_id: str) -> None:
 		"""Configure aggressive CDP and DOM event filtering to reduce noise."""
@@ -1284,106 +1299,132 @@ class BrowserSession(BaseModel):
 		try:
 			cdp_client = await self.get_cdp_client()
 
-			# 1. DISABLE EXPENSIVE CDP EVENTS AT SOURCE
-			# These events flood the connection and cause performance issues
+			# 1. COMPLETELY DISABLE PROBLEMATIC DOMAINS
+			# These are the main sources of event flooding
+			# Disable CSS domain
 			try:
-				# Disable CSS domain to reduce style invalidation events
 				await asyncio.wait_for(
 					cdp_client.send.CSS.disable(session_id=session_id),
-					timeout=2.0,
+					timeout=1.0,
 				)
-				self.logger.debug('🚫 Disabled CSS domain to reduce style events')
+				self.logger.debug('🚫 Disabled CSS domain')
 			except Exception as e:
 				self.logger.debug(f'⚠️ Failed to disable CSS domain: {type(e).__name__}: {e}')
 
-			# 2. DISABLE DOM DOMAIN EVENTS TEMPORARILY
-			# DOM events like inlineStyleInvalidated can flood the connection
+			# Disable Animation domain
 			try:
-				# Temporarily disable DOM domain to stop the flood
+				await asyncio.wait_for(
+					cdp_client.send.Animation.disable(session_id=session_id),
+					timeout=1.0,
+				)
+				self.logger.debug('🚫 Disabled Animation domain')
+			except Exception as e:
+				self.logger.debug(f'⚠️ Failed to disable Animation domain: {type(e).__name__}: {e}')
+
+			# Disable LayerTree domain
+			try:
+				await asyncio.wait_for(
+					cdp_client.send.LayerTree.disable(session_id=session_id),
+					timeout=1.0,
+				)
+				self.logger.debug('🚫 Disabled LayerTree domain')
+			except Exception as e:
+				self.logger.debug(f'⚠️ Failed to disable LayerTree domain: {type(e).__name__}: {e}')
+
+			# Disable Profiler domain
+			try:
+				await asyncio.wait_for(
+					cdp_client.send.Profiler.disable(session_id=session_id),
+					timeout=1.0,
+				)
+				self.logger.debug('🚫 Disabled Profiler domain')
+			except Exception as e:
+				self.logger.debug(f'⚠️ Failed to disable Profiler domain: {type(e).__name__}: {e}')
+
+			# Disable HeapProfiler domain
+			try:
+				await asyncio.wait_for(
+					cdp_client.send.HeapProfiler.disable(session_id=session_id),
+					timeout=1.0,
+				)
+				self.logger.debug('🚫 Disabled HeapProfiler domain')
+			except Exception as e:
+				self.logger.debug(f'⚠️ Failed to disable HeapProfiler domain: {type(e).__name__}: {e}')
+
+			# Disable Debugger domain
+			try:
+				await asyncio.wait_for(
+					cdp_client.send.Debugger.disable(session_id=session_id),
+					timeout=1.0,
+				)
+				self.logger.debug('🚫 Disabled Debugger domain')
+			except Exception as e:
+				self.logger.debug(f'⚠️ Failed to disable Debugger domain: {type(e).__name__}: {e}')
+
+			# Disable Console domain
+			try:
+				await asyncio.wait_for(
+					cdp_client.send.Console.disable(session_id=session_id),
+					timeout=1.0,
+				)
+				self.logger.debug('🚫 Disabled Console domain')
+			except Exception as e:
+				self.logger.debug(f'⚠️ Failed to disable Console domain: {type(e).__name__}: {e}')
+
+			# Disable Log domain
+			try:
+				await asyncio.wait_for(
+					cdp_client.send.Log.disable(session_id=session_id),
+					timeout=1.0,
+				)
+				self.logger.debug('🚫 Disabled Log domain')
+			except Exception as e:
+				self.logger.debug(f'⚠️ Failed to disable Log domain: {type(e).__name__}: {e}')
+
+			# 2. AGGRESSIVELY DISABLE DOM EVENTS
+			# DOM.inlineStyleInvalidated is the main culprit
+			try:
+				# Disable DOM domain completely - we'll re-enable it only when needed
 				await asyncio.wait_for(
 					cdp_client.send.DOM.disable(session_id=session_id),
 					timeout=2.0,
 				)
-				# Re-enable DOM domain for essential operations
-				await asyncio.wait_for(
-					cdp_client.send.DOM.enable(session_id=session_id),
-					timeout=2.0,
-				)
-				self.logger.debug('🚫 Reset DOM domain to reduce noise')
+				self.logger.debug('🚫 Completely disabled DOM domain to stop event flooding')
 			except Exception as e:
-				self.logger.debug(f'⚠️ Failed to reset DOM domain: {type(e).__name__}: {e}')
+				self.logger.debug(f'⚠️ Failed to disable DOM domain: {type(e).__name__}: {e}')
 
-			# 3. DISABLE OTHER NOISY CDP EVENTS
+			# 3. DISABLE RUNTIME EVENTS (keep minimal functionality)
 			try:
-				# Disable runtime events that aren't essential
 				await asyncio.wait_for(
 					cdp_client.send.Runtime.disable(session_id=session_id),
 					timeout=2.0,
 				)
-				# Re-enable only essential runtime features
-				await asyncio.wait_for(
-					cdp_client.send.Runtime.enable(session_id=session_id),
-					timeout=2.0,
-				)
-				self.logger.debug('🚫 Reset Runtime domain to reduce noise')
+				self.logger.debug('🚫 Disabled Runtime domain to reduce noise')
 			except Exception as e:
-				self.logger.debug(f'⚠️ Failed to reset Runtime domain: {type(e).__name__}: {e}')
+				self.logger.debug(f'⚠️ Failed to disable Runtime domain: {type(e).__name__}: {e}')
 
-			# 4. DISABLE ANIMATION AND LAYOUT EVENTS
-			try:
-				# Disable Animation domain to reduce animation events
-				await asyncio.wait_for(
-					cdp_client.send.Animation.disable(session_id=session_id),
-					timeout=2.0,
-				)
-				self.logger.debug('🚫 Disabled Animation domain to reduce animation events')
-			except Exception as e:
-				self.logger.debug(f'⚠️ Failed to disable Animation domain: {type(e).__name__}: {e}')
-
-			try:
-				# Disable LayerTree domain to reduce layer events
-				await asyncio.wait_for(
-					cdp_client.send.LayerTree.disable(session_id=session_id),
-					timeout=2.0,
-				)
-				self.logger.debug('🚫 Disabled LayerTree domain to reduce layer events')
-			except Exception as e:
-				self.logger.debug(f'⚠️ Failed to disable LayerTree domain: {type(e).__name__}: {e}')
-
-			# 5. JAVASCRIPT-LEVEL FILTERING (for remaining events)
-			script = """
+			# 4. JAVASCRIPT-LEVEL EVENT SUPPRESSION
+			# This runs at the browser level to prevent events from being generated
+			suppression_script = """
 			(function() {
-				if (window._browserUseEventFilteringEnabled) return;
-				window._browserUseEventFilteringEnabled = true;
+				if (window._browserUseEventSuppressionEnabled) return;
+				window._browserUseEventSuppressionEnabled = true;
 				
-				// Intercept and filter DOM mutations more aggressively
+				// Completely disable MutationObserver for non-essential elements
 				const OriginalMutationObserver = window.MutationObserver;
 				window.MutationObserver = function(callback) {
 					return new OriginalMutationObserver(function(mutations) {
-						// Filter out all mutations from non-essential elements
+						// Only process mutations from essential elements
 						const filteredMutations = mutations.filter(mutation => {
 							const target = mutation.target;
 							if (!target || !target.tagName) return false;
 							
-							// Skip ads, tracking, and analytics completely
 							const tagName = target.tagName.toLowerCase();
-							if (['script', 'style', 'link', 'meta', 'noscript'].includes(tagName)) return false;
+							// Only allow mutations on interactive elements
+							const allowedTags = ['input', 'button', 'select', 'textarea', 'form', 'a', 'main', 'article', 'section'];
+							if (!allowedTags.includes(tagName)) return false;
 							
-							const className = target.className || '';
-							const id = target.id || '';
-							const combined = (className + ' ' + id).toLowerCase();
-							
-							// Block common ad and tracking patterns
-							if (combined.includes('ad') || combined.includes('tracking') || 
-								combined.includes('analytics') || combined.includes('beacon') ||
-								combined.includes('metric') || combined.includes('telemetry') ||
-								combined.includes('gpt') || combined.includes('doubleclick') ||
-								combined.includes('adsystem') || combined.includes('gtag') ||
-								combined.includes('facebook') || combined.includes('twitter') ||
-								combined.includes('instagram') || combined.includes('linkedin') ||
-								combined.includes('youtube') || combined.includes('googlesyndication')) return false;
-							
-							// Block frequent style mutations that cause noise
+							// Block all style attribute mutations
 							if (mutation.type === 'attributes' && mutation.attributeName === 'style') {
 								return false;
 							}
@@ -1398,49 +1439,78 @@ class BrowserSession(BaseModel):
 					});
 				};
 				
-				// Override requestAnimationFrame to reduce animation noise
+				// Disable requestAnimationFrame completely for performance
 				const originalRAF = window.requestAnimationFrame;
 				window.requestAnimationFrame = function(callback) {
-					// Throttle animation frames to reduce noise
+					// Throttle to 15 FPS to reduce noise
 					return originalRAF.call(this, function(...args) {
-						try {
-							callback(...args);
-						} catch (e) {
-							// Ignore animation errors to prevent noise
-						}
+						setTimeout(() => {
+							try {
+								callback(...args);
+							} catch (e) {
+								// Ignore animation errors
+							}
+						}, 67); // ~15 FPS
 					});
 				};
 				
-				// Override setTimeout/setInterval for excessive timers
+				// Aggressively throttle timers
 				const originalSetTimeout = window.setTimeout;
 				const originalSetInterval = window.setInterval;
 				
 				window.setTimeout = function(callback, delay, ...args) {
-					// Block very frequent timeouts (less than 16ms)
-					if (delay < 16) {
-						delay = 16;
+					// Force minimum 100ms delay
+					if (delay < 100) {
+						delay = 100;
 					}
 					return originalSetTimeout.call(this, callback, delay, ...args);
 				};
 				
 				window.setInterval = function(callback, delay, ...args) {
-					// Block very frequent intervals (less than 100ms)
-					if (delay < 100) {
-						delay = 100;
+					// Force minimum 500ms delay
+					if (delay < 500) {
+						delay = 500;
 					}
 					return originalSetInterval.call(this, callback, delay, ...args);
 				};
 				
-				console.log('✅ Aggressive DOM event filtering enabled');
+				// Disable resize observer for performance
+				if (window.ResizeObserver) {
+					window.ResizeObserver = class {
+						constructor() {}
+						observe() {}
+						unobserve() {}
+						disconnect() {}
+					};
+				}
+				
+				console.log('✅ Aggressive DOM event suppression enabled');
 			})();
 			"""
 
-			# Inject the filtering script with timeout
-			await asyncio.wait_for(
-				cdp_client.send.Runtime.evaluate(params={'expression': script, 'returnByValue': True}, session_id=session_id),
-				timeout=3.0,
-			)
-			self.logger.debug('📋 DOM event filtering configured for session')
+			# We need to enable runtime briefly to inject the script
+			try:
+				await asyncio.wait_for(
+					cdp_client.send.Runtime.enable(session_id=session_id),
+					timeout=2.0,
+				)
+
+				await asyncio.wait_for(
+					cdp_client.send.Runtime.evaluate(
+						params={'expression': suppression_script, 'returnByValue': True}, session_id=session_id
+					),
+					timeout=3.0,
+				)
+
+				# Disable runtime again after script injection
+				await asyncio.wait_for(
+					cdp_client.send.Runtime.disable(session_id=session_id),
+					timeout=2.0,
+				)
+
+				self.logger.debug('📋 Aggressive DOM event suppression configured')
+			except Exception as e:
+				self.logger.debug(f'⚠️ Failed to inject event suppression script: {type(e).__name__}: {e}')
 
 		except Exception as e:
 			self.logger.debug(f'⚠️ Failed to configure DOM event filtering: {type(e).__name__}: {e}')
@@ -3525,49 +3595,60 @@ class BrowserSession(BaseModel):
 		# Get screenshot with timeout
 		screenshot_task = asyncio.create_task(self.take_screenshot())
 
-		# Start DOM service with viewport-only optimization by default
-		dom_service = DomService(self)
+		# Get CDP session ID for DOM event management
+		session_id = await self.get_current_page_cdp_session_id()
 
-		# Get DOM tree with timeout
-		dom_tree_task = asyncio.create_task(dom_service.get_serialized_dom_tree())
+		# Enable DOM events only for processing
+		await self._enable_dom_events_for_processing(session_id)
 
 		try:
-			# Run screenshot and DOM processing concurrently with timeouts
-			screenshot_result = await asyncio.wait_for(screenshot_task, timeout=5.0)
-			dom_result = await asyncio.wait_for(dom_tree_task, timeout=15.0)
+			# Start DOM service with viewport-only optimization by default
+			dom_service = DomService(self)
 
-			# Extract results
-			screenshot_base64 = screenshot_result
-			dom_state, timing_info = dom_result
+			# Get DOM tree with timeout
+			dom_tree_task = asyncio.create_task(dom_service.get_serialized_dom_tree())
 
-			# Apply highlights with timeout protection
-			await self.remove_highlights(dom_service)
-			await self.inject_highlights(dom_service, dom_state.selector_map)
-
-			# Get URL and title
-			url = page.url
 			try:
-				title = await asyncio.wait_for(page.title(), timeout=3.0)
-			except Exception:
-				title = 'Title unavailable'
+				# Run screenshot and DOM processing concurrently with timeouts
+				screenshot_result = await asyncio.wait_for(screenshot_task, timeout=5.0)
+				dom_result = await asyncio.wait_for(dom_tree_task, timeout=15.0)
 
-			# Get tabs info
-			tabs_info = await self.get_tabs_info()
+				# Extract results
+				screenshot_base64 = screenshot_result
+				dom_state, timing_info = dom_result
 
-			return BrowserStateSummary(
-				url=url,
-				title=title,
-				screenshot=screenshot_base64,
-				dom_state=dom_state,
-				tabs=tabs_info,
-			)
+				# Apply highlights with timeout protection
+				await self.remove_highlights(dom_service)
+				await self.inject_highlights(dom_service, dom_state.selector_map)
 
-		except asyncio.TimeoutError as e:
-			self.logger.error(f'⚠️ State summary component timed out: {e}')
-			raise
-		except Exception as e:
-			self.logger.error(f'💥 State summary component failed: {type(e).__name__}: {e}')
-			raise
+				# Get URL and title
+				url = page.url
+				try:
+					title = await asyncio.wait_for(page.title(), timeout=3.0)
+				except Exception:
+					title = 'Title unavailable'
+
+				# Get tabs info
+				tabs_info = await self.get_tabs_info()
+
+				return BrowserStateSummary(
+					url=url,
+					title=title,
+					screenshot=screenshot_base64,
+					dom_state=dom_state,
+					tabs=tabs_info,
+				)
+
+			except asyncio.TimeoutError as e:
+				self.logger.error(f'⚠️ State summary component timed out: {e}')
+				raise
+			except Exception as e:
+				self.logger.error(f'💥 State summary component failed: {type(e).__name__}: {e}')
+				raise
+
+		finally:
+			# Always disable DOM events after processing to prevent flooding
+			await self._disable_dom_events_after_processing(session_id)
 
 	@observe_debug(name='get_minimal_state_summary', ignore_input=True, ignore_output=True)
 	@require_healthy_browser(usable_page=True, reopen_page=True)
