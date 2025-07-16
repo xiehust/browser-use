@@ -1159,10 +1159,10 @@ class TestControllerIntegration:
 		await asyncio.sleep(0.1)
 
 		page = await browser_session.get_current_page()
-		
+
 		# Click on the input to focus it
 		await page.click('#test-input')
-		
+
 		# Mock CDP client to raise an exception when sending key events
 		original_get_cdp_client = browser_session.get_cdp_client
 
@@ -1203,7 +1203,7 @@ class TestControllerIntegration:
 		# Test special keys with CDP failure - should fall back to Playwright
 		enter_action = {'send_keys': SendKeysAction(keys='Enter')}
 		enter_result = await controller.act(SendKeysActionModel(**enter_action), browser_session)
-		
+
 		assert isinstance(enter_result, ActionResult)
 		assert enter_result.extracted_content is not None
 		assert 'Sent keys: Enter' in enter_result.extracted_content
@@ -1212,7 +1212,7 @@ class TestControllerIntegration:
 		# Test keyboard shortcuts with CDP failure
 		select_all_action = {'send_keys': SendKeysAction(keys='ControlOrMeta+a')}
 		select_result = await controller.act(SendKeysActionModel(**select_all_action), browser_session)
-		
+
 		assert isinstance(select_result, ActionResult)
 		assert select_result.extracted_content is not None
 		assert 'Sent keys: ControlOrMeta+a' in select_result.extracted_content
@@ -1633,3 +1633,170 @@ class TestControllerIntegration:
 		# Test that get_minimal_state_summary always works
 		summary = await browser_session.get_minimal_state_summary()
 		assert summary is not None
+
+	async def test_scroll_to_text_action(self, controller, browser_session, base_url, http_server):
+		"""Test scroll_to_text action with CDP implementation."""
+		# Add test route with scrollable content
+		http_server.expect_request('/scroll-test').respond_with_data(
+			"""
+			<!DOCTYPE html>
+			<html>
+			<head>
+				<style>
+					body {
+						margin: 0;
+						padding: 20px;
+					}
+					.section {
+						height: 800px;
+						padding: 20px;
+						border: 1px solid #ccc;
+						margin-bottom: 20px;
+					}
+				</style>
+			</head>
+			<body>
+				<div class="section">
+					<h1>Top Section</h1>
+					<p>This is the top of the page</p>
+				</div>
+				<div class="section" id="middle">
+					<h2>Middle Section</h2>
+					<p>This text is in the middle of the page</p>
+				</div>
+				<div class="section" id="bottom">
+					<h2>Bottom Section</h2>
+					<p>This text is at the bottom of the page</p>
+				</div>
+			</body>
+			</html>
+			""",
+			content_type='text/html',
+		)
+
+		# Navigate to test page
+		goto_action = {'go_to_url': GoToUrlAction(url=f'{base_url}/scroll-test', new_tab=False)}
+
+		class GoToUrlActionModel(ActionModel):
+			go_to_url: GoToUrlAction | None = None
+
+		await controller.act(GoToUrlActionModel(**goto_action), browser_session)
+
+		# Wait for page to load
+		page = await browser_session.get_current_page()
+		await page.wait_for_load_state()
+
+		# Get initial scroll position
+		initial_scroll = await page.evaluate('() => window.pageYOffset')
+		assert initial_scroll == 0, f'Expected initial scroll to be 0, got {initial_scroll}'
+
+		# Test 1: Scroll to middle text
+		class ScrollToTextActionModel(ActionModel):
+			scroll_to_text: dict[str, str]
+
+		scroll_action = ScrollToTextActionModel(scroll_to_text={'text': 'middle of the page'})
+		result = await controller.act(scroll_action, browser_session)
+
+		# Verify the result
+		assert isinstance(result, ActionResult)
+		assert result.extracted_content is not None
+		assert 'Scrolled to text: middle of the page' in result.extracted_content
+		assert result.include_in_memory is True
+
+		# Check that we actually scrolled
+		middle_scroll = await page.evaluate('() => window.pageYOffset')
+		assert middle_scroll > 0, f'Expected scroll position to be > 0, got {middle_scroll}'
+
+		# Test 2: Scroll to bottom text
+		scroll_action2 = ScrollToTextActionModel(scroll_to_text={'text': 'bottom of the page'})
+		result2 = await controller.act(scroll_action2, browser_session)
+
+		# Verify the result
+		assert isinstance(result2, ActionResult)
+		assert result2.extracted_content is not None
+		assert 'Scrolled to text: bottom of the page' in result2.extracted_content
+
+		# Check that we scrolled further
+		bottom_scroll = await page.evaluate('() => window.pageYOffset')
+		assert bottom_scroll > middle_scroll, f'Expected bottom scroll {bottom_scroll} > middle scroll {middle_scroll}'
+
+		# Test 3: Text that doesn't exist
+		scroll_action3 = ScrollToTextActionModel(scroll_to_text={'text': 'nonexistent text that should not be found'})
+		result3 = await controller.act(scroll_action3, browser_session)
+
+		# Verify the result
+		assert isinstance(result3, ActionResult)
+		assert result3.extracted_content is not None
+		assert 'not found' in result3.extracted_content
+		assert result3.include_in_memory is True
+
+		# Test 4: Partial text match
+		scroll_action4 = ScrollToTextActionModel(scroll_to_text={'text': 'Bottom Sect'})  # Partial match
+		result4 = await controller.act(scroll_action4, browser_session)
+
+		# Verify the result
+		assert isinstance(result4, ActionResult)
+		assert result4.extracted_content is not None
+		assert 'Scrolled to text: Bottom Sect' in result4.extracted_content
+
+		# Scroll position should still be at bottom
+		final_scroll = await page.evaluate('() => window.pageYOffset')
+		assert final_scroll > 0, 'Expected final scroll position to be > 0'
+
+	async def test_scroll_to_text_cdp_fallback(self, controller, browser_session, base_url, http_server, monkeypatch):
+		"""Test scroll_to_text fallback to Playwright when CDP fails."""
+		# Add test route
+		http_server.expect_request('/scroll-fallback').respond_with_data(
+			"""
+			<!DOCTYPE html>
+			<html>
+			<body style="height: 2000px;">
+				<div style="margin-top: 1000px;">
+					<p>Find this text</p>
+				</div>
+			</body>
+			</html>
+			""",
+			content_type='text/html',
+		)
+
+		# Navigate to test page
+		goto_action = {'go_to_url': GoToUrlAction(url=f'{base_url}/scroll-fallback', new_tab=False)}
+
+		class GoToUrlActionModel(ActionModel):
+			go_to_url: GoToUrlAction | None = None
+
+		await controller.act(GoToUrlActionModel(**goto_action), browser_session)
+
+		# Wait for page to load
+		page = await browser_session.get_current_page()
+		await page.wait_for_load_state()
+
+		# Mock CDP client to raise exception
+		original_get_cdp_client = browser_session.get_cdp_client
+
+		async def mock_get_cdp_client():
+			raise Exception('CDP client unavailable')
+
+		monkeypatch.setattr(browser_session, 'get_cdp_client', mock_get_cdp_client)
+
+		try:
+			# Execute scroll_to_text - should fallback to Playwright
+			class ScrollToTextActionModel(ActionModel):
+				scroll_to_text: dict[str, str]
+
+			scroll_action = ScrollToTextActionModel(scroll_to_text={'text': 'Find this text'})
+			result = await controller.act(scroll_action, browser_session)
+
+			# Verify the result (should succeed with fallback)
+			assert isinstance(result, ActionResult)
+			assert result.extracted_content is not None
+			assert 'Scrolled to text: Find this text' in result.extracted_content
+
+			# Check that we actually scrolled
+			scroll_position = await page.evaluate('() => window.pageYOffset')
+			assert scroll_position > 0, f'Expected scroll position to be > 0, got {scroll_position}'
+
+		finally:
+			# Restore original method
+			monkeypatch.setattr(browser_session, 'get_cdp_client', original_get_cdp_client)

@@ -305,7 +305,9 @@ class Controller(Generic[Context]):
 
 				# Clear existing text by selecting all and deleting
 				# Send Ctrl+A (or Cmd+A on Mac) to select all
-				modifiers = 2  # Ctrl key (use 4 for Meta/Cmd on Mac if needed)
+				import platform
+
+				modifiers = 4 if platform.system() == 'Darwin' else 2  # Meta/Cmd on Mac, Ctrl on others
 				await cdp_client.send.Input.dispatchKeyEvent(
 					params={
 						'type': 'keyDown',
@@ -453,33 +455,109 @@ class Controller(Generic[Context]):
 
 		@self.registry.action('Switch tab', param_model=SwitchTabAction)
 		async def switch_tab(params: SwitchTabAction, browser_session: BrowserSession):
-			await browser_session.switch_to_tab(params.page_id)
-			page = await browser_session.get_current_page()
+			# Get the extension bridge from browser session
+			extension_bridge = browser_session.extension_bridge
+			if not extension_bridge:
+				# Fallback to Playwright method if extension bridge is not available
+				logger.warning('Extension bridge not available, falling back to Playwright method')
+				await browser_session.switch_to_tab(params.page_id)
+				page = await browser_session.get_current_page()
+				try:
+					await page.wait_for_load_state(state='domcontentloaded', timeout=5_000)
+				except Exception as e:
+					pass
+				msg = f'🔄  Switched to tab #{params.page_id} with url {page.url}'
+				logger.info(msg)
+				return ActionResult(
+					extracted_content=msg, include_in_memory=True, long_term_memory=f'Switched to tab {params.page_id}'
+				)
+
 			try:
-				await page.wait_for_load_state(state='domcontentloaded', timeout=5_000)
-				# page was already loaded when we first navigated, this is additional to wait for onfocus/onblur animations/ajax to settle
+				# Get all tabs to find the target tab by index
+				all_tabs = await extension_bridge.call('chrome.tabs.query', [{}])
+				logger.debug(f'Found {len(all_tabs)} tabs via extension bridge')
+
+				if params.page_id >= len(all_tabs):
+					raise BrowserError(f'Tab index {params.page_id} out of range (only {len(all_tabs)} tabs)')
+
+				target_tab = all_tabs[params.page_id]
+
+				# Switch to the target tab
+				await extension_bridge.call('chrome.tabs.update', [target_tab['id'], {'active': True}])
+
+				# Also focus the window containing the tab
+				await extension_bridge.call('chrome.windows.update', [target_tab['windowId'], {'focused': True}])
+
+				# Update browser session's current page reference
+				await browser_session._sync_current_tab_from_extension(target_tab['id'])
+				page = await browser_session.get_current_page()
+
+				try:
+					await page.wait_for_load_state(state='domcontentloaded', timeout=5_000)
+					# page was already loaded when we first navigated, this is additional to wait for onfocus/onblur animations/ajax to settle
+				except Exception as e:
+					pass
+
+				msg = f'🔄  Switched to tab #{params.page_id} with url {target_tab["url"]}'
+				logger.info(msg)
+				return ActionResult(
+					extracted_content=msg, include_in_memory=True, long_term_memory=f'Switched to tab {params.page_id}'
+				)
 			except Exception as e:
-				pass
-			msg = f'🔄  Switched to tab #{params.page_id} with url {page.url}'
-			logger.info(msg)
-			return ActionResult(
-				extracted_content=msg, include_in_memory=True, long_term_memory=f'Switched to tab {params.page_id}'
-			)
+				logger.error(f'Extension bridge error in switch_tab: {e}')
+				# Fallback to Playwright method
+				await browser_session.switch_to_tab(params.page_id)
+				page = await browser_session.get_current_page()
+				try:
+					await page.wait_for_load_state(state='domcontentloaded', timeout=5_000)
+				except Exception as e:
+					pass
+				msg = f'🔄  Switched to tab #{params.page_id} with url {page.url} (fallback)'
+				logger.info(msg)
+				return ActionResult(
+					extracted_content=msg, include_in_memory=True, long_term_memory=f'Switched to tab {params.page_id}'
+				)
 
 		@self.registry.action('Close an existing tab', param_model=CloseTabAction)
 		async def close_tab(params: CloseTabAction, browser_session: BrowserSession):
-			await browser_session.switch_to_tab(params.page_id)
-			page = await browser_session.get_current_page()
-			url = page.url
-			await page.close()
-			new_page = await browser_session.get_current_page()
-			new_page_idx = browser_session.tabs.index(new_page)
-			msg = f'❌  Closed tab #{params.page_id} with {url}, now focused on tab #{new_page_idx} with url {new_page.url}'
+			# Get the extension bridge from browser session
+			extension_bridge = browser_session.extension_bridge
+			if not extension_bridge:
+				raise BrowserError('Extension bridge not initialized')
+
+			# Get all tabs to find the target tab by index
+			all_tabs = await extension_bridge.call('chrome.tabs.query', [{}])
+			if params.page_id >= len(all_tabs):
+				raise BrowserError(f'Tab index {params.page_id} out of range (only {len(all_tabs)} tabs)')
+
+			target_tab = all_tabs[params.page_id]
+			tab_url = target_tab['url']
+			tab_id = target_tab['id']
+
+			# Close the tab
+			await extension_bridge.call('chrome.tabs.remove', [tab_id])
+
+			# Get the newly active tab
+			query_options = {'active': True, 'lastFocusedWindow': True}
+			active_tabs = await extension_bridge.call('chrome.tabs.query', [query_options])
+			if not active_tabs:
+				raise BrowserError('No active tab after closing')
+
+			new_active_tab = active_tabs[0]
+
+			# Find the index of the new active tab
+			updated_tabs = await extension_bridge.call('chrome.tabs.query', [{}])
+			new_page_idx = next((i for i, tab in enumerate(updated_tabs) if tab['id'] == new_active_tab['id']), 0)
+
+			# Update browser session's current page reference
+			await browser_session._sync_current_tab_from_extension(new_active_tab['id'])
+
+			msg = f'❌  Closed tab #{params.page_id} with {tab_url}, now focused on tab #{new_page_idx} with url {new_active_tab["url"]}'
 			logger.info(msg)
 			return ActionResult(
 				extracted_content=msg,
 				include_in_memory=True,
-				long_term_memory=f'Closed tab {params.page_id} with url {url}, now focused on tab {new_page_idx} with url {new_page.url}.',
+				long_term_memory=f'Closed tab {params.page_id} with url {tab_url}, now focused on tab {new_page_idx} with url {new_active_tab["url"]}.',
 			)
 
 		# Content Actions
@@ -887,6 +965,7 @@ Explain the content of the page and that the requested information is not availa
 						elif part_lower == 'controlormeta':
 							# Use Control on non-Mac, Meta on Mac
 							import platform
+
 							if platform.system() == 'Darwin':
 								modifiers |= 4  # Meta/Command on Mac
 							else:
@@ -896,9 +975,33 @@ Explain the content of the page and that the requested information is not availa
 					main_key = parts[-1]
 				else:
 					# Check if it's a single special key (Tab, Enter, etc.) or regular text
-					special_keys = ['Tab', 'Enter', 'Escape', 'Backspace', 'Delete', 'PageDown', 'PageUp', 
-									'Home', 'End', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
-									'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12']
+					special_keys = [
+						'Tab',
+						'Enter',
+						'Escape',
+						'Backspace',
+						'Delete',
+						'PageDown',
+						'PageUp',
+						'Home',
+						'End',
+						'ArrowUp',
+						'ArrowDown',
+						'ArrowLeft',
+						'ArrowRight',
+						'F1',
+						'F2',
+						'F3',
+						'F4',
+						'F5',
+						'F6',
+						'F7',
+						'F8',
+						'F9',
+						'F10',
+						'F11',
+						'F12',
+					]
 					if keys_to_send in special_keys:
 						is_special_key = True
 						main_key = keys_to_send
@@ -909,6 +1012,9 @@ Explain the content of the page and that the requested information is not availa
 							if char == ' ':
 								key = ' '
 								code = 'Space'
+							elif char == '\n':
+								key = 'Enter'
+								code = 'Enter'
 							elif char.isalpha():
 								key = char
 								code = f'Key{char.upper()}'
@@ -918,17 +1024,16 @@ Explain the content of the page and that the requested information is not availa
 							else:
 								key = char
 								code = char
-							
+
 							# Send keyDown
-							keydown_params = {
-								'type': 'keyDown',
-								'key': key,
-								'code': code,
-								'modifiers': 0,
-								'text': char
-							}
+							keydown_params = {'type': 'keyDown', 'key': key, 'code': code, 'modifiers': 0}
+							# Include text for regular characters, and '\r' for Enter
+							if char == '\n':
+								keydown_params['text'] = '\r'
+							else:
+								keydown_params['text'] = char
 							await cdp_client.send.Input.dispatchKeyEvent(params=keydown_params, session_id=session_id)
-							
+
 							# Send keyUp
 							await cdp_client.send.Input.dispatchKeyEvent(
 								params={
@@ -942,7 +1047,9 @@ Explain the content of the page and that the requested information is not availa
 						# We've handled all characters, return early
 						msg = f'⌨️  Sent keys: {params.keys}'
 						logger.info(msg)
-						return ActionResult(extracted_content=msg, include_in_memory=True, long_term_memory=f'Sent keys: {params.keys}')
+						return ActionResult(
+							extracted_content=msg, include_in_memory=True, long_term_memory=f'Sent keys: {params.keys}'
+						)
 
 				# If we get here, it's a special key or shortcut
 				if is_special_key:
@@ -953,7 +1060,13 @@ Explain the content of the page and that the requested information is not availa
 					elif len(main_key) == 1:
 						# Single character with modifier
 						key = main_key
-						code = f'Key{main_key.upper()}' if main_key.isalpha() else f'Digit{main_key}' if main_key.isdigit() else main_key
+						code = (
+							f'Key{main_key.upper()}'
+							if main_key.isalpha()
+							else f'Digit{main_key}'
+							if main_key.isdigit()
+							else main_key
+						)
 					else:
 						# Multi-character keys like Enter, Escape, F1, etc.
 						key = main_key
@@ -969,8 +1082,26 @@ Explain the content of the page and that the requested information is not availa
 					# Only include text for single character keys without modifiers
 					if len(key) == 1 and modifiers == 0:
 						keydown_params['text'] = key
-					
+
+					# Add commands for common keyboard shortcuts
+					if modifiers > 0 and len(key) == 1:
+						# Check for common shortcuts that need commands
+						if key.lower() == 'a' and (modifiers & 2 or modifiers & 4):  # Ctrl+A or Cmd+A
+							keydown_params['commands'] = ['selectAll']
+						elif key.lower() == 'c' and (modifiers & 2 or modifiers & 4):  # Ctrl+C or Cmd+C
+							keydown_params['commands'] = ['copy']
+						elif key.lower() == 'v' and (modifiers & 2 or modifiers & 4):  # Ctrl+V or Cmd+V
+							keydown_params['commands'] = ['paste']
+						elif key.lower() == 'x' and (modifiers & 2 or modifiers & 4):  # Ctrl+X or Cmd+X
+							keydown_params['commands'] = ['cut']
+						elif key.lower() == 'z' and (modifiers & 2 or modifiers & 4):  # Ctrl+Z or Cmd+Z
+							keydown_params['commands'] = ['undo']
+
 					await cdp_client.send.Input.dispatchKeyEvent(params=keydown_params, session_id=session_id)
+
+					# Small delay for modifier key combinations
+					if modifiers > 0:
+						await asyncio.sleep(0.05)
 
 					# Send keyUp event
 					await cdp_client.send.Input.dispatchKeyEvent(
@@ -1008,8 +1139,86 @@ Explain the content of the page and that the requested information is not availa
 		@self.registry.action(
 			description='Scroll to a text in the current page',
 		)
-		async def scroll_to_text(text: str, page: Page):  # type: ignore
+		async def scroll_to_text(text: str, browser_session: BrowserSession):  # type: ignore
 			try:
+				# Get CDP client and session
+				cdp_client = await browser_session.get_cdp_client()
+				session_id = await browser_session.get_current_page_cdp_session_id()
+
+				# Try different search queries
+				search_queries = [
+					text,  # Plain text search
+					f'//*[contains(text(), "{text}")]',  # XPath search
+					f'//*[contains(., "{text}")]',  # XPath with . for all text content
+				]
+
+				for query in search_queries:
+					try:
+						# Perform search
+						search_result = await cdp_client.send.DOM.performSearch(
+							params={'query': query, 'includeUserAgentShadowDOM': False}, session_id=session_id
+						)
+
+						logger.debug(f'CDP search for query "{query}" found {search_result["resultCount"]} results')
+
+						if search_result['resultCount'] == 0:
+							continue
+
+						# Get search results
+						results = await cdp_client.send.DOM.getSearchResults(
+							params={
+								'searchId': search_result.searchId,
+								'fromIndex': 0,
+								'toIndex': min(search_result.resultCount, 10),  # Check first 10 results
+							},
+							session_id=session_id,
+						)
+
+						# Try to scroll to each found node
+						for node_id in results.nodeIds:
+							try:
+								# Get node info to check if it's visible
+								box_model = await cdp_client.send.DOM.getBoxModel(
+									params={'nodeId': node_id}, session_id=session_id
+								)
+
+								# Check if element has dimensions
+								if box_model.model and box_model.model.content:
+									# Scroll the element into view
+									await cdp_client.send.DOM.scrollIntoViewIfNeeded(
+										params={'nodeId': node_id}, session_id=session_id
+									)
+									await asyncio.sleep(0.5)  # Wait for scroll to complete
+
+									# Discard search results to free memory
+									await cdp_client.send.DOM.discardSearchResults(
+										params={'searchId': search_result.searchId}, session_id=session_id
+									)
+
+									msg = f'🔍  Scrolled to text: {text}'
+									logger.info(msg)
+									return ActionResult(
+										extracted_content=msg,
+										include_in_memory=True,
+										long_term_memory=f'Scrolled to text: {text}',
+									)
+							except Exception as e:
+								logger.debug(f'Failed to scroll to node {node_id}: {str(e)}')
+								continue
+
+						# Discard search results if we didn't find a visible element
+						await cdp_client.send.DOM.discardSearchResults(
+							params={'searchId': search_result.searchId}, session_id=session_id
+						)
+
+					except Exception as e:
+						logger.debug(f'CDP search with query "{query}" failed: {str(e)}')
+						continue
+
+				# If CDP fails, fallback to playwright
+				logger.debug('CDP scroll_to_text failed, falling back to playwright')
+				page = await browser_session.get_current_page()
+
 				# Try different locator strategies
 				locators = [
 					page.get_by_text(text, exact=False),
