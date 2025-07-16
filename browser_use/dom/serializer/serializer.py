@@ -5,6 +5,7 @@ from browser_use.dom.serializer.clickable_elements import ClickableElementDetect
 from browser_use.dom.serializer.paint_order import PaintOrderRemover
 from browser_use.dom.utils import cap_text_length
 from browser_use.dom.views import DOMSelectorMap, EnhancedDOMTreeNode, NodeType, SerializedDOMState, SimplifiedNode
+from browser_use.observability import observe_debug
 
 
 class DOMTreeSerializer:
@@ -20,6 +21,7 @@ class DOMTreeSerializer:
 		# Cache for clickable element detection to avoid redundant calls
 		self._clickable_cache: dict[int, bool] = {}
 
+	@observe_debug(name='serialize_accessible_elements', ignore_input=True, ignore_output=True)
 	def serialize_accessible_elements(self) -> tuple[SerializedDOMState, dict[str, float]]:
 		import time
 

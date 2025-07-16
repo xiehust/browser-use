@@ -21,6 +21,7 @@ from browser_use.dom.views import (
 	NodeType,
 	SerializedDOMState,
 )
+from browser_use.observability import observe_debug
 
 if TYPE_CHECKING:
 	from browser_use.browser.session import BrowserSession
@@ -100,6 +101,7 @@ class DomService:
 			# Fallback to default viewport size
 			return 1920.0, 1080.0, 1.0, 0.0, 0.0
 
+	@observe_debug(name='build_enhanced_dom_tree', ignore_input=True, ignore_output=True)
 	async def _build_enhanced_dom_tree(
 		self, dom_tree: GetDocumentReturns, ax_tree: GetFullAXTreeReturns, snapshot: CaptureSnapshotReturns
 	) -> EnhancedDOMTreeNode:
@@ -216,6 +218,7 @@ class DomService:
 
 		return snapshot, dom_tree, ax_tree, cdp_timing
 
+	@observe_debug(name='get_dom_tree', ignore_input=True, ignore_output=True)
 	async def get_dom_tree(self) -> tuple[EnhancedDOMTreeNode, dict[str, float]]:
 		snapshot, dom_tree, ax_tree, cdp_timing = await self._get_all_trees()
 
@@ -230,6 +233,7 @@ class DomService:
 		all_timing = {**cdp_timing, **build_tree_timing}
 		return enhanced_dom_tree, all_timing
 
+	@observe_debug(name='get_serialized_dom_tree', ignore_input=True, ignore_output=True)
 	async def get_serialized_dom_tree(
 		self, previous_cached_state: SerializedDOMState | None = None
 	) -> tuple[SerializedDOMState, dict[str, float]]:

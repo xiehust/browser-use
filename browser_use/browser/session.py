@@ -1146,6 +1146,7 @@ class BrowserSession(BaseModel):
 			await self.cdp_client.stop()
 			self.cdp_client = None
 
+	@observe_debug(name='get_cdp_client', ignore_input=True, ignore_output=True)
 	async def get_cdp_client(self) -> CDPClient:
 		"""Get the CDP client"""
 		if self.cdp_client is None:
@@ -3358,6 +3359,7 @@ class BrowserSession(BaseModel):
 					),
 					timeout=120.0,  # 45 second timeout for DOM processing - generous for complex pages
 				)
+				self.logger.debug(f'DOM processing timing info: {timing_info}')
 
 				await self.inject_highlights(dom_service, dom_state.selector_map)
 
