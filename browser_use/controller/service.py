@@ -127,10 +127,82 @@ class Controller(Generic[Context]):
 
 		@self.registry.action('Go back', param_model=NoParamsAction)
 		async def go_back(_: NoParamsAction, browser_session: BrowserSession):
-			await browser_session.go_back()
-			msg = '🔙  Navigated back'
-			logger.info(msg)
-			return ActionResult(extracted_content=msg, include_in_memory=True, long_term_memory='Navigated back')
+			"""Navigate back in browser history using CDP directly."""
+			try:
+				# Get CDP client and session ID
+				cdp_client = await browser_session.get_cdp_client()
+				session_id = await browser_session.get_current_page_cdp_session_id()
+				
+				# Get navigation history
+				history = await cdp_client.send.Page.getNavigationHistory(session_id=session_id)
+				current_index = history['currentIndex']
+				entries = history['entries']
+				
+				# Check if we can go back
+				if current_index <= 0:
+					msg = '⚠️  Cannot go back - no previous page in history'
+					logger.warning(msg)
+					return ActionResult(
+						extracted_content=msg, 
+						include_in_memory=True, 
+						long_term_memory='Attempted to go back but no history available'
+					)
+				
+				# Get the previous entry
+				previous_entry = entries[current_index - 1]
+				previous_entry_id = previous_entry['id']
+				previous_url = previous_entry['url']
+				
+				# Navigate to the previous history entry
+				await cdp_client.send.Page.navigateToHistoryEntry(
+					params={'entryId': previous_entry_id},
+					session_id=session_id
+				)
+				
+				# For SPAs using history.pushState, the URL changes immediately but no load event fires
+				# For real navigations, we need to wait for the page to load
+				# We'll use a hybrid approach: wait a bit, then check if URL changed
+				
+				await asyncio.sleep(0.3)  # Give browser time to start navigation
+				
+				# Check if we're on the expected URL now
+				page = await browser_session.get_current_page()
+				current_url = page.url
+				
+				if current_url != previous_url:
+					# URL changed but might still be loading
+					# For real navigations, wait a bit more for content to load
+					# For SPAs, this gives time for the app to update
+					await asyncio.sleep(1.0)
+				else:
+					# URL hasn't changed yet, likely a real navigation
+					# Wait longer for the page to load
+					try:
+						# We'll just wait up to 10 seconds for the navigation to complete
+						# checking periodically if the URL has changed
+						for _ in range(20):  # 20 * 0.5 = 10 seconds max
+							await asyncio.sleep(0.5)
+							page = await browser_session.get_current_page()
+							if page.url == previous_url:
+								break
+					except Exception as e:
+						logger.debug(f'Error while waiting for navigation: {e}')
+				
+				msg = f'🔙  Navigated back to {previous_url}'
+				logger.info(msg)
+				return ActionResult(
+					extracted_content=msg, 
+					include_in_memory=True, 
+					long_term_memory=f'Navigated back to {previous_url}'
+				)
+				
+			except Exception as e:
+				# Fallback to browser_session method if CDP fails
+				logger.debug(f'⚠️  CDP navigation failed: {type(e).__name__}: {e}, falling back to browser method')
+				await browser_session.go_back()
+				msg = '🔙  Navigated back'
+				logger.info(msg)
+				return ActionResult(extracted_content=msg, include_in_memory=True, long_term_memory='Navigated back')
 
 		# wait for x seconds
 
@@ -223,10 +295,121 @@ class Controller(Generic[Context]):
 			element_node = await browser_session.get_dom_element_by_index(params.index)
 			assert element_node is not None, f'Element with index {params.index} does not exist'
 			try:
-				await browser_session._input_text_element_node(element_node, params.text)
-			except Exception:
-				msg = f'Failed to input text into element {params.index}.'
-				raise BrowserError(msg)
+				# Try CDP-based input first
+				cdp_client = await browser_session.get_cdp_client()
+				session_id = await browser_session.get_current_page_cdp_session_id()
+				
+				# Get the backend node ID for the element
+				backend_node_id = element_node.backend_node_id
+				
+				# First focus the element using CDP
+				await cdp_client.send.DOM.focus(
+					params={'backendNodeId': backend_node_id},
+					session_id=session_id
+				)
+				
+				# Wait a bit for focus to take effect
+				await asyncio.sleep(0.1)
+				
+				# Clear existing text by selecting all and deleting
+				# Send Ctrl+A (or Cmd+A on Mac) to select all
+				modifiers = 2  # Ctrl key (use 4 for Meta/Cmd on Mac if needed)
+				await cdp_client.send.Input.dispatchKeyEvent(
+					params={
+						'type': 'keyDown',
+						'key': 'a',
+						'code': 'KeyA',
+						'modifiers': modifiers,
+					},
+					session_id=session_id
+				)
+				await cdp_client.send.Input.dispatchKeyEvent(
+					params={
+						'type': 'keyUp',
+						'key': 'a',
+						'code': 'KeyA',
+						'modifiers': modifiers,
+					},
+					session_id=session_id
+				)
+				
+				# Delete selected text
+				await cdp_client.send.Input.dispatchKeyEvent(
+					params={
+						'type': 'keyDown',
+						'key': 'Delete',
+						'code': 'Delete',
+					},
+					session_id=session_id
+				)
+				await cdp_client.send.Input.dispatchKeyEvent(
+					params={
+						'type': 'keyUp',
+						'key': 'Delete',
+						'code': 'Delete',
+					},
+					session_id=session_id
+				)
+				
+				# Small delay after clearing
+				await asyncio.sleep(0.05)
+				
+				# Insert the new text using CDP
+				await cdp_client.send.Input.insertText(
+					params={'text': params.text},
+					session_id=session_id
+				)
+				
+				# Resolve the node to get a remote object ID that we can use with Runtime
+				try:
+					resolved_node = await cdp_client.send.DOM.resolveNode(
+						params={'backendNodeId': backend_node_id},
+						session_id=session_id
+					)
+					object_id = resolved_node['object']['objectId']
+					
+					# Dispatch input and change events using the resolved node
+					await cdp_client.send.Runtime.callFunctionOn(
+						params={
+							'functionDeclaration': '''
+								function() {
+									this.dispatchEvent(new Event('input', { bubbles: true }));
+									this.dispatchEvent(new Event('change', { bubbles: true }));
+								}
+							''',
+							'objectId': object_id,
+						},
+						session_id=session_id
+					)
+				except Exception as e:
+					# If resolveNode fails (e.g., element in iframe), try a more generic approach
+					logger.debug(f'Failed to resolve node for events: {e}, using generic approach')
+					# Use Runtime.evaluate to find and trigger events on the focused element
+					await cdp_client.send.Runtime.evaluate(
+						params={
+							'expression': '''
+								(() => {
+									const activeElement = document.activeElement;
+									if (activeElement && (activeElement.tagName === 'INPUT' || 
+										activeElement.tagName === 'TEXTAREA' || 
+										activeElement.contentEditable === 'true')) {
+										activeElement.dispatchEvent(new Event('input', { bubbles: true }));
+										activeElement.dispatchEvent(new Event('change', { bubbles: true }));
+									}
+								})()
+							'''
+						},
+						session_id=session_id
+					)
+				
+			except Exception as e:
+				# Fallback to browser_session method if CDP fails
+				logger.debug(f'CDP input failed: {type(e).__name__}: {e}, falling back to browser method')
+				try:
+					await browser_session._input_text_element_node(element_node, params.text)
+				except Exception:
+					msg = f'Failed to input text into element {params.index}.'
+					raise BrowserError(msg)
 
 			if not has_sensitive_data:
 				msg = f'⌨️  Input {params.text} into index {params.index}'
@@ -684,20 +867,94 @@ Explain the content of the page and that the requested information is not availa
 			'Send strings of special keys to use Playwright page.keyboard.press - examples include Escape, Backspace, Insert, PageDown, Delete, Enter, or Shortcuts such as `Control+o`, `Control+Shift+T`',
 			param_model=SendKeysAction,
 		)
-		async def send_keys(params: SendKeysAction, page: Page):
+		async def send_keys(params: SendKeysAction, browser_session: BrowserSession):
+			"""Send keyboard keys/shortcuts using CDP directly."""
 			try:
-				await page.keyboard.press(params.keys)
-			except Exception as e:
-				if 'Unknown key' in str(e):
-					# loop over the keys and try to send each one
-					for key in params.keys:
-						try:
-							await page.keyboard.press(key)
-						except Exception as e:
-							logger.debug(f'Error sending key {key}: {str(e)}')
-							raise e
+				# Get CDP client and session ID
+				cdp_client = await browser_session.get_cdp_client()
+				session_id = await browser_session.get_current_page_cdp_session_id()
+				
+				# Parse the key string to handle modifiers and special keys
+				keys_to_send = params.keys
+				
+				# Check if it's a keyboard shortcut with modifiers
+				modifiers = 0
+				parts = keys_to_send.split('+')
+				
+				if len(parts) > 1:
+					# Handle shortcuts like Control+o, Control+Shift+T
+					for part in parts[:-1]:  # All but the last part are modifiers
+						part_lower = part.lower()
+						if part_lower in ['ctrl', 'control']:
+							modifiers |= 2  # Ctrl
+						elif part_lower == 'shift':
+							modifiers |= 8  # Shift
+						elif part_lower == 'alt':
+							modifiers |= 1  # Alt
+						elif part_lower in ['meta', 'command', 'cmd']:
+							modifiers |= 4  # Meta/Command
+					
+					# The last part is the actual key
+					main_key = parts[-1]
 				else:
-					raise e
+					main_key = keys_to_send
+				
+				# Determine key and code values
+				# For most special keys, the key and code are the same
+				if main_key == ' ':
+					key = ' '
+					code = 'Space'
+				elif len(main_key) == 1:
+					# Single character
+					key = main_key
+					code = f'Key{main_key.upper()}' if main_key.isalpha() else f'Digit{main_key}' if main_key.isdigit() else main_key
+				else:
+					# Multi-character keys like Enter, Escape, F1, etc.
+					# For most keys, the key name and code are the same
+					key = main_key
+					code = main_key
+				
+				# Send keyDown event
+				await cdp_client.send.Input.dispatchKeyEvent(
+					params={
+						'type': 'keyDown',
+						'key': key,
+						'code': code,
+						'modifiers': modifiers,
+						'text': key if len(key) == 1 and modifiers == 0 else None,
+					},
+					session_id=session_id
+				)
+				
+				# Send keyUp event
+				await cdp_client.send.Input.dispatchKeyEvent(
+					params={
+						'type': 'keyUp',
+						'key': key,
+						'code': code,
+						'modifiers': modifiers,
+					},
+					session_id=session_id
+				)
+				
+			except Exception as e:
+				# Fallback to playwright method if CDP fails
+				logger.debug(f'CDP send_keys failed: {type(e).__name__}: {e}, falling back to browser method')
+				page = await browser_session.get_current_page()
+				try:
+					await page.keyboard.press(params.keys)
+				except Exception as e2:
+					if 'Unknown key' in str(e2):
+						# loop over the keys and try to send each one
+						for key in params.keys:
+							try:
+								await page.keyboard.press(key)
+							except Exception as e3:
+								logger.debug(f'Error sending key {key}: {str(e3)}')
+								raise e3
+					else:
+						raise e2
+			
 			msg = f'⌨️  Sent keys: {params.keys}'
 			logger.info(msg)
 			return ActionResult(extracted_content=msg, include_in_memory=True, long_term_memory=f'Sent keys: {params.keys}')

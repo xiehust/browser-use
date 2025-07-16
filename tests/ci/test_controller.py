@@ -222,7 +222,7 @@ class TestControllerIntegration:
 		assert 'Custom action executed with: test_value on' in result.extracted_content
 		assert f'{base_url}/page1' in result.extracted_content
 
-	async def test_input_text_action(self, controller, browser_session, base_url, http_server):
+	async def test_input_text_action_old(self, controller, browser_session, base_url, http_server):
 		"""Test that InputTextAction correctly inputs text into form fields."""
 		# Set up search form endpoint for this test
 		http_server.expect_request('/searchform').respond_with_data(
@@ -278,6 +278,210 @@ class TestControllerIntegration:
 		except Exception as e:
 			# If it fails due to DOM issues, that's expected in a test environment
 			assert 'Element index' in str(e) or 'does not exist' in str(e)
+
+	async def test_input_text_action(self, controller, browser_session, httpserver):
+		"""Test InputTextAction with comprehensive CDP code path coverage."""
+		# Test page with various input types
+		httpserver.expect_request('/input_test').respond_with_data(
+			"""
+			<html>
+			<head><title>Input Test</title></head>
+			<body>
+				<h1>Input Test Page</h1>
+				
+				<!-- Regular text input -->
+				<input type="text" id="text-input" name="text" placeholder="Enter text" value="">
+				
+				<!-- Textarea -->
+				<textarea id="textarea-input" placeholder="Enter multi-line text"></textarea>
+				
+				<!-- Input with existing value -->
+				<input type="text" id="prefilled-input" value="Existing text">
+				
+				<!-- Contenteditable div -->
+				<div id="contenteditable" contenteditable="true" style="border: 1px solid #ccc; padding: 5px;">
+					Editable content
+				</div>
+				
+				<!-- Input in iframe -->
+				<iframe id="test-iframe" srcdoc='
+					<html>
+					<body>
+						<input type="text" id="iframe-input" placeholder="Input in iframe">
+					</body>
+					</html>
+				'></iframe>
+			</body>
+			</html>
+			""",
+			content_type='text/html',
+		)
+		
+		# Navigate to test page
+		page = await browser_session.get_current_page()
+		await page.goto(httpserver.url_for('/input_test'))
+		await page.wait_for_load_state()
+		await asyncio.sleep(0.5)  # Give iframe time to load
+		
+		# Get page state
+		state = await browser_session.get_state_summary(cache_clickable_elements_hashes=True)
+		selector_map = state.dom_state.selector_map
+		
+		# Find indices for different input elements
+		text_input_idx = None
+		textarea_idx = None
+		prefilled_idx = None
+		contenteditable_idx = None
+		
+		for idx, element in selector_map.items():
+			if element.tag_name.lower() == 'input' and element.attributes.get('id') == 'text-input':
+				text_input_idx = idx
+			elif element.tag_name.lower() == 'textarea':
+				textarea_idx = idx
+			elif element.tag_name.lower() == 'input' and element.attributes.get('id') == 'prefilled-input':
+				prefilled_idx = idx
+			elif element.tag_name.lower() == 'div' and element.attributes.get('contenteditable') == 'true':
+				contenteditable_idx = idx
+		
+		# Test 1: Basic text input with CDP
+		assert text_input_idx is not None, "Could not find text input"
+		test_text = 'Hello CDP!'
+		
+		class InputTextActionModel(ActionModel):
+			input_text: InputTextAction | None = None
+		
+		result = await controller.act(
+			InputTextActionModel(input_text=InputTextAction(index=text_input_idx, text=test_text)),
+			browser_session
+		)
+		
+		assert isinstance(result, ActionResult)
+		assert '⌨️  Input' in result.extracted_content
+		assert str(text_input_idx) in result.extracted_content
+		assert result.error is None
+		
+		# Verify text was entered
+		await asyncio.sleep(0.3)
+		input_value = await page.evaluate('document.getElementById("text-input").value')
+		assert input_value == test_text
+		
+		# Test 2: Textarea input
+		if textarea_idx is not None:
+			textarea_text = 'Multi\nline\ntext'
+			result2 = await controller.act(
+				InputTextActionModel(input_text=InputTextAction(index=textarea_idx, text=textarea_text)),
+				browser_session
+			)
+			
+			assert result2.error is None
+			await asyncio.sleep(0.3)
+			textarea_value = await page.evaluate('document.getElementById("textarea-input").value')
+			assert textarea_value == textarea_text
+		
+		# Test 3: Replace existing text (tests Ctrl+A and Delete)
+		if prefilled_idx is not None:
+			new_text = 'Replaced text'
+			result3 = await controller.act(
+				InputTextActionModel(input_text=InputTextAction(index=prefilled_idx, text=new_text)),
+				browser_session
+			)
+			
+			assert result3.error is None
+			await asyncio.sleep(0.3)
+			replaced_value = await page.evaluate('document.getElementById("prefilled-input").value')
+			assert replaced_value == new_text
+			assert 'Existing text' not in replaced_value  # Old text should be gone
+		
+		# Test 4: Contenteditable div (different element type)
+		if contenteditable_idx is not None:
+			content_text = 'New editable content'
+			result4 = await controller.act(
+				InputTextActionModel(input_text=InputTextAction(index=contenteditable_idx, text=content_text)),
+				browser_session
+			)
+			
+			# Even if it fails with CDP, should fall back to browser method
+			assert result4.extracted_content is not None
+		
+		# Test 5: Invalid index (error handling)
+		invalid_idx = 99999
+		result5 = await controller.act(
+			InputTextActionModel(input_text=InputTextAction(index=invalid_idx, text='test')),
+			browser_session
+		)
+		
+		# Should get an error or exception
+		assert result5.error is not None or result5.success is False
+		
+	async def test_input_text_cdp_fallback(self, controller, browser_session, httpserver):
+		"""Test CDP fallback scenarios for input_text action."""
+		# Create a page that might cause CDP issues
+		httpserver.expect_request('/complex_input').respond_with_data(
+			"""
+			<html>
+			<head><title>Complex Input Test</title></head>
+			<body>
+				<input type="text" id="test-input" value="">
+				<script>
+					// Add event listeners that might interfere
+					const input = document.getElementById('test-input');
+					input.addEventListener('focus', (e) => {
+						console.log('Focus event');
+					});
+					input.addEventListener('input', (e) => {
+						console.log('Input event:', e.target.value);
+					});
+				</script>
+			</body>
+			</html>
+			""",
+			content_type='text/html',
+		)
+		
+		page = await browser_session.get_current_page()
+		await page.goto(httpserver.url_for('/complex_input'))
+		await page.wait_for_load_state()
+		
+		# Get input element index
+		state = await browser_session.get_state_summary(cache_clickable_elements_hashes=True)
+		input_idx = None
+		for idx, element in state.dom_state.selector_map.items():
+			if element.tag_name.lower() == 'input':
+				input_idx = idx
+				break
+		
+		assert input_idx is not None
+		
+		# Mock CDP failure by temporarily breaking the CDP client
+		# This will force fallback to browser_session method
+		original_get_cdp_client = browser_session.get_cdp_client
+		
+		async def mock_cdp_failure():
+			raise Exception("Mock CDP failure")
+		
+		browser_session.get_cdp_client = mock_cdp_failure
+		
+		try:
+			# This should fall back to browser method
+			class InputTextActionModel(ActionModel):
+				input_text: InputTextAction | None = None
+			
+			result = await controller.act(
+				InputTextActionModel(input_text=InputTextAction(index=input_idx, text='Fallback test')),
+				browser_session
+			)
+			
+			# Should still succeed with fallback
+			assert '⌨️  Input' in result.extracted_content
+			
+			# Verify text was entered via fallback
+			await asyncio.sleep(0.3)
+			value = await page.evaluate('document.getElementById("test-input").value')
+			assert value == 'Fallback test'
+		
+		finally:
+			# Restore original method
+			browser_session.get_cdp_client = original_get_cdp_client
 
 	async def test_error_handling(self, controller, browser_session):
 		"""Test error handling when an action fails."""
@@ -378,6 +582,169 @@ class TestControllerIntegration:
 
 		# Try to verify we're back on the first page, but don't fail the test if not
 		assert f'{base_url}/page1' in final_url, f'Expected to return to page1 but got {final_url}'
+
+	async def test_go_back_no_history(self, controller, browser_session, base_url):
+		"""Test go_back action when there's no history to go back to."""
+		# Open a new tab to get a clean history
+		open_tab_action = {'go_to_url': GoToUrlAction(url=f'{base_url}/page1', new_tab=True)}
+		class GoToUrlActionModel(ActionModel):
+			go_to_url: GoToUrlAction | None = None
+		
+		result = await controller.act(GoToUrlActionModel(**open_tab_action), browser_session)
+		
+		# Switch to the new tab
+		page = await browser_session.get_current_page()
+		tab_index = browser_session.tabs.index(page)
+		
+		# Now we're on a new tab with only one history entry
+		# Try to go back - should fail since we're at the beginning
+		go_back_action = {'go_back': NoParamsAction()}
+		class GoBackActionModel(ActionModel):
+			go_back: NoParamsAction | None = None
+		
+		result = await controller.act(GoBackActionModel(**go_back_action), browser_session)
+		
+		# Should indicate cannot go back
+		assert isinstance(result, ActionResult)
+		assert result.extracted_content is not None
+		# The result could be either "Cannot go back" or it navigated to about:blank
+		# depending on the browser's initial state
+		assert ('Cannot go back' in result.extracted_content or 
+		        'about:blank' in result.extracted_content or
+		        'chrome://new-tab-page' in result.extracted_content), \
+		       f"Unexpected result: {result.extracted_content}"
+
+	async def test_go_back_spa_navigation(self, controller, browser_session, httpserver):
+		"""Test go_back with SPA using history.pushState."""
+		# Create a simple SPA page
+		httpserver.expect_request('/spa').respond_with_data(
+			"""
+			<html>
+			<body>
+				<h1 id="title">Home</h1>
+				<button id="about">About</button>
+				<button id="contact">Contact</button>
+				<div id="content">Home content</div>
+				<script>
+					// Simple SPA navigation
+					document.getElementById('about').onclick = () => {
+						history.pushState({page: 'about'}, 'About', '/spa/about');
+						document.getElementById('title').textContent = 'About';
+						document.getElementById('content').textContent = 'About content';
+					};
+					document.getElementById('contact').onclick = () => {
+						history.pushState({page: 'contact'}, 'Contact', '/spa/contact');
+						document.getElementById('title').textContent = 'Contact';
+						document.getElementById('content').textContent = 'Contact content';
+					};
+					// Handle browser back button
+					window.onpopstate = (event) => {
+						const path = window.location.pathname;
+						if (path === '/spa') {
+							document.getElementById('title').textContent = 'Home';
+							document.getElementById('content').textContent = 'Home content';
+						} else if (path === '/spa/about') {
+							document.getElementById('title').textContent = 'About';
+							document.getElementById('content').textContent = 'About content';
+						} else if (path === '/spa/contact') {
+							document.getElementById('title').textContent = 'Contact';
+							document.getElementById('content').textContent = 'Contact content';
+						}
+					};
+				</script>
+			</body>
+			</html>
+			""",
+			content_type='text/html',
+		)
+		
+		# Navigate to SPA
+		goto_action = {'go_to_url': GoToUrlAction(url=httpserver.url_for('/spa'), new_tab=False)}
+		class GoToUrlActionModel(ActionModel):
+			go_to_url: GoToUrlAction | None = None
+		await controller.act(GoToUrlActionModel(**goto_action), browser_session)
+		
+		page = await browser_session.get_current_page()
+		
+		# Click About button (pushState navigation)
+		await page.click('#about')
+		await asyncio.sleep(0.5)  # Wait for JS to execute
+		
+		# Verify we're on about page
+		assert '/spa/about' in page.url
+		title_text = await page.text_content('#title')
+		assert title_text == 'About'
+		
+		# Click Contact button
+		await page.click('#contact')
+		await asyncio.sleep(0.5)
+		
+		# Verify we're on contact page
+		assert '/spa/contact' in page.url
+		title_text = await page.text_content('#title')
+		assert title_text == 'Contact'
+		
+		# Go back using CDP
+		go_back_action = {'go_back': NoParamsAction()}
+		class GoBackActionModel(ActionModel):
+			go_back: NoParamsAction | None = None
+		
+		result = await controller.act(GoBackActionModel(**go_back_action), browser_session)
+		
+		# Verify we're back on About
+		assert isinstance(result, ActionResult)
+		assert 'Navigated back' in result.extracted_content
+		assert '/spa/about' in result.extracted_content
+		
+		# Wait for popstate handler to update the page
+		await asyncio.sleep(0.5)
+		assert '/spa/about' in page.url
+		title_text = await page.text_content('#title')
+		assert title_text == 'About'
+
+	async def test_go_back_cdp_fallback(self, controller, browser_session, base_url):
+		"""Test that go_back falls back to browser_session method if CDP fails."""
+		# Navigate to two pages to have history
+		goto_action1 = {'go_to_url': GoToUrlAction(url=f'{base_url}/page1', new_tab=False)}
+		class GoToUrlActionModel(ActionModel):
+			go_to_url: GoToUrlAction | None = None
+		await controller.act(GoToUrlActionModel(**goto_action1), browser_session)
+		
+		goto_action2 = {'go_to_url': GoToUrlAction(url=f'{base_url}/page2', new_tab=False)}
+		await controller.act(GoToUrlActionModel(**goto_action2), browser_session)
+		
+		# Temporarily break CDP client to test fallback
+		original_get_cdp_client = browser_session.get_cdp_client
+		
+		async def failing_cdp_client():
+			raise Exception("CDP client unavailable for testing")
+		
+		browser_session.get_cdp_client = failing_cdp_client
+		
+		try:
+			# Execute go back - should use fallback
+			go_back_action = {'go_back': NoParamsAction()}
+			class GoBackActionModel(ActionModel):
+				go_back: NoParamsAction | None = None
+			
+			result = await controller.act(GoBackActionModel(**go_back_action), browser_session)
+			
+			# Should still succeed using fallback
+			assert isinstance(result, ActionResult)
+			assert result.extracted_content is not None
+			assert 'Navigated back' in result.extracted_content
+			assert result.error is None
+			
+			# Wait for navigation
+			await asyncio.sleep(1)
+			
+			# Verify we're back on page1
+			page = await browser_session.get_current_page()
+			assert f'{base_url}/page1' in page.url
+			
+		finally:
+			# Restore original method
+			browser_session.get_cdp_client = original_get_cdp_client
 
 	async def test_navigation_chain(self, controller, browser_session, base_url):
 		"""Test navigating through multiple pages and back through history."""
