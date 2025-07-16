@@ -1,17 +1,29 @@
 import asyncio
 import json
+import os
 import time
 
 import aiofiles
 
-from browser_use.browser import BrowserSession
+from browser_use.browser import BrowserProfile, BrowserSession
+from browser_use.browser.types import ViewportSize
+from browser_use.dom.debug.highlights import inject_highlighting_script, remove_highlighting_script
 from browser_use.dom.service import DomService
 
 
 async def main():
 	# async with async_playwright() as p:
 	# 	playwright_browser = await p.chromium.launch(args=['--remote-debugging-port=9222'], headless=False)
-	browser = BrowserSession()
+	browser = BrowserSession(
+		browser_profile=BrowserProfile(
+			# executable_path='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+			window_size=ViewportSize(width=1100, height=1000),
+			disable_security=True,
+			wait_for_network_idle_page_load_time=1,
+			headless=False,
+			args=['--incognito'],
+		),
+	)
 
 	# async with httpx.AsyncClient() as client:
 	# 	version_info = await client.get('http://localhost:9222/json/version')
@@ -22,12 +34,14 @@ async def main():
 
 	# await browser.create_new_tab('https://en.wikipedia.org/wiki/Apple_Inc.')
 	# await browser.create_new_tab('https://semantic-ui.com/modules/dropdown.html#/definition')
-	await browser.create_new_tab('https://select2.org/data-sources/ajax')
+	await browser.navigate('https://v0-website-with-clickable-elements.vercel.app/iframe-buttons')
 	await browser._wait_for_page_and_frames_load()
 
 	dom_service = DomService(browser)
 
 	while True:
+		await remove_highlighting_script(dom_service)
+
 		start = time.time()
 		dom_tree, dom_timing = await dom_service.get_dom_tree()
 		end = time.time()
@@ -69,23 +83,27 @@ async def main():
 
 		# print(selector_map)
 
-		# start = time.time()
-		# snapshot, dom_tree, ax_tree = await dom_service._get_all_trees()
-		# end = time.time()
-		# print(f'Time taken: {end - start} seconds')
+		start = time.time()
+		snapshot, dom_tree, ax_tree, cdp_timing = await dom_service._get_all_trees()
+		end = time.time()
+		print(f'Time taken: {end - start} seconds')
 
-		# async with aiofiles.open('tmp/snapshot.json', 'w') as f:
-		# 	await f.write(json.dumps(snapshot, indent=1))
+		os.makedirs('tmp/tree', exist_ok=True)
 
-		# async with aiofiles.open('tmp/dom_tree.json', 'w') as f:
-		# 	await f.write(json.dumps(dom_tree, indent=1))
+		async with aiofiles.open('tmp/tree/snapshot.json', 'w') as f:
+			await f.write(json.dumps(snapshot, indent=1))
 
-		# async with aiofiles.open('tmp/ax_tree.json', 'w') as f:
-		# 	await f.write(json.dumps(ax_tree, indent=1))
+		async with aiofiles.open('tmp/tree/dom_tree.json', 'w') as f:
+			await f.write(json.dumps(dom_tree, indent=1))
 
-		# print('saved dom tree to tmp/dom_tree.json')
-		# print('saved snapshot to tmp/snapshot.json')
-		# print('saved ax tree to tmp/ax_tree.json')
+		async with aiofiles.open('tmp/tree/ax_tree.json', 'w') as f:
+			await f.write(json.dumps(ax_tree, indent=1))
+
+		print('saved dom tree to tmp/tree/dom_tree.json')
+		print('saved snapshot to tmp/tree/snapshot.json')
+		print('saved ax tree to tmp/tree/ax_tree.json')
+
+		await inject_highlighting_script(dom_service, serialized_dom_state.selector_map)
 
 		input('Done. Press Enter to continue...')
 
