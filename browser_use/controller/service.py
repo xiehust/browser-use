@@ -126,7 +126,7 @@ class Controller(Generic[Context]):
 					raise
 
 		@self.registry.action('Go back', param_model=NoParamsAction)
-		async def go_back(_: NoParamsAction, browser_session: BrowserSession):
+		async def go_back(params: NoParamsAction, browser_session: BrowserSession):
 			"""Navigate back in browser history using CDP directly."""
 			try:
 				# Get CDP client and session ID
@@ -251,7 +251,166 @@ class Controller(Generic[Context]):
 
 			try:
 				assert element_node is not None, f'Element with index {params.index} does not exist'
-				download_path = await browser_session._click_element_node(element_node)
+
+				# Try CDP-based click first
+				cdp_client = await browser_session.get_cdp_client()
+				session_id = await browser_session.get_current_page_cdp_session_id()
+				backend_node_id = element_node.backend_node_id
+
+				# Check if element has bounds from snapshot
+				if element_node.snapshot_node and element_node.snapshot_node.bounds:
+					# We have cached bounds, use them
+					center_x, center_y = element_node.snapshot_node.bounds.center
+				else:
+					# Get fresh bounds using CDP
+					try:
+						# Get the bounding box of the element
+						box_model = await cdp_client.send.DOM.getBoxModel(
+							params={'backendNodeId': backend_node_id}, session_id=session_id
+						)
+
+						if 'model' not in box_model or 'content' not in box_model['model']:
+							raise Exception('Could not get element bounds')
+
+						# Extract content quad (the actual visible area)
+						content_quad = box_model['model']['content']
+						if len(content_quad) < 8:
+							raise Exception('Invalid content quad')
+
+						# Calculate center point from quad (x1,y1, x2,y2, x3,y3, x4,y4)
+						center_x = (content_quad[0] + content_quad[2] + content_quad[4] + content_quad[6]) / 4
+						center_y = (content_quad[1] + content_quad[3] + content_quad[5] + content_quad[7]) / 4
+					except Exception as e:
+						logger.debug(f'Failed to get element bounds via CDP: {e}')
+						# Fallback to browser_session method
+						download_path = await browser_session._click_element_node(element_node)
+						if download_path:
+							emoji = '💾'
+							msg = f'Downloaded file to {download_path}'
+						else:
+							emoji = '🖱️'
+							msg = f'Clicked button with index {params.index}: {element_node.llm_representation()}'
+
+						logger.info(f'{emoji} {msg}')
+						logger.debug(f'Element xpath: {element_node.xpath}')
+						if len(browser_session.tabs) > initial_pages:
+							new_tab_msg = 'New tab opened - switching to it'
+							msg += f' - {new_tab_msg}'
+							emoji = '🔗'
+							logger.info(f'{emoji} {new_tab_msg}')
+							await browser_session.switch_to_tab(-1)
+						return ActionResult(extracted_content=msg, include_in_memory=True, long_term_memory=msg)
+
+				# Scroll element into view first
+				try:
+					await cdp_client.send.DOM.scrollIntoViewIfNeeded(
+						params={'backendNodeId': backend_node_id}, session_id=session_id
+					)
+					await asyncio.sleep(0.1)  # Wait for scroll to complete
+				except Exception as e:
+					logger.debug(f'Failed to scroll element into view: {e}')
+
+				# Set up download detection if downloads are enabled
+				download_path = None
+				download_event = asyncio.Event()
+				download_guid = None
+
+				if browser_session.browser_profile.downloads_path:
+					# Enable download events
+					await cdp_client.send.Page.setDownloadBehavior(
+						params={'behavior': 'allow', 'downloadPath': str(browser_session.browser_profile.downloads_path)},
+						session_id=session_id,
+					)
+
+					# Set up download listener
+					async def on_download_will_begin(event):
+						nonlocal download_guid
+						download_guid = event['guid']
+						download_event.set()
+
+					cdp_client.on('Page.downloadWillBegin', on_download_will_begin, session_id=session_id)  # type: ignore[attr-defined]
+
+				# Perform the click using CDP
+				try:
+					# Move mouse to element
+					await cdp_client.send.Input.dispatchMouseEvent(
+						params={
+							'type': 'mouseMoved',
+							'x': center_x,
+							'y': center_y,
+						},
+						session_id=session_id,
+					)
+
+					# Mouse down
+					await cdp_client.send.Input.dispatchMouseEvent(
+						params={
+							'type': 'mousePressed',
+							'x': center_x,
+							'y': center_y,
+							'button': 'left',
+							'clickCount': 1,
+						},
+						session_id=session_id,
+					)
+
+					# Mouse up
+					await cdp_client.send.Input.dispatchMouseEvent(
+						params={
+							'type': 'mouseReleased',
+							'x': center_x,
+							'y': center_y,
+							'button': 'left',
+							'clickCount': 1,
+						},
+						session_id=session_id,
+					)
+
+					# Check for download (wait up to 5 seconds)
+					if browser_session.browser_profile.downloads_path:
+						try:
+							await asyncio.wait_for(download_event.wait(), timeout=5.0)
+							if download_guid:
+								# Get download progress
+								async def on_download_progress(event):
+									if event['guid'] == download_guid and event['state'] == 'completed':
+										nonlocal download_path
+										# Extract filename from receivedBytes/totalBytes event data
+										suggested_filename = event.get('suggestedFilename', 'download')
+										unique_filename = await browser_session._get_unique_filename(
+											str(browser_session.browser_profile.downloads_path), suggested_filename
+										)
+										download_path = os.path.join(
+											str(browser_session.browser_profile.downloads_path), unique_filename
+										)
+										# Track the downloaded file
+										browser_session._downloaded_files.append(download_path)
+										logger.info(f'⬇️ Downloaded file to: {download_path}')
+										logger.info(
+											f'📁 Added download to session tracking (total: {len(browser_session._downloaded_files)} files)'
+										)
+
+								cdp_client.on('Page.downloadProgress', on_download_progress, session_id=session_id)  # type: ignore[attr-defined]
+								# Wait a bit for download to complete
+								await asyncio.sleep(2.0)
+						except TimeoutError:
+							# No download triggered
+							pass
+
+					# If no download, wait for potential navigation
+					if not download_path:
+						await asyncio.sleep(0.5)  # Give time for navigation to start
+						page = await browser_session.get_current_page()
+						try:
+							await page.wait_for_load_state(state='domcontentloaded', timeout=5000)
+						except Exception:
+							pass  # Page might not navigate
+
+				except Exception as e:
+					# CDP click failed, fallback to browser_session method
+					logger.debug(f'CDP click failed: {e}, falling back to browser method')
+					download_path = await browser_session._click_element_node(element_node)
+
 				if download_path:
 					emoji = '💾'
 					msg = f'Downloaded file to {download_path}'
@@ -304,28 +463,70 @@ class Controller(Generic[Context]):
 				await asyncio.sleep(0.1)
 
 				# Clear existing text by selecting all and deleting
-				# Send Ctrl+A (or Cmd+A on Mac) to select all
-				import platform
+				# First, resolve the node to get its object ID for direct manipulation
+				object_id = None
+				try:
+					resolved_node = await cdp_client.send.DOM.resolveNode(
+						params={'backendNodeId': backend_node_id}, session_id=session_id
+					)
+					object_id = resolved_node['object'].get('objectId')
+					if not object_id:
+						raise Exception('No objectId in resolved node')
 
-				modifiers = 4 if platform.system() == 'Darwin' else 2  # Meta/Cmd on Mac, Ctrl on others
-				await cdp_client.send.Input.dispatchKeyEvent(
-					params={
-						'type': 'keyDown',
-						'key': 'a',
-						'code': 'KeyA',
-						'modifiers': modifiers,
-					},
-					session_id=session_id,
-				)
-				await cdp_client.send.Input.dispatchKeyEvent(
-					params={
-						'type': 'keyUp',
-						'key': 'a',
-						'code': 'KeyA',
-						'modifiers': modifiers,
-					},
-					session_id=session_id,
-				)
+					# Select all text in the input field directly via JavaScript
+					await cdp_client.send.Runtime.callFunctionOn(
+						params={
+							'functionDeclaration': """
+								function() {
+									// Select all text for different element types
+									if (this.select) {
+										// For input and textarea elements
+										this.select();
+									} else if (this.setSelectionRange) {
+										// Alternative for input elements
+										this.setSelectionRange(0, this.value.length);
+									} else if (window.getSelection && this.contentEditable === 'true') {
+										// For contenteditable elements
+										const selection = window.getSelection();
+										const range = document.createRange();
+										range.selectNodeContents(this);
+										selection.removeAllRanges();
+										selection.addRange(range);
+									}
+								}
+							""",
+							'objectId': object_id,
+						},
+						session_id=session_id,
+					)
+
+					# Small delay to ensure selection is processed
+					await asyncio.sleep(0.05)
+
+				except Exception as e:
+					logger.debug(f'Failed to select text via JavaScript: {e}, trying keyboard shortcut')
+					# Fallback to keyboard shortcut
+					import platform
+
+					modifiers = 4 if platform.system() == 'Darwin' else 2  # Meta/Cmd on Mac, Ctrl on others
+					await cdp_client.send.Input.dispatchKeyEvent(
+						params={
+							'type': 'keyDown',
+							'key': 'a',
+							'code': 'KeyA',
+							'modifiers': modifiers,
+						},
+						session_id=session_id,
+					)
+					await cdp_client.send.Input.dispatchKeyEvent(
+						params={
+							'type': 'keyUp',
+							'key': 'a',
+							'code': 'KeyA',
+							'modifiers': modifiers,
+						},
+						session_id=session_id,
+					)
 
 				# Delete selected text
 				await cdp_client.send.Input.dispatchKeyEvent(
@@ -351,12 +552,16 @@ class Controller(Generic[Context]):
 				# Insert the new text using CDP
 				await cdp_client.send.Input.insertText(params={'text': params.text}, session_id=session_id)
 
-				# Resolve the node to get a remote object ID that we can use with Runtime
+				# Dispatch input and change events
 				try:
-					resolved_node = await cdp_client.send.DOM.resolveNode(
-						params={'backendNodeId': backend_node_id}, session_id=session_id
-					)
-					object_id = resolved_node['object']['objectId']
+					if object_id is None:
+						# Need to resolve the node if we didn't already
+						resolved_node = await cdp_client.send.DOM.resolveNode(
+							params={'backendNodeId': backend_node_id}, session_id=session_id
+						)
+						object_id = resolved_node['object'].get('objectId')
+						if not object_id:
+							raise Exception('No objectId in resolved node')
 
 					# Dispatch input and change events using the resolved node
 					await cdp_client.send.Runtime.callFunctionOn(
@@ -1032,7 +1237,7 @@ Explain the content of the page and that the requested information is not availa
 								keydown_params['text'] = '\r'
 							else:
 								keydown_params['text'] = char
-							await cdp_client.send.Input.dispatchKeyEvent(params=keydown_params, session_id=session_id)
+							await cdp_client.send.Input.dispatchKeyEvent(params=keydown_params, session_id=session_id)  # type: ignore[arg-type]
 
 							# Send keyUp
 							await cdp_client.send.Input.dispatchKeyEvent(
@@ -1097,7 +1302,7 @@ Explain the content of the page and that the requested information is not availa
 						elif key.lower() == 'z' and (modifiers & 2 or modifiers & 4):  # Ctrl+Z or Cmd+Z
 							keydown_params['commands'] = ['undo']
 
-					await cdp_client.send.Input.dispatchKeyEvent(params=keydown_params, session_id=session_id)
+					await cdp_client.send.Input.dispatchKeyEvent(params=keydown_params, session_id=session_id)  # type: ignore[arg-type]
 
 					# Small delay for modifier key combinations
 					if modifiers > 0:
@@ -1145,11 +1350,24 @@ Explain the content of the page and that the requested information is not availa
 				cdp_client = await browser_session.get_cdp_client()
 				session_id = await browser_session.get_current_page_cdp_session_id()
 
+				# Enable DOM domain
+				await cdp_client.send.DOM.enable(params={}, session_id=session_id)
+
+				# Get the document and populate DOM tree
+				doc = await cdp_client.send.DOM.getDocument(params={'depth': -1}, session_id=session_id)
+				root_node_id = doc['root']['nodeId']
+
+				# Request child nodes to ensure DOM is populated
+				await cdp_client.send.DOM.requestChildNodes(params={'nodeId': root_node_id, 'depth': -1}, session_id=session_id)
+
+				# Small delay to ensure DOM is fully populated
+				await asyncio.sleep(0.1)
+
 				# Try different search queries
 				search_queries = [
-					text,  # Plain text search
-					f'//*[contains(text(), "{text}")]',  # XPath search
+					f'//*[contains(text(), "{text}")]',  # XPath search for direct text content
 					f'//*[contains(., "{text}")]',  # XPath with . for all text content
+					text,  # Plain text search as fallback
 				]
 
 				for query in search_queries:
@@ -1167,15 +1385,28 @@ Explain the content of the page and that the requested information is not availa
 						# Get search results
 						results = await cdp_client.send.DOM.getSearchResults(
 							params={
-								'searchId': search_result.searchId,
+								'searchId': search_result['searchId'],
 								'fromIndex': 0,
-								'toIndex': min(search_result.resultCount, 10),  # Check first 10 results
+								'toIndex': min(search_result['resultCount'], 10),  # Check first 10 results
 							},
 							session_id=session_id,
 						)
 
-						# Try to scroll to each found node
-						for node_id in results.nodeIds:
+						# Get current scroll position to convert viewport coordinates to absolute
+						scroll_result = await cdp_client.send.Runtime.evaluate(
+							params={'expression': 'window.pageYOffset', 'returnByValue': True}, session_id=session_id
+						)
+						current_scroll_y = scroll_result.get('result', {}).get('value', 0)
+
+						# Find the best matching node among all results
+						best_node_id = None
+						best_y_position = None
+
+						for node_id in results['nodeIds']:
+							if node_id == 0:  # Skip invalid node IDs
+								logger.debug(f'Skipping invalid node ID: {node_id}')
+								continue
+
 							try:
 								# Get node info to check if it's visible
 								box_model = await cdp_client.send.DOM.getBoxModel(
@@ -1183,32 +1414,61 @@ Explain the content of the page and that the requested information is not availa
 								)
 
 								# Check if element has dimensions
-								if box_model.model and box_model.model.content:
-									# Scroll the element into view
-									await cdp_client.send.DOM.scrollIntoViewIfNeeded(
-										params={'nodeId': node_id}, session_id=session_id
-									)
-									await asyncio.sleep(0.5)  # Wait for scroll to complete
+								if box_model.get('model') and box_model['model'].get('content'):
+									# Get the element's position
+									content_quad = box_model['model']['content']
+									# Content quad is [x1,y1, x2,y1, x2,y2, x1,y2]
+									viewport_y = content_quad[1]  # y1 coordinate (viewport relative)
+									# Convert to absolute page coordinates
+									element_y = viewport_y + current_scroll_y
 
-									# Discard search results to free memory
-									await cdp_client.send.DOM.discardSearchResults(
-										params={'searchId': search_result.searchId}, session_id=session_id
-									)
+									# For XPath queries, use the first valid match
+									# For plain text queries, prefer elements lower on the page
+									if query.startswith('//') or best_y_position is None:
+										best_node_id = node_id
+										best_y_position = element_y
+										if query.startswith('//'):
+											break  # Use first match for XPath
+									elif element_y > best_y_position:
+										# For plain text search, prefer elements further down
+										best_node_id = node_id
+										best_y_position = element_y
 
-									msg = f'🔍  Scrolled to text: {text}'
-									logger.info(msg)
-									return ActionResult(
-										extracted_content=msg,
-										include_in_memory=True,
-										long_term_memory=f'Scrolled to text: {text}',
-									)
 							except Exception as e:
-								logger.debug(f'Failed to scroll to node {node_id}: {str(e)}')
+								logger.debug(f'Failed to get box model for node {node_id}: {str(e)}')
 								continue
+
+						# Scroll to the best match if found
+						if best_node_id and best_y_position is not None:
+							# Scroll to the element using JavaScript
+							scroll_target = max(0, best_y_position - 100)  # Ensure we don't scroll to negative
+							logger.debug(f'Scrolling to Y position {scroll_target} (element at {best_y_position})')
+
+							await cdp_client.send.Runtime.evaluate(
+								params={
+									'expression': f'window.scrollTo(0, {scroll_target})',  # Scroll with 100px offset from top
+									'userGesture': True,
+								},
+								session_id=session_id,
+							)
+							await asyncio.sleep(0.5)  # Wait for scroll to complete
+
+							# Discard search results to free memory
+							await cdp_client.send.DOM.discardSearchResults(
+								params={'searchId': search_result['searchId']}, session_id=session_id
+							)
+
+							msg = f'🔍  Scrolled to text: {text}'
+							logger.info(msg)
+							return ActionResult(
+								extracted_content=msg,
+								include_in_memory=True,
+								long_term_memory=f'Scrolled to text: {text}',
+							)
 
 						# Discard search results if we didn't find a visible element
 						await cdp_client.send.DOM.discardSearchResults(
-							params={'searchId': search_result.searchId}, session_id=session_id
+							params={'searchId': search_result['searchId']}, session_id=session_id
 						)
 
 					except Exception as e:

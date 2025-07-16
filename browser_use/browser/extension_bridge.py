@@ -71,7 +71,7 @@ class ExtensionBridge:
 					logger.info(f'Auto-detected extension ID: {self.extension_id}')
 					return
 
-	async def call(self, method: str, params: list = None) -> Any:
+	async def call(self, method: str, params: list | None = None) -> Any:
 		"""
 		Call a Chrome API method via JSON-RPC.
 
@@ -155,7 +155,7 @@ class ExtensionBridge:
 		return await self.call(f'get:chrome.{property_path}')
 
 	# Convenience methods for tab management
-	async def get_tabs(self, query: dict = None) -> list[dict]:
+	async def get_tabs(self, query: dict | None = None) -> list[dict]:
 		"""Get all tabs matching the query."""
 		return await self.call('chrome.tabs.query', [query or {}])
 
@@ -163,7 +163,7 @@ class ExtensionBridge:
 		"""Get a specific tab by ID."""
 		return await self.call('chrome.tabs.get', [tab_id])
 
-	async def create_tab(self, url: str = None, **options) -> dict:
+	async def create_tab(self, url: str | None = None, **options) -> dict:
 		"""Create a new tab."""
 		if url:
 			options['url'] = url
@@ -181,7 +181,7 @@ class ExtensionBridge:
 		"""Switch to a specific tab (make it active)."""
 		return await self.update_tab(tab_id, active=True)
 
-	async def get_current_tab(self) -> dict:
+	async def get_current_tab(self) -> dict | None:
 		"""Get the currently active tab."""
 		query_options = {'active': True, 'lastFocusedWindow': True}
 		tabs = await self.call('chrome.tabs.query', [query_options])

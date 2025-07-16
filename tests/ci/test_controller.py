@@ -355,6 +355,7 @@ class TestControllerIntegration:
 		)
 
 		assert isinstance(result, ActionResult)
+		assert result.extracted_content is not None
 		assert '⌨️  Input' in result.extracted_content
 		assert str(text_input_idx) in result.extracted_content
 		assert result.error is None
@@ -693,6 +694,7 @@ class TestControllerIntegration:
 
 		# Verify we're back on About
 		assert isinstance(result, ActionResult)
+		assert result.extracted_content is not None
 		assert 'Navigated back' in result.extracted_content
 		assert '/spa/about' in result.extracted_content
 
@@ -1479,7 +1481,7 @@ class TestControllerIntegration:
 			# Look for the first div with class "clickable"
 			if element.tag_name.lower() == 'div' and 'clickable' in str(element.attributes.get('class', '')):
 				button_index = idx
-				button_text = element.get_all_text_till_next_clickable_element(max_depth=2).strip()
+				button_text = element.get_all_children_text(max_depth=2).strip()
 				break
 
 		# Verify we found a clickable element
