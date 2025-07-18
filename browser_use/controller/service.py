@@ -142,9 +142,7 @@ class Controller(Generic[Context]):
 				):
 					site_unavailable_msg = f'Site unavailable: {params.url} - {error_msg}'
 					logger.warning(site_unavailable_msg)
-					return ActionResult(
-						success=False, error=site_unavailable_msg, include_in_memory=True, long_term_memory=site_unavailable_msg
-					)
+					raise Exception(site_unavailable_msg)
 				else:
 					# Re-raise non-network errors (including URLNotAllowedError for unauthorized domains)
 					raise
@@ -167,23 +165,8 @@ class Controller(Generic[Context]):
 		# Element Interaction Actions
 		@self.registry.action('Click element by index', param_model=ClickElementAction)
 		async def click_element_by_index(params: ClickElementAction, browser_session: BrowserSession):
-			# Browser is now a BrowserSession itself
-
-			# Check if element exists in current selector map
-			selector_map = await browser_session.get_selector_map()
-			if params.index not in selector_map:
-				# Force a state refresh in case the cache is stale
-				logger.info(f'Element with index {params.index} not found in selector map, refreshing state...')
-				await browser_session.get_state_summary(
-					cache_clickable_elements_hashes=True
-				)  # This will refresh the cached state
-				selector_map = await browser_session.get_selector_map()
-
-				if params.index not in selector_map:
-					# Return informative message with the new state instead of error
-					max_index = max(selector_map.keys()) if selector_map else -1
-					msg = f'Element with index {params.index} does not exist. Page has {len(selector_map)} interactive elements (indices 0-{max_index}). State has been refreshed - please use the updated element indices or scroll to see more elements'
-					return ActionResult(extracted_content=msg, include_in_memory=True, success=False, long_term_memory=msg)
+			if params.index not in await browser_session.get_selector_map():
+				raise Exception(f'Element with index {params.index} not found found anymore - the page might have changed')
 
 			element_node = await browser_session.get_dom_element_by_index(params.index)
 			initial_pages = len(browser_session.tabs)
@@ -218,16 +201,7 @@ class Controller(Generic[Context]):
 				return ActionResult(extracted_content=msg, include_in_memory=True, long_term_memory=msg)
 			except Exception as e:
 				error_msg = str(e)
-				if 'Execution context was destroyed' in error_msg or 'Cannot find context with specified id' in error_msg:
-					# Page navigated during click - refresh state and return it
-					logger.info('Page context changed during click, refreshing state...')
-					await browser_session.get_state_summary(cache_clickable_elements_hashes=True)
-					return ActionResult(
-						error='Page navigated during click. Refreshed state provided.', include_in_memory=True, success=False
-					)
-				else:
-					logger.warning(f'Element not clickable with index {params.index} - most likely the page changed')
-					return ActionResult(error=error_msg, success=False)
+				raise Exception(f'Element with index {params.index} does not exist - page might have changed - {error_msg}')
 
 		@self.registry.action(
 			'Click and input text into a input interactive element',
@@ -243,7 +217,7 @@ class Controller(Generic[Context]):
 				await browser_session._input_text_element_node(element_node, params.text)
 			except Exception:
 				msg = f'Failed to input text into element {params.index}.'
-				return ActionResult(error=msg)
+				raise Exception(msg)
 
 			if not has_sensitive_data:
 				msg = f'⌨️  Input {params.text} into index {params.index}'
@@ -292,8 +266,7 @@ class Controller(Generic[Context]):
 				)
 			except Exception as e:
 				msg = f'Failed to upload file to index {params.index}: {str(e)}'
-				logger.info(msg)
-				return ActionResult(error=msg)
+				raise Exception(msg)
 
 		# Tab Management Actions
 		@self.registry.action('Switch tab', param_model=SwitchTabAction)
@@ -431,8 +404,7 @@ Explain the content of the page and that the requested information is not availa
 			except Exception as e:
 				logger.debug(f'Error extracting content: {e}')
 				msg = f'📄  Extracted from page\n: {content}\n'
-				logger.info(msg)
-				return ActionResult(error=str(e))
+				raise Exception(msg)
 
 		# @self.registry.action(
 		# 	'Get the accessibility tree of the page in the format "role name" with the number_of_elements to return',
@@ -562,8 +534,7 @@ Explain the content of the page and that the requested information is not availa
 
 			except Exception as e:
 				msg = f"Failed to scroll to text '{text}': {str(e)}"
-				logger.error(msg)
-				return ActionResult(error=msg, include_in_memory=True)
+				raise Exception(msg)
 
 		# File System Actions
 		@self.registry.action('Write content to file_name in file system, use only .md or .txt extensions.')
@@ -684,10 +655,7 @@ Explain the content of the page and that the requested information is not availa
 					)
 
 			except Exception as e:
-				logger.error(f'Failed to get dropdown options: {str(e)}')
-				msg = f'Error getting options: {str(e)}'
-				logger.info(msg)
-				return ActionResult(extracted_content=msg, include_in_memory=True)
+				raise Exception(f'Failed to get dropdown options: {str(e)}')
 
 		@self.registry.action(
 			description='Select dropdown option for interactive element index by the text of the option you want to select',
@@ -783,9 +751,7 @@ Explain the content of the page and that the requested information is not availa
 				return ActionResult(extracted_content=msg, include_in_memory=True, long_term_memory=msg)
 
 			except Exception as e:
-				msg = f'Selection failed: {str(e)}'
-				logger.error(msg)
-				return ActionResult(error=msg, include_in_memory=True)
+				raise Exception(f'Selection failed: {str(e)}')
 
 		@self.registry.action('Google Sheets: Get the contents of the entire sheet', domains=['https://docs.google.com'])
 		async def read_sheet_contents(page: Page):
