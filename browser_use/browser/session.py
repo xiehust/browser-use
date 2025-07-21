@@ -2857,6 +2857,9 @@ class BrowserSession(BaseModel):
 
 			# Check if the loaded URL is allowed
 			await self._check_and_handle_navigation(page)
+
+			# Wait for any dynamic content/suggestions to finish loading
+			await self.wait_for_suggestions_loaded(page, timeout=2.0)
 		except URLNotAllowedError as e:
 			raise e
 		except Exception as e:
@@ -2907,6 +2910,114 @@ class BrowserSession(BaseModel):
 
 		except Exception as e:
 			self.logger.debug(f'⚠️ DOM readiness check failed after {timeout}s: {type(e).__name__}')
+
+	@observe_debug(ignore_input=True, ignore_output=True, name='wait_for_suggestions_loaded')
+	async def wait_for_suggestions_loaded(self, page: Page, timeout: float = 3.0) -> bool:
+		"""
+		Wait for autocomplete suggestions, dropdowns, or dynamic content to finish loading.
+		Useful after input/click actions that trigger dynamic content.
+
+		Returns True if suggestions appear settled, False if timeout.
+		"""
+		try:
+			# Wait for suggestions/dropdowns to stabilize
+			await page.wait_for_function(
+				"""
+				(() => {
+					// Check for common loading indicators
+					const loadingSelectors = [
+						'[aria-busy="true"]',
+						'.loading', '.spinner', '.autocomplete-loading',
+						'[data-loading="true"]', '[data-fetching="true"]',
+						'.dropdown-loading', '.suggestions-loading'
+					];
+					
+					for (const selector of loadingSelectors) {
+						if (document.querySelector(selector)) return false;
+					}
+					
+					// Check for pending network requests (simplified)
+					if (window.fetch && window.fetch.activeRequests > 0) return false;
+					
+					// Check for common suggestion/dropdown patterns
+					const suggestionContainers = document.querySelectorAll([
+						'[role="listbox"]', '[role="menu"]', '[role="combobox"]',
+						'.autocomplete', '.suggestions', '.dropdown-menu',
+						'.typeahead', '.search-suggestions', '.ac-results'
+					].join(','));
+					
+					// If we found suggestion containers, check if they're stable
+					if (suggestionContainers.length > 0) {
+						// Look for containers that are still animating or empty but should have content
+						for (const container of suggestionContainers) {
+							// Check if container is animating
+							const computedStyle = window.getComputedStyle(container);
+							if (computedStyle.animationName !== 'none' || 
+								computedStyle.transitionProperty !== 'none') {
+								return false;
+							}
+							
+							// Check if aria-expanded suggests more content is coming
+							if (container.getAttribute('aria-expanded') === 'true' && 
+								container.children.length === 0) {
+								return false;
+							}
+						}
+					}
+					
+					// All checks passed - suggestions appear settled
+					return true;
+				})()
+				""",
+				timeout=timeout * 1000,
+			)
+			return True
+
+		except Exception as e:
+			self.logger.debug(f'⚠️ Suggestions loading check timed out after {timeout}s: {type(e).__name__}')
+			return False
+
+	async def wait_for_element_stable(self, page: Page, selector: str, timeout: float = 2.0) -> bool:
+		"""
+		Wait for a specific element to stop changing (useful for dynamic lists).
+
+		Args:
+			selector: CSS selector for the element to monitor
+			timeout: Maximum time to wait
+
+		Returns True if element stabilized, False if timeout.
+		"""
+		try:
+			await page.wait_for_function(
+				f"""
+				(() => {{
+					const element = document.querySelector('{selector}');
+					if (!element) return true; // Element doesn't exist, consider stable
+					
+					// Check if element content has been stable for 200ms
+					if (!element._lastChange) element._lastChange = Date.now();
+					
+					// Set up mutation observer if not already done
+					if (!element._observer) {{
+						element._observer = new MutationObserver(() => {{
+							element._lastChange = Date.now();
+						}});
+						element._observer.observe(element, {{
+							childList: true, subtree: true, attributes: true
+						}});
+					}}
+					
+					// Check if stable for 200ms
+					return Date.now() - element._lastChange > 200;
+				}})()
+				""",
+				timeout=timeout * 1000,
+			)
+			return True
+
+		except Exception as e:
+			self.logger.debug(f'⚠️ Element stability check timed out for {selector}: {type(e).__name__}')
+			return False
 
 	def _is_url_allowed(self, url: str) -> bool:
 		"""
