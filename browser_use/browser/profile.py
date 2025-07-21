@@ -13,7 +13,7 @@ from uuid_extensions import uuid7str
 from browser_use.browser.types import ClientCertificate, Geolocation, HttpCredentials, ProxySettings, ViewportSize
 from browser_use.config import CONFIG
 from browser_use.observability import observe_debug
-from browser_use.utils import _log_pretty_path, logger
+from browser_use.utils import _log_pretty_path, logger, time_execution_sync
 
 CHROME_DEBUG_PORT = 9242  # use a non-default port to avoid conflicts with other tools / devs using 9222
 CHROME_DISABLED_COMPONENTS = [
@@ -731,6 +731,8 @@ class BrowserProfile(BrowserConnectArgs, BrowserLaunchPersistentContextArgs, Bro
 
 		return args
 
+	@observe_debug(ignore_input=True, ignore_output=True, name='_ensure_default_extensions_downloaded')
+	@time_execution_sync('--ensure_default_extensions_downloaded')
 	def _ensure_default_extensions_downloaded(self) -> list[str]:
 		"""
 		Ensure default extensions are downloaded and cached locally.
@@ -793,6 +795,7 @@ class BrowserProfile(BrowserConnectArgs, BrowserLaunchPersistentContextArgs, Bro
 
 		if extension_paths:
 			logger.info(f'✅ Extensions ready: {len(extension_paths)} extensions loaded ({", ".join(loaded_extension_names)})')
+			logger.debug(f'Extensions loaded: {extension_paths}')
 		else:
 			logger.warning('⚠️ No default extensions could be loaded')
 
