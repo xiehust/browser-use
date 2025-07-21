@@ -159,9 +159,11 @@ def require_healthy_browser(usable_page=True, reopen_page=True):
 							)
 						else:
 							try:
-								await self._recover_unresponsive_page(
-									func.__name__, timeout_ms=int(self.browser_profile.default_navigation_timeout or 5000) + 5_000
+								# Cap recovery timeout to prevent excessive delays
+								recovery_timeout = min(
+									10_000, int(self.browser_profile.default_navigation_timeout or 5000) + 3_000
 								)
+								await self._recover_unresponsive_page(func.__name__, timeout_ms=recovery_timeout)
 								page_url = self.agent_current_page.url if self.agent_current_page else 'unknown page'
 								self.logger.debug(
 									f'🤕 Crashed page recovery finished, attempting to continue with {func.__name__}() on {_log_pretty_url(page_url)}...'
@@ -2033,13 +2035,18 @@ class BrowserSession(BaseModel):
 
 	@observe_debug(name='remove_highlights', ignore_output=True, ignore_input=True)
 	@time_execution_async('--remove_highlights')
-	@retry(timeout=2, retries=0)
 	async def remove_highlights(self):
 		"""
 		Removes all highlight overlays and labels created by the highlightElement function.
 		Handles cases where the page might be closed or inaccessible.
+		This is a lightweight cleanup operation that fails fast if browser isn't readily available.
 		"""
-		page = await self.get_current_page()
+		# Fast-fail if browser isn't readily available to avoid triggering expensive recovery
+		if not self.initialized or not self.browser_context or not self.agent_current_page or self.agent_current_page.is_closed():
+			self.logger.debug('⚡ Skipping remove_highlights - browser not readily available')
+			return
+
+		page = self.agent_current_page
 		try:
 			await page.evaluate(
 				"""
@@ -3196,9 +3203,11 @@ class BrowserSession(BaseModel):
 		try:
 			self.logger.debug('🧹 Removing highlights...')
 			try:
-				await self.remove_highlights()
-			except TimeoutError:
-				self.logger.debug('Timeout to remove highlights')
+				await asyncio.wait_for(self.remove_highlights(), timeout=2.0)
+			except asyncio.TimeoutError:
+				self.logger.debug('⚡ remove_highlights timed out after 2s - skipping (non-critical)')
+			except Exception as e:
+				self.logger.debug(f'⚠️ Failed to remove highlights (this is usually ok): {type(e).__name__}: {e}')
 
 			# Check for PDF and auto-download if needed
 			try:
