@@ -2840,16 +2840,15 @@ class BrowserSession(BaseModel):
 		# Start timing
 		start_time = time.time()
 
-		# Wait for page load
-		page = await self.get_current_page()
-
-		# Skip network waiting for new tab pages (about:blank, chrome://new-tab-page, etc.)
-		# These pages load instantly and don't need network idle time
-		if is_new_tab_page(page.url):
-			self.logger.debug(f'⚡ Skipping page load wait for new tab page: {page.url}')
-			return
-
 		try:
+			# Wait for page load
+			page = await self.get_current_page()
+
+			# Skip network waiting for new tab pages (about:blank, chrome://new-tab-page, etc.)
+			# These pages load instantly and don't need network idle time
+			if is_new_tab_page(page.url):
+				self.logger.debug(f'⚡ Skipping page load wait for new tab page: {page.url}')
+				return
 			# Wait for DOM to be ready for processing
 			await self._wait_for_dom_ready(page)
 
