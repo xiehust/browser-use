@@ -3144,31 +3144,49 @@ class BrowserSession(BaseModel):
 		return self._cached_browser_state_summary
 
 	@observe_debug(ignore_input=True, ignore_output=True, name='get_minimal_state_summary')
-	@require_healthy_browser(usable_page=True, reopen_page=True)
 	@time_execution_async('--get_minimal_state_summary')
 	async def get_minimal_state_summary(self) -> BrowserStateSummary:
-		"""Get basic page info without DOM processing, but try to capture screenshot"""
-		from browser_use.browser.views import BrowserStateSummary
+		"""
+		Get basic page info without DOM processing - this is a rock-solid fallback that never fails.
+		Works even when browser context is closed or completely broken.
+		"""
+		from browser_use.browser.views import BrowserStateSummary, TabInfo
 		from browser_use.dom.views import DOMElementNode
 
-		page = await self.get_current_page()
+		# Default fallback values
+		url = 'about:blank'
+		title = 'Browser Error - Minimal Recovery Mode'
+		tabs_info = []
+		browser_errors = ['Browser context unavailable - minimal recovery mode active']
 
-		# Get basic info - no DOM parsing to avoid errors
-		url = getattr(page, 'url', 'unknown')
-
-		# Try to get title safely
+		# Try to get basic info safely without triggering recovery
 		try:
-			# timeout after 2 seconds
-			title = await asyncio.wait_for(page.title(), timeout=2.0)
-		except Exception:
-			title = 'Page Load Error'
+			if self.agent_current_page and not self.agent_current_page.is_closed():
+				url = getattr(self.agent_current_page, 'url', 'about:blank')
 
-		# Try to get tabs info safely
-		try:
-			# timeout after 2 seconds
-			tabs_info = await retry(timeout=2, retries=0)(self.get_tabs_info)()
+				# Try to get title with short timeout
+				try:
+					title = await asyncio.wait_for(self.agent_current_page.title(), timeout=1.0)
+				except Exception:
+					title = 'Page Load Error'
+
+				# Try to get basic tabs info
+				try:
+					if self.browser_context and self.browser_context.pages:
+						tabs_info = []
+						for page_id, page in enumerate(self.browser_context.pages[:5]):  # Limit to 5 tabs max
+							try:
+								page_title = await asyncio.wait_for(page.title(), timeout=0.5)
+								tabs_info.append(TabInfo(page_id=page_id, url=page.url, title=page_title))
+							except Exception:
+								tabs_info.append(TabInfo(page_id=page_id, url=page.url, title='Tab unavailable'))
+				except Exception:
+					pass  # Keep empty tabs_info
+
+				browser_errors = [f'Minimal state recovery applied for {url}']
 		except Exception:
-			tabs_info = []
+			# Even basic info failed - use complete fallback
+			pass
 
 		# Create minimal DOM element for error state
 		minimal_element_tree = DOMElementNode(
@@ -3188,7 +3206,7 @@ class BrowserSession(BaseModel):
 			tabs=tabs_info,
 			pixels_above=0,
 			pixels_below=0,
-			browser_errors=[f'Page state retrieval failed, minimal recovery applied for {url}'],
+			browser_errors=browser_errors,
 		)
 
 	@observe_debug(ignore_input=True, ignore_output=True, name='get_updated_state')
@@ -4543,8 +4561,37 @@ class BrowserSession(BaseModel):
 		except Exception as e:
 			self.logger.warning(f'Full state retrieval failed: {type(e).__name__}: {e}')
 
-		self.logger.warning('🔄 Falling back to minimal state summary')
-		return await self.get_minimal_state_summary()
+		# Try 2: Minimal state summary (should never fail)
+		try:
+			self.logger.warning('🔄 Falling back to minimal state summary')
+			return await self.get_minimal_state_summary()
+		except Exception as e:
+			self.logger.error(f'Even minimal state retrieval failed: {type(e).__name__}: {e}')
+
+		# Try 3: Absolute emergency fallback (guaranteed to work)
+		self.logger.error('🚨 Using emergency fallback state - browser is completely broken')
+		from browser_use.browser.views import BrowserStateSummary
+		from browser_use.dom.views import DOMElementNode
+
+		emergency_element_tree = DOMElementNode(
+			tag_name='body',
+			xpath='/body',
+			attributes={},
+			children=[],
+			is_visible=True,
+			parent=None,
+		)
+
+		return BrowserStateSummary(
+			element_tree=emergency_element_tree,
+			selector_map={},
+			url='about:blank',
+			title='Emergency Recovery Mode',
+			tabs=[],
+			pixels_above=0,
+			pixels_below=0,
+			browser_errors=['Browser completely unavailable - emergency recovery mode'],
+		)
 
 	async def _is_pdf_viewer(self, page: Page) -> bool:
 		"""
