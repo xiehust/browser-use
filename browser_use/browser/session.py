@@ -3350,11 +3350,12 @@ class BrowserSession(BaseModel):
 		page = await self.get_current_page()
 
 		try:
-			self.logger.debug('🧹 Removing highlights...')
-			try:
-				await self.remove_highlights()
-			except TimeoutError:
-				self.logger.debug('Timeout to remove highlights')
+			if include_screenshot:
+				self.logger.debug('🧹 Removing highlights...')
+				try:
+					await self.remove_highlights()
+				except TimeoutError:
+					self.logger.debug('Timeout to remove highlights')
 
 			# Check for PDF and auto-download if needed
 			try:
@@ -3373,7 +3374,7 @@ class BrowserSession(BaseModel):
 					dom_service.get_clickable_elements(
 						focus_element=focus_element,
 						viewport_expansion=self.browser_profile.viewport_expansion,
-						highlight_elements=self.browser_profile.highlight_elements,
+						highlight_elements=self.browser_profile.highlight_elements and include_screenshot,
 					),
 					timeout=45.0,  # 45 second timeout for DOM processing - generous for complex pages
 				)
