@@ -159,11 +159,9 @@ def require_healthy_browser(usable_page=True, reopen_page=True):
 							)
 						else:
 							try:
-								# Cap recovery timeout to prevent excessive delays
-								recovery_timeout = min(
-									10_000, int(self.browser_profile.default_navigation_timeout or 5000) + 3_000
+								await self._recover_unresponsive_page(
+									func.__name__, timeout_ms=int(self.browser_profile.default_navigation_timeout or 5000) + 5_000
 								)
-								await self._recover_unresponsive_page(func.__name__, timeout_ms=recovery_timeout)
 								page_url = self.agent_current_page.url if self.agent_current_page else 'unknown page'
 								self.logger.debug(
 									f'🤕 Crashed page recovery finished, attempting to continue with {func.__name__}() on {_log_pretty_url(page_url)}...'
@@ -3203,11 +3201,9 @@ class BrowserSession(BaseModel):
 		try:
 			self.logger.debug('🧹 Removing highlights...')
 			try:
-				await asyncio.wait_for(self.remove_highlights(), timeout=2.0)
-			except asyncio.TimeoutError:
-				self.logger.debug('⚡ remove_highlights timed out after 2s - skipping (non-critical)')
-			except Exception as e:
-				self.logger.debug(f'⚠️ Failed to remove highlights (this is usually ok): {type(e).__name__}: {e}')
+				await self.remove_highlights()
+			except TimeoutError:
+				self.logger.debug('Timeout to remove highlights')
 
 			# Check for PDF and auto-download if needed
 			try:
