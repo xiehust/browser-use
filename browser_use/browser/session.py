@@ -2649,6 +2649,7 @@ class BrowserSession(BaseModel):
 	# 	"""
 	# 	return list(Path(self.browser_profile.downloads_path).glob('*'))
 
+	@observe_debug(ignore_input=True, ignore_output=True, name='wait_for_stable_network')
 	async def _wait_for_stable_network(self):
 		pending_requests = set()
 		last_activity = asyncio.get_event_loop().time()
@@ -2849,6 +2850,9 @@ class BrowserSession(BaseModel):
 			return
 
 		try:
+			# Wait for DOM to be ready for processing
+			await self._wait_for_dom_ready(page)
+
 			await self._wait_for_stable_network()
 
 			# Check if the loaded URL is allowed
@@ -2887,6 +2891,23 @@ class BrowserSession(BaseModel):
 		if remaining > 0:
 			await asyncio.sleep(remaining)
 
+	@observe_debug(ignore_input=True, ignore_output=True, name='wait_for_dom_ready')
+	async def _wait_for_dom_ready(self, page: Page, timeout: float = 1.0) -> None:
+		"""
+		Simple and fast DOM readiness check to prevent KeyError: 'None' in DOM processing.
+		Just ensures basic DOM structure exists before continuing.
+		"""
+		try:
+			# Quick check: ensure basic DOM structure exists
+			# Use documentElement only as it's more universal than body
+			await page.wait_for_function(
+				'document.documentElement && document.readyState !== "loading"',
+				timeout=timeout * 1000,  # Convert to milliseconds
+			)
+
+		except Exception as e:
+			self.logger.debug(f'⚠️ DOM readiness check failed after {timeout}s: {type(e).__name__}')
+
 	def _is_url_allowed(self, url: str) -> bool:
 		"""
 		Check if a URL is allowed based on the whitelist configuration. SECURITY CRITICAL.
@@ -2921,6 +2942,7 @@ class BrowserSession(BaseModel):
 
 		return False
 
+	@observe_debug(ignore_input=True, ignore_output=True, name='check_and_handle_navigation')
 	async def _check_and_handle_navigation(self, page: Page) -> None:
 		"""Check if current page URL is allowed and handle if not."""
 		if not self._is_url_allowed(page.url):
