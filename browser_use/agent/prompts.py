@@ -141,6 +141,8 @@ class AgentMessagePrompt:
 			selector_map=self.browser_state.selector_map,  # Pass the selector_map for filtering
 		)
 
+		element_lines = [line.strip() for line in elements_text.split('\n') if line.strip() and '[' in line]
+
 		if len(elements_text) > self.max_clickable_elements_length:
 			elements_text = elements_text[: self.max_clickable_elements_length]
 			truncated_text = f' (truncated to {self.max_clickable_elements_length} characters)'

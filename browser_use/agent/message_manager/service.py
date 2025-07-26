@@ -596,6 +596,13 @@ class MessageManager:
 						preserve_minimal_nav=False,  # Enable preservation of minimal navigation elements
 					)
 
+					# Safety check: if filtering removed ALL elements, fall back to original
+					if not filtered_selector_map and browser_state_summary.selector_map:
+						logger.warning(
+							'🎯 Reranking filtered out ALL elements! Falling back to original selector_map to prevent empty state'
+						)
+						filtered_selector_map = browser_state_summary.selector_map
+
 					# Create a modified browser state with the filtered selector map
 					# We need to import dataclasses.replace or copy the object
 					from dataclasses import replace

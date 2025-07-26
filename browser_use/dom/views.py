@@ -191,7 +191,9 @@ class DOMElementNode(DOMBaseNode):
 				if node.highlight_index is not None:
 					# If selector_map is provided, only include elements that are in it
 					if selector_map is not None and node.highlight_index not in selector_map:
-						# Skip this element and its children
+						# Skip this element but still process its children
+						for child in node.children:
+							process_node(child, next_depth)
 						return
 
 					next_depth += 1
