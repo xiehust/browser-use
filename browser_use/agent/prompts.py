@@ -136,7 +136,10 @@ class AgentMessagePrompt:
 
 	@observe_debug(ignore_input=True, ignore_output=True, name='_get_browser_state_description')
 	def _get_browser_state_description(self) -> str:
-		elements_text = self.browser_state.element_tree.clickable_elements_to_string(include_attributes=self.include_attributes)
+		elements_text = self.browser_state.element_tree.clickable_elements_to_string(
+			include_attributes=self.include_attributes,
+			selector_map=self.browser_state.selector_map,  # Pass the selector_map for filtering
+		)
 
 		if len(elements_text) > self.max_clickable_elements_length:
 			elements_text = elements_text[: self.max_clickable_elements_length]

@@ -164,23 +164,8 @@ class RelaceRerankingService:
 		"""Build an enhanced query with additional context"""
 		query_parts = [f'Task: {task}']
 
-		# Add current URL context
-		if hasattr(browser_state_summary, 'url') and browser_state_summary.url:
-			from urllib.parse import urlparse
-
-			domain = urlparse(browser_state_summary.url).netloc
-			query_parts.append(f'Current website: {domain}')
-
-		# Add page title context
-		if hasattr(browser_state_summary, 'title') and browser_state_summary.title:
-			query_parts.append(f'Page title: {browser_state_summary.title}')
-
-		# Add step context
-		if step_info:
-			query_parts.append(f'Step {step_info.step_number + 1} of {step_info.max_steps}')
-
 		# Add guidance for what elements to prioritize
-		query_parts.append('Prioritize elements directly related to the task objective.')
+		query_parts.append('Each file is a interactive element on the webpage. Which elements could be relevant to the task? ')
 
 		return ' | '.join(query_parts)
 

@@ -168,8 +168,15 @@ class DOMElementNode(DOMBaseNode):
 		return '\n'.join(text_parts).strip()
 
 	@time_execution_sync('--clickable_elements_to_string')
-	def clickable_elements_to_string(self, include_attributes: list[str] | None = None) -> str:
-		"""Convert the processed DOM content to HTML."""
+	def clickable_elements_to_string(
+		self, include_attributes: list[str] | None = None, selector_map: 'SelectorMap | None' = None
+	) -> str:
+		"""Convert the processed DOM content to HTML.
+
+		Args:
+			include_attributes: List of attributes to include in output
+			selector_map: If provided, only show elements that exist in this selector map
+		"""
 		formatted_text = []
 
 		if not include_attributes:
@@ -182,6 +189,11 @@ class DOMElementNode(DOMBaseNode):
 			if isinstance(node, DOMElementNode):
 				# Add element with highlight_index
 				if node.highlight_index is not None:
+					# If selector_map is provided, only include elements that are in it
+					if selector_map is not None and node.highlight_index not in selector_map:
+						# Skip this element and its children
+						return
+
 					next_depth += 1
 
 					text = node.get_all_text_till_next_clickable_element()
