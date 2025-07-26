@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Literal
+
+import aiohttp
+from dotenv import load_dotenv
 
 from browser_use.agent.message_manager.views import (
 	HistoryItem,
@@ -15,6 +19,8 @@ from browser_use.agent.views import (
 	MessageManagerState,
 )
 from browser_use.browser.views import BrowserStateSummary
+from browser_use.dom.utils import cap_text_length
+from browser_use.dom.views import DOMElementNode, SelectorMap
 from browser_use.filesystem.file_system import FileSystem
 from browser_use.llm.messages import (
 	BaseMessage,
@@ -25,6 +31,9 @@ from browser_use.observability import observe_debug
 from browser_use.utils import match_url_with_domain_pattern, time_execution_sync
 
 logger = logging.getLogger(__name__)
+
+# Load environment variables for Relace API
+load_dotenv()
 
 
 # ========== Logging Helper Functions ==========
@@ -93,6 +102,308 @@ def _log_format_message_line(message: BaseMessage, content: str, is_last_message
 # ========== End of Logging Helper Functions ==========
 
 
+class RelaceRerankingService:
+	"""Service for reranking DOM elements using the Relace API"""
+
+	def __init__(self):
+		self.api_key = os.getenv('RELACE_API_KEY')
+		self.api_url = 'https://browseruseranker.endpoint.relace.run/v2/code/rank'
+		self.headers = {'Content-Type': 'application/json', 'Authorization': f'Bearer {self.api_key}' if self.api_key else None}
+
+	def is_available(self) -> bool:
+		"""Check if the reranking service is available (API key is set)"""
+		return self.api_key is not None
+
+	def _is_minimal_navigation_element(self, element: DOMElementNode) -> bool:
+		"""Check if element is a minimal navigation element that should be preserved"""
+		if element.highlight_index is None:
+			return False
+
+		# Get element text - use minimal processing to check length
+		text = element.get_all_text_till_next_clickable_element().strip()
+
+		# Consider it minimal if:
+		# 1. Very short text (0-3 characters) AND it's a button/link
+		# 2. Common navigation patterns
+		if len(text) <= 3 and element.tag_name.lower() in ['button', 'a', 'span', 'div']:
+			return True
+
+		# Common navigation text patterns (case-insensitive)
+		nav_patterns = [
+			'',
+			'>',
+			'<',
+			'→',
+			'←',
+			'↑',
+			'↓',
+			'x',
+			'+',
+			'-',
+			'=',
+			'menu',
+			'nav',
+			'home',
+			'back',
+			'next',
+			'prev',
+			'close',
+			'ok',
+			'yes',
+			'no',
+			'go',
+			'search',
+			'submit',
+			'login',
+			'sign',
+		]
+
+		return text.lower() in nav_patterns or any(pattern in text.lower() for pattern in ['arrow', 'icon', 'btn'])
+
+	def _build_enhanced_query(self, task: str, browser_state_summary, step_info=None) -> str:
+		"""Build an enhanced query with additional context"""
+		query_parts = [f'Task: {task}']
+
+		# Add current URL context
+		if hasattr(browser_state_summary, 'url') and browser_state_summary.url:
+			from urllib.parse import urlparse
+
+			domain = urlparse(browser_state_summary.url).netloc
+			query_parts.append(f'Current website: {domain}')
+
+		# Add page title context
+		if hasattr(browser_state_summary, 'title') and browser_state_summary.title:
+			query_parts.append(f'Page title: {browser_state_summary.title}')
+
+		# Add step context
+		if step_info:
+			query_parts.append(f'Step {step_info.step_number + 1} of {step_info.max_steps}')
+
+		# Add guidance for what elements to prioritize
+		query_parts.append('Prioritize elements directly related to the task objective.')
+
+		return ' | '.join(query_parts)
+
+	def _extract_element_string(self, element: DOMElementNode, include_attributes: list[str] | None = None) -> str:
+		"""Extract string representation of a single DOM element similar to clickable_elements_to_string format"""
+		if element.highlight_index is None:
+			return ''
+
+		text = element.get_all_text_till_next_clickable_element()
+		attributes_html_str = None
+
+		if include_attributes:
+			attributes_to_include = {
+				key: str(value).strip()
+				for key, value in element.attributes.items()
+				if key in include_attributes and str(value).strip() != ''
+			}
+
+			# Same optimization logic as in clickable_elements_to_string
+			ordered_keys = [key for key in include_attributes if key in attributes_to_include]
+
+			if len(ordered_keys) > 1:
+				keys_to_remove = set()
+				seen_values = {}
+
+				for key in ordered_keys:
+					value = attributes_to_include[key]
+					if len(value) > 5:
+						if value in seen_values:
+							keys_to_remove.add(key)
+						else:
+							seen_values[value] = key
+
+				for key in keys_to_remove:
+					del attributes_to_include[key]
+
+			# Remove redundant attributes
+			if element.tag_name == attributes_to_include.get('role'):
+				del attributes_to_include['role']
+
+			attrs_to_remove_if_text_matches = ['aria-label', 'placeholder', 'title']
+			for attr in attrs_to_remove_if_text_matches:
+				if (
+					attributes_to_include.get(attr)
+					and attributes_to_include.get(attr, '').strip().lower() == text.strip().lower()
+				):
+					del attributes_to_include[attr]
+
+			if attributes_to_include.items():
+				attributes_html_str = ' '.join(
+					f'{key}={cap_text_length(value, 15)}' for key, value in attributes_to_include.items()
+				)
+
+		# Build the element string
+		highlight_indicator = f'*[{element.highlight_index}]' if element.is_new else f'[{element.highlight_index}]'
+		line = f'{highlight_indicator}<{element.tag_name}'
+
+		if attributes_html_str:
+			line += f' {attributes_html_str}'
+
+		if text:
+			text = text.strip()
+			if not attributes_html_str:
+				line += ' '
+			line += f'>{text}'
+		elif not attributes_html_str:
+			line += ' '
+
+		line += ' />'
+		return line
+
+	def _prepare_elements_for_api(self, selector_map: SelectorMap, include_attributes: list[str] | None = None) -> list[dict]:
+		"""Convert selector map to format expected by Relace API"""
+		elements_for_api = []
+
+		for index, element in selector_map.items():
+			if element.highlight_index is not None:  # Only interactive elements
+				element_string = self._extract_element_string(element, include_attributes)
+				if element_string:
+					elements_for_api.append({'filename': str(index), 'code': element_string})
+
+		return elements_for_api
+
+	async def rerank_elements(
+		self,
+		selector_map: SelectorMap,
+		task: str,
+		include_attributes: list[str] | None = None,
+		token_limit: int = 128000,
+		browser_state_summary=None,
+		step_info=None,
+	) -> list[dict]:
+		"""
+		Rerank DOM elements using Relace API
+
+		Returns:
+			List of dicts with 'filename' (element index) and 'score' (relevance score)
+		"""
+		if not self.is_available():
+			logger.warning('Relace API key not available, skipping reranking')
+			return []
+
+		try:
+			# Prepare elements for API
+			codebase = self._prepare_elements_for_api(selector_map, include_attributes)
+
+			if not codebase:
+				logger.debug('No interactive elements found for reranking')
+				return []
+
+			# Build enhanced query with context
+			enhanced_query = self._build_enhanced_query(task, browser_state_summary, step_info)
+
+			# Prepare API request
+			data = {'query': enhanced_query, 'codebase': codebase, 'token_limit': token_limit}
+
+			logger.debug(f'Sending {len(codebase)} elements to Relace reranking API')
+			logger.debug(f'Enhanced query: {enhanced_query}')
+
+			# Make API request
+			timeout = aiohttp.ClientTimeout(total=10)
+			async with aiohttp.ClientSession(timeout=timeout) as session:
+				async with session.post(self.api_url, headers=self.headers, json=data) as response:
+					response.raise_for_status()
+					output = await response.json()
+					ranked_results = output.get('results', [])
+
+			logger.debug(f'Received {len(ranked_results)} ranked results from Relace API')
+			return ranked_results
+
+		except Exception as e:
+			logger.warning(f'Relace reranking failed: {type(e).__name__}: {e}')
+			return []
+
+	def filter_and_reorder_selector_map(
+		self,
+		selector_map: SelectorMap,
+		ranked_results: list[dict],
+		score_threshold: float = 0.3,  # Lowered from 0.5 to 0.3
+		has_consecutive_failures: bool = False,
+		preserve_minimal_nav: bool = False,  # New option to preserve minimal navigation elements
+	) -> SelectorMap:
+		"""
+		Filter and reorder selector map based on reranking results
+
+		Args:
+			selector_map: Original selector map
+			ranked_results: Results from reranking API with filename and score
+			score_threshold: Minimum score to include (default: 0.3)
+			has_consecutive_failures: If True, keep all elements but prioritize high-scoring ones
+			preserve_minimal_nav: If True, always include minimal navigation elements
+
+		Returns:
+			Filtered and reordered selector map maintaining original indices
+		"""
+		if not ranked_results:
+			return selector_map
+
+		# Create mapping from filename (index) to score
+		score_map = {int(result['filename']): result['score'] for result in ranked_results}
+
+		# Identify minimal navigation elements if preservation is enabled
+		minimal_nav_elements = {}
+		if preserve_minimal_nav:
+			for index, element in selector_map.items():
+				if self._is_minimal_navigation_element(element):
+					minimal_nav_elements[index] = element
+
+		if has_consecutive_failures:
+			# Keep all elements but reorder: high scoring first, then minimal nav, then low scoring
+			high_scoring = []
+			minimal_nav = []
+			low_scoring = []
+
+			for index, element in selector_map.items():
+				score = score_map.get(index, 0.0)
+
+				if index in minimal_nav_elements:
+					minimal_nav.append((index, element, score))
+				elif score >= score_threshold:
+					high_scoring.append((index, element, score))
+				else:
+					low_scoring.append((index, element, score))
+
+			# Sort each category appropriately
+			high_scoring.sort(key=lambda x: x[2], reverse=True)  # By score descending
+			minimal_nav.sort(key=lambda x: x[0])  # By original index
+			low_scoring.sort(key=lambda x: x[0])  # By original index
+
+			# Rebuild selector map with prioritized order
+			filtered_map = {}
+			for index, element, score in high_scoring + minimal_nav + low_scoring:
+				filtered_map[index] = element
+
+			logger.info(
+				f'Reordered {len(filtered_map)} elements (consecutive failures): {len(high_scoring)} high-scoring (≥{score_threshold}), {len(minimal_nav)} minimal nav, {len(low_scoring)} low-scoring'
+			)
+
+		else:
+			# Filter out low-scoring elements but always preserve minimal navigation
+			filtered_map = {}
+			filtered_count = 0
+			preserved_nav_count = 0
+
+			for index, element in selector_map.items():
+				score = score_map.get(index, 0.0)
+
+				if index in minimal_nav_elements:
+					# Always include minimal navigation elements
+					filtered_map[index] = element
+					preserved_nav_count += 1
+				elif score >= score_threshold:
+					# Include high-scoring elements
+					filtered_map[index] = element
+					filtered_count += 1
+
+			logger.info(
+				f'Filtered {len(selector_map)} elements to {len(filtered_map)} (threshold ≥{score_threshold}): {filtered_count} high-scoring + {preserved_nav_count} preserved nav elements'
+			)
+
+		return filtered_map
+
+
 class MessageManager:
 	def __init__(
 		self,
@@ -125,6 +436,14 @@ class MessageManager:
 		self.message_context = message_context
 		self.sensitive_data = sensitive_data
 		self.last_input_messages = []
+
+		# Initialize reranking service
+		self.reranking_service = RelaceRerankingService()
+		if self.reranking_service.is_available():
+			logger.info('🎯 Relace reranking service initialized and available')
+		else:
+			logger.debug('🎯 Relace reranking service not available (no API key)')
+
 		# Only initialize messages if state is empty
 		if len(self.state.history.get_messages()) == 0:
 			self._add_message_with_type(self.system_prompt, 'system')
@@ -247,7 +566,7 @@ class MessageManager:
 
 	@observe_debug(ignore_input=True, ignore_output=True, name='add_state_message')
 	@time_execution_sync('--add_state_message')
-	def add_state_message(
+	async def add_state_message(
 		self,
 		browser_state_summary: BrowserStateSummary,
 		model_output: AgentOutput | None = None,
@@ -258,12 +577,53 @@ class MessageManager:
 		sensitive_data=None,
 		agent_history_list: AgentHistoryList | None = None,  # Pass AgentHistoryList from agent
 		available_file_paths: list[str] | None = None,  # Always pass current available_file_paths
+		consecutive_failures: int = 0,  # Number of consecutive failures to determine reranking strategy
 	) -> None:
 		"""Add browser state as human message"""
 
 		self._update_agent_history_description(model_output, result, step_info)
 		if sensitive_data:
 			self.sensitive_data_description = self._get_sensitive_data_description(browser_state_summary.url)
+
+		# Apply reranking if service is available and we have interactive elements
+		reranked_browser_state = browser_state_summary
+		if self.reranking_service.is_available() and browser_state_summary.selector_map:
+			try:
+				# Use the task as the query for reranking with enhanced context
+				ranked_results = await self.reranking_service.rerank_elements(
+					browser_state_summary.selector_map,
+					self.task,
+					self.include_attributes,
+					browser_state_summary=browser_state_summary,
+					step_info=step_info,
+				)
+
+				if ranked_results:
+					# Determine if we should apply strict filtering or keep all elements
+					has_consecutive_failures = consecutive_failures >= 2
+
+					# Filter and reorder the selector map based on ranking (now with 0.3 threshold and nav preservation)
+					filtered_selector_map = self.reranking_service.filter_and_reorder_selector_map(
+						browser_state_summary.selector_map,
+						ranked_results,
+						score_threshold=0.3,  # Lowered threshold
+						has_consecutive_failures=has_consecutive_failures,
+						preserve_minimal_nav=False,  # Enable preservation of minimal navigation elements
+					)
+
+					# Create a modified browser state with the filtered selector map
+					# We need to import dataclasses.replace or copy the object
+					from dataclasses import replace
+
+					reranked_browser_state = replace(browser_state_summary, selector_map=filtered_selector_map)
+
+					logger.debug(
+						f'🎯 Applied reranking: {len(browser_state_summary.selector_map)} → {len(filtered_selector_map)} elements'
+					)
+
+			except Exception as e:
+				logger.warning(f'🎯 Reranking failed, using original browser state: {type(e).__name__}: {e}')
+				# Continue with original browser state if reranking fails
 
 		# Extract previous screenshots if we need more than 1 image and have agent history
 		screenshots = []
@@ -273,13 +633,13 @@ class MessageManager:
 			screenshots = [s for s in raw_screenshots if s is not None]
 
 		# add current screenshot to the end
-		if browser_state_summary.screenshot:
-			screenshots.append(browser_state_summary.screenshot)
+		if reranked_browser_state.screenshot:
+			screenshots.append(reranked_browser_state.screenshot)
 
 		# otherwise add state message and result to next message (which will not stay in memory)
-		assert browser_state_summary
+		assert reranked_browser_state
 		state_message = AgentMessagePrompt(
-			browser_state_summary=browser_state_summary,
+			browser_state_summary=reranked_browser_state,  # Use the reranked browser state
 			file_system=self.file_system,
 			agent_history_description=self.agent_history_description,
 			read_state_description=self.state.read_state_description,

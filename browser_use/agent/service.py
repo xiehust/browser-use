@@ -716,7 +716,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 			self._message_manager._add_message_with_type(UserMessage(content=page_action_message), 'consistent')
 
 		self.logger.debug(f'💬 Step {self.state.n_steps + 1}: Adding state message to context...')
-		self._message_manager.add_state_message(
+		await self._message_manager.add_state_message(
 			browser_state_summary=browser_state_summary,
 			model_output=self.state.last_model_output,
 			result=self.state.last_result,
@@ -726,6 +726,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 			sensitive_data=self.sensitive_data,
 			agent_history_list=self.state.history,  # Pass AgentHistoryList for screenshots
 			available_file_paths=self.available_file_paths,  # Always pass current available_file_paths
+			consecutive_failures=self.state.consecutive_failures,  # Pass consecutive failures for reranking strategy
 		)
 
 		await self._handle_final_step(step_info)
