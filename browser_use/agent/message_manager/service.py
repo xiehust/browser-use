@@ -114,52 +114,6 @@ class RelaceRerankingService:
 		"""Check if the reranking service is available (API key is set)"""
 		return self.api_key is not None
 
-	def _is_minimal_navigation_element(self, element: DOMElementNode) -> bool:
-		"""Check if element is a minimal navigation element that should be preserved"""
-		if element.highlight_index is None:
-			return False
-
-		# Get element text - use minimal processing to check length
-		text = element.get_all_text_till_next_clickable_element().strip()
-
-		# Consider it minimal if:
-		# 1. Very short text (0-3 characters) AND it's a button/link
-		# 2. Common navigation patterns
-		if len(text) <= 3 and element.tag_name.lower() in ['button', 'a', 'span', 'div']:
-			return True
-
-		# Common navigation text patterns (case-insensitive)
-		nav_patterns = [
-			'',
-			'>',
-			'<',
-			'→',
-			'←',
-			'↑',
-			'↓',
-			'x',
-			'+',
-			'-',
-			'=',
-			'menu',
-			'nav',
-			'home',
-			'back',
-			'next',
-			'prev',
-			'close',
-			'ok',
-			'yes',
-			'no',
-			'go',
-			'search',
-			'submit',
-			'login',
-			'sign',
-		]
-
-		return text.lower() in nav_patterns or any(pattern in text.lower() for pattern in ['arrow', 'icon', 'btn'])
-
 	def _build_enhanced_query(self, task: str, browser_state_summary, step_info=None) -> str:
 		"""Build an enhanced query with additional context"""
 		query_parts = [f'Task: {task}']
@@ -304,9 +258,8 @@ class RelaceRerankingService:
 		self,
 		selector_map: SelectorMap,
 		ranked_results: list[dict],
-		score_threshold: float = 0.3,  # Lowered from 0.5 to 0.3
+		score_threshold: float = 0.3,
 		has_consecutive_failures: bool = False,
-		preserve_minimal_nav: bool = False,  # New option to preserve minimal navigation elements
 	) -> SelectorMap:
 		"""
 		Filter and reorder selector map based on reranking results
@@ -316,7 +269,6 @@ class RelaceRerankingService:
 			ranked_results: Results from reranking API with filename and score
 			score_threshold: Minimum score to include (default: 0.3)
 			has_consecutive_failures: If True, keep all elements but prioritize high-scoring ones
-			preserve_minimal_nav: If True, always include minimal navigation elements
 
 		Returns:
 			Filtered and reordered selector map maintaining original indices
@@ -327,66 +279,22 @@ class RelaceRerankingService:
 		# Create mapping from filename (index) to score
 		score_map = {int(result['filename']): result['score'] for result in ranked_results}
 
-		# Identify minimal navigation elements if preservation is enabled
-		minimal_nav_elements = {}
-		if preserve_minimal_nav:
-			for index, element in selector_map.items():
-				if self._is_minimal_navigation_element(element):
-					minimal_nav_elements[index] = element
-
 		if has_consecutive_failures:
-			# Keep all elements but reorder: high scoring first, then minimal nav, then low scoring
-			high_scoring = []
-			minimal_nav = []
-			low_scoring = []
-
-			for index, element in selector_map.items():
-				score = score_map.get(index, 0.0)
-
-				if index in minimal_nav_elements:
-					minimal_nav.append((index, element, score))
-				elif score >= score_threshold:
-					high_scoring.append((index, element, score))
-				else:
-					low_scoring.append((index, element, score))
-
-			# Sort each category appropriately
-			high_scoring.sort(key=lambda x: x[2], reverse=True)  # By score descending
-			minimal_nav.sort(key=lambda x: x[0])  # By original index
-			low_scoring.sort(key=lambda x: x[0])  # By original index
-
-			# Rebuild selector map with prioritized order
-			filtered_map = {}
-			for index, element, score in high_scoring + minimal_nav + low_scoring:
-				filtered_map[index] = element
-
-			logger.info(
-				f'Reordered {len(filtered_map)} elements (consecutive failures): {len(high_scoring)} high-scoring (≥{score_threshold}), {len(minimal_nav)} minimal nav, {len(low_scoring)} low-scoring'
-			)
-
+			# Keep all elements (no filtering when there are consecutive failures)
+			filtered_map = selector_map.copy()
+			logger.info(f'Kept all {len(filtered_map)} elements due to consecutive failures')
 		else:
-			# Filter out low-scoring elements but always preserve minimal navigation
+			# Filter out elements below threshold
 			filtered_map = {}
-			filtered_count = 0
-			preserved_nav_count = 0
-
 			for index, element in selector_map.items():
 				score = score_map.get(index, 0.0)
-
-				if index in minimal_nav_elements:
-					# Always include minimal navigation elements
+				if score >= score_threshold:
 					filtered_map[index] = element
-					preserved_nav_count += 1
-				elif score >= score_threshold:
-					# Include high-scoring elements
-					filtered_map[index] = element
-					filtered_count += 1
 
-			logger.info(
-				f'Filtered {len(selector_map)} elements to {len(filtered_map)} (threshold ≥{score_threshold}): {filtered_count} high-scoring + {preserved_nav_count} preserved nav elements'
-			)
+			logger.info(f'Filtered {len(selector_map)} elements to {len(filtered_map)} (threshold ≥{score_threshold})')
 
-		return filtered_map
+		# Always return results sorted by index to maintain consistent order (filename 1 first, etc.)
+		return dict(sorted(filtered_map.items()))
 
 
 class MessageManager:
@@ -585,15 +493,14 @@ class MessageManager:
 
 				if ranked_results:
 					# Determine if we should apply strict filtering or keep all elements
-					has_consecutive_failures = consecutive_failures >= 2
+					has_consecutive_failures = consecutive_failures >= 1
 
-					# Filter and reorder the selector map based on ranking (now with 0.3 threshold and nav preservation)
+					# Filter and reorder the selector map based on ranking
 					filtered_selector_map = self.reranking_service.filter_and_reorder_selector_map(
 						browser_state_summary.selector_map,
 						ranked_results,
-						score_threshold=0.3,  # Lowered threshold
+						score_threshold=0.3,
 						has_consecutive_failures=has_consecutive_failures,
-						preserve_minimal_nav=False,  # Enable preservation of minimal navigation elements
 					)
 
 					# Safety check: if filtering removed ALL elements, fall back to original
