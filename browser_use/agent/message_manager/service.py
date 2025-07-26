@@ -119,7 +119,9 @@ class RelaceRerankingService:
 		query_parts = [f'Task: {task}']
 
 		# Add guidance for what elements to prioritize
-		query_parts.append('Each file is a interactive element on the webpage. Which elements could be relevant to the task? ')
+		query_parts.append(
+			'Each file is a interactive element on the webpage. Which elements could be relevant to the task or contain text which are relevant to the task? If an element does not contain a lot of infomration or you are unsure, then its relevance is high. If you are sure about an element that it is not relevant, then its relevance is low.'
+		)
 
 		return ' | '.join(query_parts)
 
