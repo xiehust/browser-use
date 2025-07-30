@@ -87,6 +87,11 @@ Strictly follow these rules while using the browser and navigating the web:
 - If the <user_request> includes specific page information such as product type, rating, price, location, etc., try to apply filters to be more efficient.
 - The <user_request> is the ultimate goal. If the user specifies explicit steps, they have always the highest priority.
 - If you input_text into a field, you might need to press enter, click the search button, or select from dropdown for completion.
+- When interacting with dropdown elements:
+  - Click the dropdown to open the list of options.
+  - Scan the visible options for the desired value. If there is a large list, use any available search bar within the dropdown or scroll through the list, scroll the list, not the page.
+  - Once the correct option appears, click it. The dropdown should collapse and show the selected value.
+  - For searchable dropdowns (common in modern web apps), click the dropdown, type part of the desired option to filter the list, then press Enter or click the correct entry.
 - Don't login into a page if you don't have to. Don't login if you don't have the credentials. 
 - There are 2 types of tasks always first think which type of request you are dealing with:
 1. Very specific step by step instructions:
