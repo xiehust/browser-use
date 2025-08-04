@@ -3544,6 +3544,99 @@ class BrowserSession(BaseModel):
 			self.logger.error(f'❌ Using raw CDP to force-close crashed page failed: {type(e).__name__}: {e}')
 			return False
 
+	async def is_browser_busy(self) -> bool:
+		"""Check if browser is busy via Page.Status CDP call."""
+		self.logger.debug('🔍 Starting is_browser_busy check...')
+
+		try:
+			page = self.agent_current_page
+			if not page:
+				self.logger.debug('❌ No current page available')
+				return False
+
+			self.logger.debug(f'📄 Current page: {page.url}')
+			
+			if not self.browser_context:
+				self.logger.debug('❌ No browser context available')
+				return False
+
+			# Quick health check - if browser is disconnected, don't try CDP calls
+			if 'Connection closed' in str(getattr(self, '_last_error', '')):
+				self.logger.warning('🚫 Browser appears disconnected, skipping Page.Status check')
+				return False
+				
+			self.logger.debug('🔗 Creating CDP session...')
+			cdp_session = await asyncio.wait_for(
+				page.context.new_cdp_session(page),  # type: ignore
+				timeout=2.0
+			)
+			try:
+				self.logger.debug('📤 Sending Page.Status command...')
+				result = await asyncio.wait_for(cdp_session.send('Page.Status', {}), timeout=2.0)
+				self.logger.info(f'📊 Page.Status result: {result}')
+				
+				# Validate response format
+				if not isinstance(result, dict):
+					self.logger.warning(f'⚠️ Unexpected Page.Status response type: {type(result)}')
+					return False
+					
+				is_busy = result.get('busy', False)
+				if is_busy:
+					self.logger.info('⏸️ Browser is busy, waiting...')
+				else:
+					self.logger.debug('✅ Browser is not busy')
+				return is_busy
+			finally:
+				pass  # Don't detach CDP session
+		except Exception as e:
+			error_str = str(e)
+			self.logger.warning(f'❌ Page.Status call failed: {type(e).__name__}: {e}')
+			
+			# Only mark as unsupported for specific "method not found" errors, not Playwright internal errors
+			if any(keyword in error_str.lower() for keyword in [
+				'method not found', 
+				"wasn't found",
+				'unknown method',
+				'-32601'  # CDP method not found error code
+			]):
+				self.logger.warning('🚫 Page.Status method not found, disabling future calls')
+				self._page_status_not_supported = True
+			elif 'assertion error' in error_str.lower():
+				self.logger.warning('⚠️ Playwright assertion error - switching to direct WebSocket approach')
+				self._use_direct_websocket = True
+				# Retry with websocket approach
+				return await self._is_browser_busy_websocket()
+			
+			# Store error for health check
+			self._last_error = error_str
+			return False
+
+	async def wait_for_browser_ready(self, timeout_seconds: float = 25.0, poll_interval: float = 1.0) -> None:
+		"""Wait for browser to not be busy."""
+		self.logger.debug(f'🚀 Starting wait_for_browser_ready (timeout: {timeout_seconds}s)')
+		start_time = time.time()
+		first_check = True
+		
+		while (time.time() - start_time) < timeout_seconds:
+			self.logger.debug(f'⏳ Checking if browser is busy (attempt #{int((time.time() - start_time) / poll_interval) + 1})...')
+			is_busy = await self.is_browser_busy()
+			self.logger.debug(f'📋 Browser busy result: {is_busy}')
+			
+			if not is_busy:
+				if not first_check:
+					self.logger.info(f'✅ Browser ready after {time.time() - start_time:.1f}s')
+				else:
+					self.logger.debug('✅ Browser was already ready on first check')
+				return
+			
+			if first_check:
+				self.logger.info(f'🕐 Entering wait loop for browser to be ready (timeout: {timeout_seconds}s)')
+				first_check = False
+			
+			await asyncio.sleep(poll_interval)
+		
+		self.logger.warning(f'⏰ Browser wait timeout reached ({timeout_seconds}s), proceeding anyway')
+
 	async def _try_reopen_url(self, url: str, timeout_ms: int | None = None) -> bool:
 		"""Try to reopen a URL in a new page and check if it's responsive."""
 		if not url or is_new_tab_page(url):
