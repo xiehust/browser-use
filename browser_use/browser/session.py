@@ -3611,7 +3611,7 @@ class BrowserSession(BaseModel):
 			self._last_error = error_str
 			return False
 
-	async def wait_for_browser_ready(self, timeout_seconds: float = 35.0, poll_interval: float = 1.0) -> None:
+	async def wait_for_browser_ready(self, timeout_seconds: float = 40.0, poll_interval: float = 1.0) -> None:
 		"""Wait for browser to not be busy."""
 		self.logger.debug(f'🚀 Starting wait_for_browser_ready (timeout: {timeout_seconds}s)')
 		start_time = time.time()
