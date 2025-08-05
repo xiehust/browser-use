@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Literal
 
+from browser_use.agent.message_manager.safe_string import MessagePart
 from browser_use.agent.message_manager.views import (
 	HistoryItem,
 )
@@ -353,8 +354,10 @@ class MessageManager:
 	def _filter_sensitive_data(self, message: BaseMessage) -> BaseMessage:
 		"""Filter out sensitive data from the message"""
 
-		def replace_sensitive(value: str) -> str:
+		def replace_sensitive(value: str | MessagePart) -> str:
 			if not self.sensitive_data:
+				if isinstance(value, MessagePart):
+					return str(value)
 				return value
 
 			# Collect all sensitive values, immediately converting old format to new format
@@ -374,15 +377,23 @@ class MessageManager:
 			# If there are no valid sensitive data entries, just return the original value
 			if not sensitive_values:
 				logger.warning('No valid entries found in sensitive_data dictionary')
+				if isinstance(value, MessagePart):
+					return str(value)
 				return value
 
-			# Replace all valid sensitive data values with their placeholder tags
+			# Handle MessagePart objects with safe/unsafe boundaries
+			if isinstance(value, MessagePart):
+				return value.apply_secret_masking(sensitive_values)
+
+			# Legacy string handling
 			for key, val in sensitive_values.items():
 				value = value.replace(val, f'<secret>{key}</secret>')
 
 			return value
 
 		if isinstance(message.content, str):
+			message.content = replace_sensitive(message.content)
+		elif isinstance(message.content, MessagePart):
 			message.content = replace_sensitive(message.content)
 		elif isinstance(message.content, list):
 			for i, item in enumerate(message.content):

@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import TYPE_CHECKING, Optional
 
+from browser_use.agent.message_manager.safe_string import MessagePart, SafeString, UnsafeString
 from browser_use.dom.history_tree_processor.view import CoordinateSet, HashedDomElement, ViewportInfo
 from browser_use.dom.utils import cap_text_length
 from browser_use.utils import time_execution_sync
@@ -278,6 +279,130 @@ class DOMElementNode(DOMBaseNode):
 
 		process_node(self, 0)
 		return '\n'.join(formatted_text)
+
+	@time_execution_sync('--clickable_elements_to_message_part')
+	def clickable_elements_to_message_part(self, include_attributes: list[str] | None = None) -> MessagePart:
+		"""Convert the processed DOM content to HTML with safe/unsafe string boundaries."""
+		formatted_parts = []
+
+		if not include_attributes:
+			include_attributes = DEFAULT_INCLUDE_ATTRIBUTES
+
+		def process_node(node: DOMBaseNode, depth: int) -> None:
+			next_depth = int(depth)
+			depth_str = depth * '\t'
+
+			if isinstance(node, DOMElementNode):
+				# Add element with highlight_index
+				if node.highlight_index is not None:
+					next_depth += 1
+
+					text = node.get_all_text_till_next_clickable_element()
+					attributes_html_str = None
+
+					# Process attributes if needed
+					if include_attributes and node.attributes:
+						attributes_to_include = {k: v for k, v in node.attributes.items() if k in include_attributes}
+
+						# Remove duplicate attribute values to save tokens
+						ordered_keys = [key for key in include_attributes if key in attributes_to_include]
+
+						if len(ordered_keys) > 1:  # Only process if we have multiple attributes
+							keys_to_remove = set()  # Use set for O(1) lookups
+							seen_values = {}  # value -> first_key_with_this_value
+
+							for key in ordered_keys:
+								value = attributes_to_include[key]
+								if len(value) > 5:  # to not remove false, true, etc
+									if value in seen_values:
+										# This value was already seen with an earlier key, so remove this key
+										keys_to_remove.add(key)
+									else:
+										# First time seeing this value, record it
+										seen_values[value] = key
+
+							# Remove duplicate keys (no need to check existence since we know they exist)
+							for key in keys_to_remove:
+								del attributes_to_include[key]
+
+						# Easy LLM optimizations
+						# if tag == role attribute, don't include it
+						if node.tag_name == attributes_to_include.get('role'):
+							del attributes_to_include['role']
+
+						# Remove attributes that duplicate the node's text content
+						attrs_to_remove_if_text_matches = ['aria-label', 'placeholder', 'title']
+						for attr in attrs_to_remove_if_text_matches:
+							if (
+								attributes_to_include.get(attr)
+								and attributes_to_include.get(attr, '').strip().lower() == text.strip().lower()
+							):
+								del attributes_to_include[attr]
+
+						if attributes_to_include.items():
+							# Format as key1='value1' key2='value2'
+							attributes_html_str = ' '.join(
+								f'{key}={cap_text_length(value, 15)}' for key, value in attributes_to_include.items()
+							)
+
+					# Build the line parts
+					line_parts = []
+
+					# Add depth (tabs)
+					if depth_str:
+						line_parts.append(SafeString(depth_str))
+
+					# Add highlight indicator as SafeString
+					if node.is_new:
+						line_parts.append(SafeString(f'*[{node.highlight_index}]'))
+					else:
+						line_parts.append(SafeString(f'[{node.highlight_index}]'))
+
+					# Add tag start
+					line_parts.append(SafeString(f'<{node.tag_name}'))
+
+					if attributes_html_str:
+						line_parts.append(SafeString(' '))
+						line_parts.append(UnsafeString(attributes_html_str))
+
+					if text:
+						# Add space before >text only if there were NO attributes added before
+						text = text.strip()
+						if not attributes_html_str:
+							line_parts.append(SafeString(' '))
+						line_parts.append(SafeString('>'))
+						line_parts.append(UnsafeString(text))
+
+					# Add space before /> only if neither attributes NOR text were added
+					elif not attributes_html_str:
+						line_parts.append(SafeString(' '))
+
+					# makes sense to have if the website has lots of text -> so the LLM knows which things are part of the same clickable element and which are not
+					line_parts.append(SafeString(' />'))
+
+					# Create MessagePart from parts and add newline
+					if formatted_parts:
+						formatted_parts.append(SafeString('\n'))
+					formatted_parts.extend(line_parts)
+
+				# Process children regardless
+				for child in node.children:
+					process_node(child, next_depth)
+
+			elif isinstance(node, DOMTextNode):
+				# Add text only if it doesn't have a highlighted parent
+				if node.has_parent_with_highlight_index():
+					return
+
+				if node.parent and node.parent.is_visible and node.parent.is_top_element:
+					if formatted_parts:
+						formatted_parts.append(SafeString('\n'))
+					if depth_str:
+						formatted_parts.append(SafeString(depth_str))
+					formatted_parts.append(UnsafeString(node.text))
+
+		process_node(self, 0)
+		return MessagePart(formatted_parts)
 
 
 SelectorMap = dict[int, DOMElementNode]

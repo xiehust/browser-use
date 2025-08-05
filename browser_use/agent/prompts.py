@@ -2,6 +2,7 @@ import importlib.resources
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal, Optional
 
+from browser_use.agent.message_manager.safe_string import MessagePart, SafeString, UnsafeString
 from browser_use.llm.messages import ContentPartImageParam, ContentPartTextParam, ImageURL, SystemMessage, UserMessage
 from browser_use.observability import observe_debug
 from browser_use.utils import is_new_tab_page
@@ -109,8 +110,20 @@ class AgentMessagePrompt:
 		assert self.browser_state
 
 	@observe_debug(ignore_input=True, ignore_output=True, name='_get_browser_state_description')
-	def _get_browser_state_description(self) -> str:
-		elements_text = self.browser_state.element_tree.clickable_elements_to_string(include_attributes=self.include_attributes)
+	def _get_browser_state_description(self) -> str | MessagePart:
+		# Try to use the new MessagePart version if available
+		if hasattr(self.browser_state.element_tree, 'clickable_elements_to_message_part'):
+			elements_part = self.browser_state.element_tree.clickable_elements_to_message_part(
+				include_attributes=self.include_attributes
+			)
+			# For now, convert to string for backward compatibility
+			# The message manager will handle MessagePart properly when filtering
+			return self._build_browser_state_with_message_part(elements_part)
+		else:
+			# Fallback to legacy string version
+			elements_text = self.browser_state.element_tree.clickable_elements_to_string(
+				include_attributes=self.include_attributes
+			)
 
 		if len(elements_text) > self.max_clickable_elements_length:
 			elements_text = elements_text[: self.max_clickable_elements_length]
@@ -185,6 +198,90 @@ Available tabs:
 """
 		return browser_state
 
+	def _build_browser_state_with_message_part(self, elements_part: MessagePart) -> MessagePart:
+		"""Build browser state description with MessagePart for proper secret masking."""
+		# Convert elements_part to string to check length
+		elements_str = str(elements_part)
+
+		if len(elements_str) > self.max_clickable_elements_length:
+			# Need to truncate - for now just convert to string and truncate
+			# TODO: Implement proper MessagePart truncation
+			elements_str = elements_str[: self.max_clickable_elements_length]
+			truncated_text = f' (truncated to {self.max_clickable_elements_length} characters)'
+			elements_part = MessagePart([UnsafeString(elements_str)])
+		else:
+			truncated_text = ''
+
+		has_content_above = (self.browser_state.pixels_above or 0) > 0
+		has_content_below = (self.browser_state.pixels_below or 0) > 0
+
+		# Enhanced page information for the model
+		page_info_text = ''
+		if self.browser_state.page_info:
+			pi = self.browser_state.page_info
+			# Compute page statistics dynamically
+			pages_above = pi.pixels_above / pi.viewport_height if pi.viewport_height > 0 else 0
+			pages_below = pi.pixels_below / pi.viewport_height if pi.viewport_height > 0 else 0
+			total_pages = pi.page_height / pi.viewport_height if pi.viewport_height > 0 else 0
+			current_page_position = pi.scroll_y / max(pi.page_height - pi.viewport_height, 1)
+			page_info_text = f'Page info: {pi.viewport_width}x{pi.viewport_height}px viewport, {pi.page_width}x{pi.page_height}px total page size, {pages_above:.1f} pages above, {pages_below:.1f} pages below, {total_pages:.1f} total pages, at {current_page_position:.0%} of page'
+
+		if str(elements_part).strip() != '':
+			if has_content_above:
+				if self.browser_state.page_info:
+					pi = self.browser_state.page_info
+					pages_above = pi.pixels_above / pi.viewport_height if pi.viewport_height > 0 else 0
+					content_above_text = f'\n({pages_above:.1f} pages of content above the current viewport)'
+				else:
+					content_above_text = '\n(Content above the current viewport)'
+			else:
+				content_above_text = ''
+
+			if has_content_below:
+				if self.browser_state.page_info:
+					pi = self.browser_state.page_info
+					pages_below = pi.pixels_below / pi.viewport_height if pi.viewport_height > 0 else 0
+					content_below_text = f'\n({pages_below:.1f} pages of content below the current viewport)'
+				else:
+					content_below_text = '\n(Content below the current viewport)'
+			else:
+				content_below_text = ''
+		else:
+			content_above_text = ''
+			content_below_text = ''
+
+		tabs_text = ''
+		# Find current tab - should be the one with matching URL
+		current_tab_candidates = [tab.page_id for tab in self.browser_state.tabs if tab.url == self.browser_state.url]
+		# Otherwise, don't mark any tab as current to avoid confusion
+		current_tab_id = current_tab_candidates[0] if len(current_tab_candidates) == 1 else None
+
+		for tab in self.browser_state.tabs:
+			tabs_text += f'Tab {tab.page_id}: {tab.url} - {tab.title[:30]}\n'
+
+		current_tab_text = f'Current tab: {current_tab_id}' if current_tab_id is not None else ''
+
+		# Check if current page is a PDF viewer and add appropriate message
+		pdf_message = ''
+		if self.browser_state.is_pdf_viewer:
+			pdf_message = 'PDF viewer cannot be rendered. In this page, DO NOT use the extract_structured_data action as PDF content cannot be rendered. Use the read_file action on the downloaded PDF in available_file_paths to read the full content.\n\n'
+
+		# Build the browser state with MessagePart
+		parts = []
+		parts.append(
+			SafeString(f"""{current_tab_text}
+Available tabs:
+{tabs_text}
+{page_info_text}
+{pdf_message}Interactive elements from top layer of the current page inside the viewport{truncated_text}:
+""")
+		)
+		parts.append(elements_part)
+		parts.append(SafeString(content_above_text))
+		parts.append(SafeString(content_below_text))
+
+		return MessagePart(parts)
+
 	def _get_agent_state_description(self) -> str:
 		if self.step_info:
 			step_info_description = f'Step {self.step_info.step_number + 1} of {self.step_info.max_steps} max possible steps\n'
@@ -227,25 +324,53 @@ Available tabs:
 		):
 			use_vision = False
 
-		state_description = (
-			'<agent_history>\n'
-			+ (self.agent_history_description.strip('\n') if self.agent_history_description else '')
-			+ '\n</agent_history>\n'
-		)
-		state_description += '<agent_state>\n' + self._get_agent_state_description().strip('\n') + '\n</agent_state>\n'
-		state_description += '<browser_state>\n' + self._get_browser_state_description().strip('\n') + '\n</browser_state>\n'
-		state_description += (
-			'<read_state>\n'
-			+ (self.read_state_description.strip('\n') if self.read_state_description else '')
-			+ '\n</read_state>\n'
-		)
+		# Get browser state (might be MessagePart or string)
+		browser_state_content = self._get_browser_state_description()
+
+		# Build state description with proper handling of MessagePart
+		if isinstance(browser_state_content, MessagePart):
+			# Build the entire state as MessagePart
+			state_parts = []
+			state_parts.append(SafeString('<agent_history>\n'))
+			state_parts.append(UnsafeString(self.agent_history_description.strip('\n') if self.agent_history_description else ''))
+			state_parts.append(SafeString('\n</agent_history>\n'))
+			state_parts.append(SafeString('<agent_state>\n'))
+			state_parts.append(UnsafeString(self._get_agent_state_description().strip('\n')))
+			state_parts.append(SafeString('\n</agent_state>\n'))
+			state_parts.append(SafeString('<browser_state>\n'))
+			state_parts.append(browser_state_content)
+			state_parts.append(SafeString('\n</browser_state>\n'))
+			state_parts.append(SafeString('<read_state>\n'))
+			state_parts.append(UnsafeString(self.read_state_description.strip('\n') if self.read_state_description else ''))
+			state_parts.append(SafeString('\n</read_state>\n'))
+			state_description = MessagePart(state_parts)
+		else:
+			# Legacy string handling
+			state_description = (
+				'<agent_history>\n'
+				+ (self.agent_history_description.strip('\n') if self.agent_history_description else '')
+				+ '\n</agent_history>\n'
+			)
+			state_description += '<agent_state>\n' + self._get_agent_state_description().strip('\n') + '\n</agent_state>\n'
+			state_description += '<browser_state>\n' + browser_state_content.strip('\n') + '\n</browser_state>\n'
+			state_description += (
+				'<read_state>\n'
+				+ (self.read_state_description.strip('\n') if self.read_state_description else '')
+				+ '\n</read_state>\n'
+			)
 		if self.page_filtered_actions:
-			state_description += 'For this page, these additional actions are available:\n'
-			state_description += self.page_filtered_actions + '\n'
+			if isinstance(state_description, MessagePart):
+				state_description = state_description + SafeString('For this page, these additional actions are available:\n')
+				state_description = state_description + UnsafeString(self.page_filtered_actions + '\n')
+			else:
+				state_description += 'For this page, these additional actions are available:\n'
+				state_description += self.page_filtered_actions + '\n'
 
 		if use_vision is True and self.screenshots:
 			# Start with text description
-			content_parts: list[ContentPartTextParam | ContentPartImageParam] = [ContentPartTextParam(text=state_description)]
+			# Convert MessagePart to string for now (it will be handled by message manager)
+			text_content = str(state_description) if isinstance(state_description, MessagePart) else state_description
+			content_parts: list[ContentPartTextParam | ContentPartImageParam] = [ContentPartTextParam(text=text_content)]
 
 			# Add screenshots with labels
 			for i, screenshot in enumerate(self.screenshots):
@@ -271,4 +396,6 @@ Available tabs:
 
 			return UserMessage(content=content_parts, cache=True)
 
-		return UserMessage(content=state_description, cache=True)
+		# Convert MessagePart to string for now (it will be handled by message manager)
+		text_content = str(state_description) if isinstance(state_description, MessagePart) else state_description
+		return UserMessage(content=text_content, cache=True)
