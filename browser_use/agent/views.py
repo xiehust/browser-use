@@ -36,7 +36,6 @@ class AgentSettings(BaseModel):
 	max_failures: int = 3
 	retry_delay: int = 10
 	validate_output: bool = False
-	message_context: str | None = None
 	generate_gif: bool | str = False
 	override_system_message: str | None = None
 	extend_system_message: str | None = None
@@ -55,7 +54,7 @@ class AgentSettings(BaseModel):
 	max_actions_per_step: int = 10
 	use_thinking: bool = True
 	flash_mode: bool = False  # If enabled, disables evaluation_previous_goal and next_goal, and sets use_thinking = False
-	max_history_items: int = 40
+	max_history_items: int | None = None
 
 	page_extraction_llm: BaseChatModel | None = None
 	planner_llm: BaseChatModel | None = None
