@@ -676,21 +676,21 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 			# self.logger.debug('Agent paused after getting state')
 			raise InterruptedError
 
-	@observe(name='agent.step', ignore_output=True, ignore_input=True)
-	@time_execution_async('--step')
+	@observe('agent-step', context=lambda agent: {'step': agent.state.n_steps})
 	async def step(self, step_info: AgentStepInfo | None = None) -> None:
-		"""Execute one step of the task"""
-		# Initialize timing first, before any exceptions can occur
+		"""Execute one step of the agent: get context, get model output, execute actions, finalize"""
 		self.step_start_time = time.time()
-
 		browser_state_summary = None
+		# Track whether model output was successfully set in this step
+		model_output_set_this_step = False
 
 		try:
-			# Phase 1: Prepare context and timing
+			# Phase 1: Prepare context
 			browser_state_summary = await self._prepare_context(step_info)
 
 			# Phase 2: Get model output and execute actions
 			await self._get_next_action(browser_state_summary)
+			model_output_set_this_step = True  # Model output was successfully set
 			await self._execute_actions()
 
 			# Phase 3: Post-processing
@@ -698,7 +698,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 
 		except Exception as e:
 			# Handle ALL exceptions in one place
-			await self._handle_step_error(e)
+			await self._handle_step_error(e, model_output_set_this_step)
 
 		finally:
 			await self._finalize(browser_state_summary)
@@ -801,7 +801,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 				for file_path in self.state.last_result[-1].attachments:
 					self.logger.info(f'👉 {file_path}')
 
-	async def _handle_step_error(self, error: Exception) -> None:
+	async def _handle_step_error(self, error: Exception, model_output_set_this_step: bool) -> None:
 		"""Handle all types of errors that can occur during a step"""
 
 		# Handle all other exceptions
@@ -851,9 +851,11 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 				self.logger.error(f'{prefix}{error_msg}')
 
 		self.state.last_result = [ActionResult(error=error_msg)]
-		# Clear the model output to prevent storing outdated model output with current errors
-		# This ensures failed steps don't show misleading history with previous step's actions
-		self.state.last_model_output = None
+		# Only clear model output if it wasn't successfully set in this step
+		# This prevents storing outdated model output from previous steps with current errors
+		# but preserves valid model output when only action execution fails
+		if not model_output_set_this_step:
+			self.state.last_model_output = None
 		return None
 
 	async def _finalize(self, browser_state_summary: BrowserStateSummary | None) -> None:
