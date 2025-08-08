@@ -851,6 +851,9 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 				self.logger.error(f'{prefix}{error_msg}')
 
 		self.state.last_result = [ActionResult(error=error_msg)]
+		# Clear the model output to prevent storing outdated model output with current errors
+		# This ensures failed steps don't show misleading history with previous step's actions
+		self.state.last_model_output = None
 		return None
 
 	async def _finalize(self, browser_state_summary: BrowserStateSummary | None) -> None:
