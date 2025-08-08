@@ -918,21 +918,27 @@ class BrowserUseApp(App):
 
 						# Show goal if available
 						if item.model_output and hasattr(item.model_output, 'current_state'):
-							# Show goal for this step
-							goal = item.model_output.current_state.next_goal
-							if goal:
-								# Take just the first line for display
-								goal_lines = goal.strip().split('\n')
-								goal_summary = goal_lines[0]
-								tasks_info.write(f'   [cyan]Goal:[/] {goal_summary}')
+							# Check if this step has errors and no actions - if so, don't show previous goal evaluation
+							has_errors = item.result and any(result.error for result in item.result)
+							has_actions = item.model_output.action if item.model_output.action else False
+							
+							# Only show goal and evaluation if there are actions OR no errors
+							if has_actions or not has_errors:
+								# Show goal for this step
+								goal = item.model_output.current_state.next_goal
+								if goal:
+									# Take just the first line for display
+									goal_lines = goal.strip().split('\n')
+									goal_summary = goal_lines[0]
+									tasks_info.write(f'   [cyan]Goal:[/] {goal_summary}')
 
-							# Show evaluation of previous goal (feedback)
-							eval_prev = item.model_output.current_state.evaluation_previous_goal
-							if eval_prev and idx > 1:  # Only show for steps after the first
-								eval_lines = eval_prev.strip().split('\n')
-								eval_summary = eval_lines[0]
-								eval_summary = eval_summary.replace('Success', '✅ ').replace('Failed', '❌ ').strip()
-								tasks_info.write(f'   [tan]Evaluation:[/] {eval_summary}')
+								# Show evaluation of previous goal (feedback)
+								eval_prev = item.model_output.current_state.evaluation_previous_goal
+								if eval_prev and idx > 1:  # Only show for steps after the first
+									eval_lines = eval_prev.strip().split('\n')
+									eval_summary = eval_lines[0]
+									eval_summary = eval_summary.replace('Success', '✅ ').replace('Failed', '❌ ').strip()
+									tasks_info.write(f'   [tan]Evaluation:[/] {eval_summary}')
 
 						# Show actions taken in this step
 						if item.model_output and item.model_output.action:
