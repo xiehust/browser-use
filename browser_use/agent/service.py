@@ -31,7 +31,7 @@ from browser_use.tokens.service import TokenCost
 load_dotenv()
 
 from bubus import EventBus
-from pydantic import PrivateAttr, ValidationError
+from pydantic import ValidationError
 from uuid_extensions import uuid7str
 
 # Lazy import for gif to avoid heavy agent.views import at startup
@@ -755,6 +755,19 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 				self._get_model_output_with_retry(input_messages), timeout=self.settings.llm_timeout
 			)
 		except TimeoutError:
+			self.logger.error('LLM CALL TIMED OUT.')
+			total_estimated_tokens = 0
+			for message in input_messages:
+				role = message.role
+				message_text = message.text
+				estimated_tokens = len(message_text) // 4
+				total_estimated_tokens += estimated_tokens
+				self.logger.error(f'{role}: {message_text[:100]}\n...\n{message_text[-100:]}')
+
+			self.logger.error(f'TOTAL ESTIMATED TOKENS: {total_estimated_tokens}')
+
+			# print message preview
+
 			raise TimeoutError(
 				f'LLM call timed out after {self.settings.llm_timeout} seconds. Keep your thinking and output short.'
 			)
