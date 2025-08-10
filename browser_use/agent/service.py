@@ -785,11 +785,231 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		if self.state.last_model_output is None:
 			raise ValueError('No model output to execute actions from')
 
+		# Check for loops before executing actions
+		if self._detect_action_loop():
+			self.logger.warning('🔄 Loop detected! Attempting pivot strategy...')
+			if await self._try_pivot_strategy():
+				return  # Pivot successful, return early
+			else:
+				self.logger.error('❌ All pivot strategies failed, continuing with original action')
+
 		self.logger.debug(f'⚡ Step {self.state.n_steps}: Executing {len(self.state.last_model_output.action)} actions...')
 		result = await self.multi_act(self.state.last_model_output.action)
 		self.logger.debug(f'✅ Step {self.state.n_steps}: Actions completed')
 
+		# Track action for loop detection
+		await self._track_action(self.state.last_model_output.action, result)
+
 		self.state.last_result = result
+
+	def _detect_action_loop(self) -> bool:
+		"""Detect if we're stuck in an action loop."""
+		if not hasattr(self, '_action_history'):
+			self._action_history = []
+			self._loop_detection_window = 5
+			self._max_repeated_actions = 3
+			return False
+
+		if len(self._action_history) < self._max_repeated_actions:
+			return False
+
+		# Get current action signature
+		if not self.state.last_model_output or not self.state.last_model_output.action:
+			return False
+
+		current_action = self._get_action_signature(self.state.last_model_output.action)
+
+		# Look for repeated patterns in recent history
+		recent_actions = self._action_history[-self._loop_detection_window :]
+		action_signatures = [item['signature'] for item in recent_actions]
+
+		# Count how many times this action appeared recently
+		action_count = action_signatures.count(current_action)
+
+		# Also check if we've been bouncing between the same few actions
+		unique_recent_actions = len(set(action_signatures))
+
+		# Trigger loop detection if:
+		# 1. Same action repeated 3+ times, OR
+		# 2. Only 1-2 unique actions in recent history (bouncing)
+		is_repeating = action_count >= self._max_repeated_actions
+		is_bouncing = unique_recent_actions <= 2 and len(recent_actions) >= 4
+
+		if is_repeating or is_bouncing:
+			self.logger.debug(f'🔄 Loop detected: action_count={action_count}, unique_actions={unique_recent_actions}')
+			return True
+
+		return False
+
+	def _get_action_signature(self, actions: list) -> str:
+		"""Create a signature for an action sequence."""
+		signatures = []
+		for action in actions:
+			if hasattr(action, 'model_dump'):
+				action_dict = action.model_dump()
+				# Create a simple signature: action_type + key_params
+				action_type = action_dict.get('__class__', 'unknown')
+
+				# Include key identifying parameters
+				key_params = []
+				if 'index' in action_dict:
+					key_params.append(f'idx:{action_dict["index"]}')
+				if 'text' in action_dict:
+					# Only include first 10 chars of text to avoid overly specific signatures
+					key_params.append(f'txt:{str(action_dict["text"])[:10]}')
+				if 'query' in action_dict:
+					key_params.append(f'q:{str(action_dict["query"])[:15]}')
+
+				signature = f'{action_type}({",".join(key_params)})'
+				signatures.append(signature)
+
+		return '|'.join(signatures)
+
+	async def _track_action(self, actions: list, results: list) -> None:
+		"""Track an action and its result for loop detection."""
+		if not hasattr(self, '_action_history'):
+			self._action_history = []
+			self._loop_detection_window = 5
+
+		action_signature = self._get_action_signature(actions)
+
+		# Determine if action was successful
+		success = all(result and not result.error and (result.is_done or not hasattr(result, 'is_done')) for result in results)
+
+		# Get current URL for context
+		current_url = 'unknown'
+		try:
+			if self.browser_session:
+				current_url = await self.browser_session.get_current_page_url()
+		except:
+			pass
+
+		action_record = {
+			'signature': action_signature,
+			'success': success,
+			'url': current_url,
+			'step': self.state.n_steps,
+			'timestamp': time.time(),
+		}
+
+		self._action_history.append(action_record)
+
+		# Keep only recent history
+		max_history = self._loop_detection_window * 3  # Keep more history for pattern analysis
+		if len(self._action_history) > max_history:
+			self._action_history = self._action_history[-max_history:]
+
+	async def _try_pivot_strategy(self) -> bool:
+		"""Try different pivot strategies when a loop is detected."""
+		if not hasattr(self, '_pivot_strategies'):
+			self._pivot_strategies = [
+				self._try_navigation_strategy,
+				self._try_scroll_strategy,
+				self._try_extract_only_strategy,
+				self._try_done_strategy,
+			]
+
+		for strategy in self._pivot_strategies:
+			try:
+				self.logger.info(f'🔄 Trying pivot strategy: {strategy.__name__}')
+				if await strategy():
+					self.logger.info(f'✅ Pivot strategy {strategy.__name__} succeeded')
+					return True
+			except Exception as e:
+				self.logger.warning(f'❌ Pivot strategy {strategy.__name__} failed: {e}')
+
+		return False
+
+	async def _try_navigation_strategy(self) -> bool:
+		"""Try navigating to a different section or using search."""
+		try:
+			# Try to find and use navigation links or search
+			navigation_action = {
+				'action_type': 'extract_structured_data',
+				'query': 'Find navigation links, search boxes, or alternative ways to complete the task',
+				'extract_links': True,
+			}
+
+			result = await self.controller.registry.execute_action(
+				'extract_structured_data',
+				{'query': 'Find navigation links, search boxes, or alternative ways to complete the task', 'extract_links': True},
+				browser_session=self.browser_session,
+				page_extraction_llm=self.llm,
+				file_system=self.file_system,
+			)
+
+			# If we found useful navigation info, mark this as successful
+			if result and not result.error:
+				self.state.last_result = [result]
+				return True
+		except Exception:
+			pass
+		return False
+
+	async def _try_scroll_strategy(self) -> bool:
+		"""Try scrolling to reveal more content."""
+		try:
+			# Try scrolling down to reveal more content
+			scroll_action = {'action_type': 'scroll', 'down': True}
+
+			result = await self.controller.registry.execute_action('scroll', {'down': True}, browser_session=self.browser_session)
+
+			if result and not result.error:
+				self.state.last_result = [result]
+				return True
+		except Exception:
+			pass
+		return False
+
+	async def _try_extract_only_strategy(self) -> bool:
+		"""Try extracting whatever data is currently available."""
+		try:
+			# Extract whatever information is currently on the page
+			extract_action = {
+				'action_type': 'extract_structured_data',
+				'query': f'Extract any relevant information for the task: {self.task}',
+				'extract_links': False,
+			}
+
+			result = await self.controller.registry.execute_action(
+				'extract_structured_data',
+				{'query': f'Extract any relevant information for the task: {self.task}', 'extract_links': False},
+				browser_session=self.browser_session,
+				page_extraction_llm=self.llm,
+				file_system=self.file_system,
+			)
+
+			if result and not result.error:
+				self.state.last_result = [result]
+				return True
+		except Exception:
+			pass
+		return False
+
+	async def _try_done_strategy(self) -> bool:
+		"""Try completing the task with whatever we have."""
+		try:
+			# Mark task as done with whatever information we've gathered
+			done_action = {
+				'action_type': 'done',
+				'text': 'Task completed with available information due to detected loop',
+				'success': False,
+			}
+
+			# Create a Done action result
+			from browser_use.agent.views import ActionResult
+
+			result = ActionResult(
+				is_done=True,
+				success=False,
+				extracted_content='Task completed due to detected action loop. Some information may be incomplete.',
+			)
+
+			self.state.last_result = [result]
+			return True
+		except Exception:
+			pass
+		return False
 
 	async def _post_process(self) -> None:
 		"""Handle post-action processing like download tracking and result logging"""

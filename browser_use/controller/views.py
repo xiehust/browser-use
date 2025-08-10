@@ -74,3 +74,21 @@ class NoParamsAction(BaseModel):
 
 	model_config = ConfigDict(extra='ignore')
 	# No fields defined - all inputs are ignored automatically
+
+
+class WaitForElementAction(BaseModel):
+	selector: str
+	timeout: int = 10  # Default timeout in seconds
+
+
+class ScrollUntilAction(BaseModel):
+	target_selector: str
+	max_scrolls: int = 10
+	direction: str = 'down'  # 'up' or 'down'
+
+
+class SubmitSearchAction(BaseModel):
+	search_index: int
+	query: str
+	results_selector: str | None = None  # Optional selector to verify results appeared
+	verify_results: bool = True  # Whether to verify results appeared

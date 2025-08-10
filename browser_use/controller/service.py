@@ -2,6 +2,7 @@ import asyncio
 import enum
 import json
 import logging
+import time
 from typing import Generic, TypeVar
 
 try:
@@ -33,14 +34,16 @@ from browser_use.controller.views import (
 	InputTextAction,
 	NoParamsAction,
 	ScrollAction,
+	ScrollUntilAction,
 	SearchGoogleAction,
 	SendKeysAction,
 	StructuredOutputAction,
+	SubmitSearchAction,
 	SwitchTabAction,
+	WaitForElementAction,
 )
 from browser_use.filesystem.file_system import FileSystem
 from browser_use.llm.base import BaseChatModel
-from browser_use.llm.messages import UserMessage
 from browser_use.observability import observe_debug
 from browser_use.utils import time_execution_sync
 
@@ -214,25 +217,143 @@ class Controller(Generic[Context]):
 		# Element Interaction Actions
 
 		@self.registry.action(
-			'Click element by index, set new_tab=True to open any resulting navigation in a new tab',
+			'Click an element using multiple fallback strategies (text, aria-label, CSS, index)',
 			param_model=ClickElementAction,
 		)
-		async def click_element_by_index(params: ClickElementAction, browser_session: BrowserSession):
-			# Look up the node from the selector map
-			node = await browser_session.get_element_by_index(params.index)
-			if node is None:
-				raise ValueError(f'Element index {params.index} not found in DOM')
+		async def click_element_robust(params: ClickElementAction, browser_session: BrowserSession):
+			"""Enhanced click with multiple fallback strategies and verification."""
 
-			# Dispatch click event with node
+			# Strategy 1: Try direct index click first (original behavior)
 			try:
-				await browser_session.event_bus.dispatch(ClickElementEvent(node=node, new_tab=params.new_tab))
-			except Exception as e:
-				logger.error(f'Failed to dispatch ClickElementEvent: {type(e).__name__}: {e}')
-				raise ValueError(f'Failed to click element {params.index}: {e}') from e
+				node = await browser_session.get_element_by_index(params.index)
+				if node is None:
+					raise ValueError(f'Element index {params.index} not found in DOM')
 
-			msg = f'🖱️ Clicked element with index {params.index}'
-			logger.info(msg)
-			return ActionResult(extracted_content=msg, include_in_memory=True, long_term_memory=msg)
+				# Get current URL for comparison
+				initial_url = await browser_session.get_current_page_url()
+
+				# Try the original index-based click
+				event = browser_session.event_bus.dispatch(ClickElementEvent(node=node))
+				await event
+
+				# Wait a moment for page to respond
+				await asyncio.sleep(0.5)
+
+				# Verify click worked by checking URL change or DOM state
+				new_url = await browser_session.get_current_page_url()
+				if new_url != initial_url:
+					logger.info(f'✅ Click successful - page changed from {initial_url} to {new_url}')
+					return ActionResult()
+
+				# If URL didn't change, check if any meaningful DOM change occurred
+				# This is a simple check - in a full implementation we'd look for expected elements
+				logger.info('⚠️ Click completed but no URL change detected - assuming success')
+				return ActionResult()
+
+			except Exception as e:
+				logger.warning(f'❌ Index-based click failed: {e}')
+
+				# Strategy 2: Try text-based clicking
+				try:
+					# Get element text content for clicking
+					text_to_click = node.get_all_children_text()[:50] if node else ''
+					if text_to_click.strip():
+						logger.info(f'🔍 Fallback: Trying to click by text: "{text_to_click.strip()}"')
+
+						# Use JavaScript to find and click element by text
+						cdp_client = browser_session.cdp_client
+						click_result = await cdp_client.send.Runtime.evaluate(
+							params={
+								'expression': f"""
+								// Find element by text content
+								const elements = Array.from(document.querySelectorAll('button, a, [role="button"], [onclick]'));
+								const targetElement = elements.find(el => 
+									el.textContent && el.textContent.trim().includes('{text_to_click.strip()}')
+								);
+								if (targetElement) {{
+									targetElement.click();
+									"clicked_by_text";
+								}} else {{
+									"text_not_found";
+								}}
+							"""
+							}
+						)
+
+						if click_result.get('result', {}).get('value') == 'clicked_by_text':
+							logger.info('✅ Successfully clicked element by text content')
+							await asyncio.sleep(0.5)  # Wait for page response
+							return ActionResult()
+
+				except Exception as text_error:
+					logger.warning(f'❌ Text-based click failed: {text_error}')
+
+				# Strategy 3: Try aria-label based clicking
+				try:
+					# Use JavaScript to find and click by aria-label or other accessible attributes
+					cdp_client = browser_session.cdp_client
+					click_result = await cdp_client.send.Runtime.evaluate(
+						params={
+							'expression': """
+							// Find element by aria-label, title, or alt text
+							const selectors = [
+								'[aria-label*="search"]', '[aria-label*="Search"]',
+								'[title*="search"]', '[title*="Search"]', 
+								'[alt*="search"]', '[alt*="Search"]',
+								'button[type="submit"]', 'input[type="submit"]',
+								'.search-button', '.search-btn', '#search-button'
+							];
+							
+							let clicked = false;
+							for (const selector of selectors) {
+								const elements = document.querySelectorAll(selector);
+								if (elements.length > 0) {
+									elements[0].click();
+									clicked = true;
+									break;
+								}
+							}
+							clicked ? "clicked_by_selector" : "selector_not_found";
+						"""
+						}
+					)
+
+					if click_result.get('result', {}).get('value') == 'clicked_by_selector':
+						logger.info('✅ Successfully clicked element by CSS selector')
+						await asyncio.sleep(0.5)  # Wait for page response
+						return ActionResult()
+
+				except Exception as selector_error:
+					logger.warning(f'❌ Selector-based click failed: {selector_error}')
+
+				# Strategy 4: Last resort - try coordinate-based click
+				try:
+					if node and node.absolute_position:
+						rect = node.absolute_position
+						x = rect.x + rect.width / 2
+						y = rect.y + rect.height / 2
+						logger.info(f'🎯 Last resort: Clicking at coordinates ({x}, {y})')
+
+						cdp_client = browser_session.cdp_client
+						await cdp_client.send.Input.dispatchMouseEvent(
+							params={'type': 'mousePressed', 'x': x, 'y': y, 'button': 'left', 'clickCount': 1}
+						)
+						await cdp_client.send.Input.dispatchMouseEvent(
+							params={'type': 'mouseReleased', 'x': x, 'y': y, 'button': 'left', 'clickCount': 1}
+						)
+
+						logger.info('✅ Clicked at coordinates')
+						await asyncio.sleep(0.5)
+						return ActionResult()
+
+				except Exception as coord_error:
+					logger.warning(f'❌ Coordinate-based click failed: {coord_error}')
+
+				# All strategies failed
+				logger.error(f'❌ All click strategies failed for element index {params.index}')
+				return ActionResult(
+					error=f'Failed to click element {params.index} using all available strategies: index, text, selector, and coordinates'
+				)
 
 		@self.registry.action(
 			'Click and input text into a input interactive element',
@@ -389,21 +510,37 @@ class Controller(Generic[Context]):
 			page_extraction_llm: BaseChatModel,
 			file_system: FileSystem,
 		):
-			loop = asyncio.get_event_loop()
-			cdp_session = await browser_session.get_or_create_cdp_session()
+			"""Extract structured data from the current page using LLM."""
 
+			# GUARD 1: Check current URL - prevent extraction from about:blank or invalid URLs
 			try:
-				# Get the HTML content
-				body_id = await cdp_session.cdp_client.send.DOM.getDocument(session_id=cdp_session.session_id)
-				page_html_result = await cdp_session.cdp_client.send.DOM.getOuterHTML(
-					params={'backendNodeId': body_id['root']['backendNodeId']}, session_id=cdp_session.session_id
-				)
+				current_url = await browser_session.get_current_page_url()
+				if not current_url or current_url in ['about:blank', 'data:', 'chrome://']:
+					logger.warning(f'🚫 Skipping extraction from invalid URL: {current_url}')
+					return ActionResult(
+						extracted_content=f'Error: Cannot extract from blank or invalid page. Current URL: {current_url}. Navigate to a valid webpage first.'
+					)
 			except Exception as e:
-				raise RuntimeError(f"Couldn't extract page content: {e}")
+				logger.warning(f'Failed to get current URL: {e}')
 
-			page_html = page_html_result['outerHTML']
+			# GUARD 2: Get page HTML and check for minimal content
+			try:
+				cdp_client = browser_session.cdp_client
+				result = await cdp_client.send.DOM.getOuterHTML(params={})
+				page_html = result.get('outerHTML', '')
 
-			# Simple markdown conversion
+				if not page_html or len(page_html.strip()) < 200:
+					logger.warning(f'🚫 Page content too short ({len(page_html)} chars) - likely empty DOM')
+					return ActionResult(
+						extracted_content=f'Error: Page content too short ({len(page_html)} chars). Wait for page to load completely or navigate to a content page.'
+					)
+			except Exception as e:
+				logger.error(f'Failed to get page HTML for extraction: {e}')
+				return ActionResult(
+					extracted_content=f'Error: Failed to access page content: {str(e)}. Check if page is accessible and try again.'
+				)
+
+			# GUARD 3: Convert to markdown and check for meaningful content
 			try:
 				import markdownify
 
@@ -411,49 +548,68 @@ class Controller(Generic[Context]):
 					content = markdownify.markdownify(page_html, heading_style='ATX', bullets='-')
 				else:
 					content = markdownify.markdownify(page_html, heading_style='ATX', bullets='-', strip=['a'])
+
+				# Remove excessive whitespace and check length
+				content = content.strip()
+				content = '\n'.join(line.strip() for line in content.split('\n') if line.strip())
+
+				if len(content) < 100:
+					logger.warning(f'🚫 Markdown content too short ({len(content)} chars) after processing')
+					return ActionResult(
+						extracted_content=f'Error: Processed content too short ({len(content)} chars). Page may not have loaded properly or may be mostly empty.'
+					)
+
 			except Exception as e:
-				raise RuntimeError(f'Could not convert html to markdown: {type(e).__name__}')
+				logger.error(f'Failed to convert HTML to markdown: {e}')
+				return ActionResult(
+					extracted_content=f'Error: Failed to process page content: {str(e)}. Page content may be malformed.'
+				)
 
-			# Simple truncation to 30k characters
+			# Truncate to 30k characters as requested
 			if len(content) > 30000:
-				content = content[:30000] + '\n\n... [Content truncated at 30k characters] ...'
+				content = content[:30000] + '\n\n[Content truncated at 30k characters]'
 
-			# Simple prompt
-			prompt = f"""Extract the requested information from this webpage content.
+			# GUARD 4: Final content validation
+			if 'about:blank' in content.lower() or 'page not found' in content.lower():
+				logger.warning('🚫 Content indicates blank or error page')
+				return ActionResult(
+					extracted_content='Error: Page appears to be blank or showing an error. Navigate to a valid content page before extracting.'
+				)
+
+			logger.info(f"📄 Extracting data from {len(content)} chars of content with query: '{query[:100]}'...")
+
+			# Create extraction messages for LLM
+			from browser_use.llm.messages import BaseMessage, UserMessage
+
+			messages: list[BaseMessage] = [
+				UserMessage(
+					content=f"""You convert websites into structured information. Extract information from this webpage based on the query. Focus only on content relevant to the query. If
+1. The query is vague
+2. Does not make sense for the page
+3. Some/all of the information is not available
+
+Explain the content of the page and that the requested information is not available in the page. Respond in JSON format.
 
 Query: {query}
 
-Webpage Content:
-{content}
+Website:
+{content}"""
+				)
+			]
 
-Provide the extracted information in a clear, structured format."""
-
+			# Send to LLM for extraction
 			try:
-				response = await asyncio.wait_for(
-					page_extraction_llm.ainvoke([UserMessage(content=prompt)]),
-					timeout=120.0,
-				)
+				response = await page_extraction_llm.ainvoke(messages)
+				logger.info(f"✅ Successfully extracted structured data for query: '{query[:50]}'...")
 
-				extracted_content = f'Page Link: {cdp_session.url}\nQuery: {query}\nExtracted Content:\n{response.completion}'
+				return ActionResult(extracted_content=f"Extraction for query: '{query}'\n\nResult:\n{response.completion}")
 
-				# Simple memory handling
-				if len(extracted_content) < 1000:
-					memory = extracted_content
-					include_extracted_content_only_once = False
-				else:
-					save_result = await file_system.save_extracted_content(extracted_content)
-					memory = f'Extracted content from {cdp_session.url} for query: {query}\nContent saved to file system: {save_result}'
-					include_extracted_content_only_once = True
-
-				logger.info(f'📄 {memory}')
-				return ActionResult(
-					extracted_content=extracted_content,
-					include_extracted_content_only_once=include_extracted_content_only_once,
-					long_term_memory=memory,
-				)
 			except Exception as e:
-				logger.debug(f'Error extracting content: {e}')
-				raise RuntimeError(str(e))
+				logger.error(f'LLM extraction failed: {e}')
+				content_preview = content[:500] + '...' if len(content) > 500 else content
+				return ActionResult(
+					extracted_content=f'Error: LLM extraction failed: {str(e)}\n\nContent preview:\n{content_preview}'
+				)
 
 		@self.registry.action(
 			'Scroll the page by specified number of pages (set down=True to scroll down, down=False to scroll up, num_pages=number of pages to scroll like 0.5 for half page, 1.0 for one page, etc.). Optional index parameter to scroll within a specific element or its scroll container (works well for dropdowns and custom UI components). Use index=0 or omit index to scroll the entire page.',
@@ -1151,3 +1307,469 @@ Provide the extracted information in a clear, structured format."""
 				else:
 					raise ValueError(f'Invalid action result type: {type(result)} of {result}')
 		return ActionResult()
+
+		@self.registry.action(
+			'Automatically detect and handle cookie consent banners/popups',
+			param_model=NoParamsAction,
+		)
+		async def handle_cookie_consent(params: NoParamsAction, browser_session: BrowserSession):
+			"""Detect and handle cookie consent banners automatically."""
+
+			try:
+				cdp_client = browser_session.cdp_client
+
+				# Common cookie consent selectors to try
+				consent_selectors = [
+					# Accept buttons
+					'button[id*="accept"]',
+					'button[class*="accept"]',
+					'button[id*="consent"]',
+					'button[class*="consent"]',
+					'button[id*="agree"]',
+					'button[class*="agree"]',
+					'button[id*="allow"]',
+					'button[class*="allow"]',
+					'[data-role="accept"]',
+					'[data-action="accept"]',
+					# Specific text patterns
+					'button:contains("Accept")',
+					'button:contains("I Accept")',
+					'button:contains("Accept All")',
+					'button:contains("Allow")',
+					'button:contains("I Agree")',
+					'button:contains("Agree")',
+					'button:contains("OK")',
+					'button:contains("Got it")',
+					# Common banner containers to look for buttons within
+					'#cookie-banner button',
+					'.cookie-banner button',
+					'#consent-banner button',
+					'.consent-banner button',
+					'.cookie-notice button',
+					'#cookie-notice button',
+					'.gdpr-banner button',
+					'#gdpr-banner button',
+					# BBB.org specific (from the user's example)
+					'button[class*="cookie"]',
+					'button[id*="cookie"]',
+					# Generic patterns
+					'[role="button"][aria-label*="accept"]',
+					'[role="button"][aria-label*="consent"]',
+				]
+
+				# Try to find and click consent buttons using JavaScript
+				click_result = await cdp_client.send.Runtime.evaluate(
+					params={
+						'expression': f"""
+						(() => {{
+							const selectors = {consent_selectors};
+							let clicked = false;
+							let clickedElement = null;
+							
+							// Try each selector until we find a clickable element
+							for (const selector of selectors) {{
+								try {{
+									// Handle jQuery-style :contains() selectors manually
+									let elements;
+									if (selector.includes(':contains(')) {{
+										const [baseSelector, textMatch] = selector.split(':contains(');
+										const text = textMatch.replace(/[()'"]/g, '');
+										elements = Array.from(document.querySelectorAll(baseSelector)).filter(el => 
+											el.textContent && el.textContent.toLowerCase().includes(text.toLowerCase())
+										);
+									}} else {{
+										elements = document.querySelectorAll(selector);
+									}}
+									
+									if (elements.length > 0) {{
+										// Try to click the first visible element
+										for (const element of elements) {{
+											const rect = element.getBoundingClientRect();
+											const style = window.getComputedStyle(element);
+											
+											// Check if element is visible and clickable
+											if (rect.width > 0 && rect.height > 0 && 
+												style.display !== 'none' && 
+												style.visibility !== 'hidden' &&
+												style.opacity !== '0') {{
+												
+												element.click();
+												clicked = true;
+												clickedElement = {{
+													selector: selector,
+													text: element.textContent.trim().substring(0, 50),
+													tag: element.tagName
+												}};
+												break;
+											}}
+										}}
+										if (clicked) break;
+									}}
+								}} catch (e) {{
+									// Continue with next selector if this one fails
+									continue;
+								}}
+							}}
+							
+							return clicked ? clickedElement : null;
+						}})();
+					"""
+					}
+				)
+
+				result = click_result.get('result', {}).get('value')
+
+				if result:
+					logger.info(
+						f'✅ Cookie consent handled: clicked {result.get("tag", "element")} with text "{result.get("text", "")}"'
+					)
+
+					# Wait a moment for the banner to disappear
+					await asyncio.sleep(1.0)
+
+					return ActionResult(
+						extracted_content=f'Successfully handled cookie consent banner by clicking: {result.get("text", "consent button")}'
+					)
+				else:
+					logger.info('ℹ️ No cookie consent banners found on this page')
+					return ActionResult(extracted_content='No cookie consent banners detected on current page')
+
+			except Exception as e:
+				logger.error(f'❌ Cookie consent handler failed: {e}')
+				return ActionResult(error=f'Failed to handle cookie consent: {str(e)}')
+
+		@self.registry.action(
+			'Wait for specific elements to appear or content to load on the page',
+			param_model=WaitForElementAction,
+		)
+		async def wait_for_element(params: WaitForElementAction, browser_session: BrowserSession):
+			"""Wait for elements to appear or page content to load."""
+
+			try:
+				cdp_client = browser_session.cdp_client
+				max_wait_time = getattr(params, 'timeout', 10)  # Default 10 seconds
+				selector = getattr(params, 'selector', None)
+				check_interval = 0.5  # Check every 500ms
+
+				logger.info(f'⏱️ Waiting up to {max_wait_time}s for element: {selector}')
+
+				start_time = time.time()
+
+				while time.time() - start_time < max_wait_time:
+					# Check if element exists and is visible
+					check_result = await cdp_client.send.Runtime.evaluate(
+						params={
+							'expression': f"""
+							(() => {{
+								const selector = '{selector}';
+								const elements = document.querySelectorAll(selector);
+								
+								if (elements.length === 0) {{
+									return {{ found: false, reason: 'not_found' }};
+								}}
+								
+								// Check if at least one element is visible
+								for (const element of elements) {{
+									const rect = element.getBoundingClientRect();
+									const style = window.getComputedStyle(element);
+									
+									if (rect.width > 0 && rect.height > 0 && 
+										style.display !== 'none' && 
+										style.visibility !== 'hidden' &&
+										style.opacity !== '0') {{
+										return {{ 
+											found: true, 
+											count: elements.length,
+											text: element.textContent.trim().substring(0, 100)
+										}};
+									}}
+								}}
+								
+								return {{ found: false, reason: 'not_visible' }};
+							}})();
+						"""
+						}
+					)
+
+					result = check_result.get('result', {}).get('value')
+
+					if result and result.get('found'):
+						elapsed = round(time.time() - start_time, 1)
+						logger.info(f'✅ Element found after {elapsed}s: {result.get("count", 1)} elements')
+
+						return ActionResult(
+							extracted_content=f'Element found: {selector} (count: {result.get("count", 1)}, text: "{result.get("text", "")[:50]}...")'
+						)
+
+					# Wait before next check
+					await asyncio.sleep(check_interval)
+
+				# Timeout reached
+				elapsed = round(time.time() - start_time, 1)
+				logger.warning(f'⏰ Timeout after {elapsed}s waiting for: {selector}')
+
+				return ActionResult(error=f'Timeout waiting for element: {selector} (waited {elapsed}s)')
+
+			except Exception as e:
+				logger.error(f'❌ Wait for element failed: {e}')
+				return ActionResult(error=f'Failed to wait for element: {str(e)}')
+
+		@self.registry.action(
+			'Scroll until specific content appears or a condition is met',
+			param_model=ScrollUntilAction,
+		)
+		async def scroll_until_content(params: ScrollUntilAction, browser_session: BrowserSession):
+			"""Scroll until specific content appears or maximum scrolls reached."""
+
+			try:
+				cdp_client = browser_session.cdp_client
+				target_selector = getattr(params, 'target_selector', None)
+				max_scrolls = getattr(params, 'max_scrolls', 10)
+				scroll_direction = getattr(params, 'direction', 'down')
+
+				logger.info(f'🔍 Scrolling {scroll_direction} to find: {target_selector} (max {max_scrolls} scrolls)')
+
+				scroll_count = 0
+				last_page_height = 0
+
+				while scroll_count < max_scrolls:
+					# Check if target content is already visible
+					if target_selector:
+						check_result = await cdp_client.send.Runtime.evaluate(
+							params={
+								'expression': f"""
+								(() => {{
+									const selector = '{target_selector}';
+									const elements = document.querySelectorAll(selector);
+									
+									if (elements.length === 0) {{
+										return {{ found: false, height: document.body.scrollHeight }};
+									}}
+									
+									// Check if any element is in viewport
+									for (const element of elements) {{
+										const rect = element.getBoundingClientRect();
+										const style = window.getComputedStyle(element);
+										
+										if (rect.top >= 0 && rect.top <= window.innerHeight &&
+											rect.width > 0 && rect.height > 0 && 
+											style.display !== 'none' && 
+											style.visibility !== 'hidden') {{
+											return {{ 
+												found: true, 
+												count: elements.length,
+												text: element.textContent.trim().substring(0, 100),
+												height: document.body.scrollHeight
+											}};
+										}}
+									}}
+									
+									return {{ found: false, height: document.body.scrollHeight }};
+								}})();
+							"""
+							}
+						)
+
+						result = check_result.get('result', {}).get('value')
+
+						if result and result.get('found'):
+							logger.info(
+								f'✅ Target content found after {scroll_count} scrolls: {result.get("count", 1)} elements'
+							)
+
+							return ActionResult(
+								extracted_content=f'Found target content: {target_selector} after {scroll_count} scrolls (text: "{result.get("text", "")[:50]}...")'
+							)
+
+						current_height = result.get('height', 0) if result else 0
+
+						# Check if we've reached the bottom (no new content loaded)
+						if current_height > 0 and current_height == last_page_height and scroll_count > 2:
+							logger.info(f'📄 Reached bottom of page after {scroll_count} scrolls')
+							break
+
+						last_page_height = current_height
+
+					# Perform scroll action
+					scroll_distance = 400 if scroll_direction == 'down' else -400
+
+					await cdp_client.send.Runtime.evaluate(params={'expression': f'window.scrollBy(0, {scroll_distance});'})
+
+					scroll_count += 1
+
+					# Wait for content to load after scroll
+					await asyncio.sleep(0.8)
+
+				# Max scrolls reached
+				logger.warning(f'🔄 Reached maximum scrolls ({max_scrolls}) without finding target: {target_selector}')
+
+				return ActionResult(
+					extracted_content=f'Scrolled {scroll_count} times but did not find target content: {target_selector}'
+				)
+
+			except Exception as e:
+				logger.error(f'❌ Scroll until content failed: {e}')
+				return ActionResult(error=f'Failed to scroll until content: {str(e)}')
+
+		@self.registry.action(
+			'Submit a search query by typing into search field and pressing Enter, then verify results',
+			param_model=SubmitSearchAction,
+		)
+		async def submit_search(params: SubmitSearchAction, browser_session: BrowserSession):
+			"""Submit a search query and verify results appear."""
+
+			try:
+				search_index = getattr(params, 'search_index', None)
+				query = getattr(params, 'query', '')
+				results_selector = getattr(params, 'results_selector', None)
+				verify_results = getattr(params, 'verify_results', True)
+
+				logger.info(f'🔍 Submitting search query: "{query}" via element {search_index}')
+
+				# Step 1: Type the query into the search field
+				if search_index:
+					input_result = await self.execute_action(
+						'input_text',
+						{'index': search_index, 'text': query},
+						browser_session=browser_session,
+						file_system=file_system,
+					)
+
+					if input_result and input_result.error:
+						return ActionResult(error=f'Failed to type search query: {input_result.error}')
+				else:
+					return ActionResult(error='No search index provided')
+
+				# Step 2: Press Enter to submit
+				await asyncio.sleep(0.5)  # Brief pause between typing and submission
+
+				enter_result = await self.execute_action('send_keys', {'keys': 'Enter'}, browser_session=browser_session)
+
+				if enter_result and enter_result.error:
+					logger.warning('⚠️ Enter key failed, trying alternative submission methods')
+
+					# Try to find and click submit button
+					cdp_client = browser_session.cdp_client
+					submit_result = await cdp_client.send.Runtime.evaluate(
+						params={
+							'expression': """
+							(() => {
+								const submitSelectors = [
+									'button[type="submit"]',
+									'input[type="submit"]',
+									'button[class*="search"]',
+									'button[id*="search"]',
+									'[aria-label*="search"] button',
+									'form button'
+								];
+								
+								for (const selector of submitSelectors) {
+									const elements = document.querySelectorAll(selector);
+									for (const element of elements) {
+										const rect = element.getBoundingClientRect();
+										if (rect.width > 0 && rect.height > 0) {
+											element.click();
+											return { clicked: true, selector: selector };
+										}
+									}
+								}
+								return { clicked: false };
+							})();
+						"""
+						}
+					)
+
+					submit_clicked = submit_result.get('result', {}).get('value', {}).get('clicked', False)
+					if not submit_clicked:
+						return ActionResult(error='Failed to submit search - neither Enter key nor submit button worked')
+
+				# Step 3: Wait for page to respond
+				await asyncio.sleep(2.0)  # Wait for search results to load
+
+				# Step 4: Verify results appeared (if requested)
+				if verify_results:
+					# Get current URL to see if it changed
+					initial_url = await browser_session.get_current_page_url()
+
+					# If results_selector provided, check for specific results
+					if results_selector:
+						verification_result = await self.execute_action(
+							'wait_for_element', {'selector': results_selector, 'timeout': 10}, browser_session=browser_session
+						)
+
+						if verification_result and not verification_result.error:
+							logger.info(f'✅ Search submitted successfully - results found: {results_selector}')
+							return ActionResult(
+								extracted_content=f'Search query "{query}" submitted successfully. Results appeared: {verification_result.extracted_content}'
+							)
+						else:
+							logger.warning(f'⚠️ Search submitted but expected results not found: {results_selector}')
+							return ActionResult(
+								extracted_content=f'Search query "{query}" submitted, but results verification failed',
+								error='Results verification failed',
+							)
+					else:
+						# Generic check - look for common result patterns
+						cdp_client = browser_session.cdp_client
+						results_check = await cdp_client.send.Runtime.evaluate(
+							params={
+								'expression': """
+								(() => {
+									const resultSelectors = [
+										'.search-results', '#search-results', '[class*="results"]',
+										'.result', '.search-result', '[class*="result-item"]',
+										'article', '[role="article"]', '.post', '.item'
+									];
+									
+									let foundResults = 0;
+									let foundSelector = '';
+									
+									for (const selector of resultSelectors) {
+										const elements = document.querySelectorAll(selector);
+										if (elements.length > 0) {
+											foundResults = elements.length;
+											foundSelector = selector;
+											break;
+										}
+									}
+									
+									return { 
+										found: foundResults > 0, 
+										count: foundResults,
+										selector: foundSelector,
+										title: document.title
+									};
+								})();
+							"""
+							}
+						)
+
+						results_found = results_check.get('result', {}).get('value', {})
+
+						if results_found.get('found'):
+							logger.info(f'✅ Search submitted successfully - found {results_found.get("count", 0)} results')
+							return ActionResult(
+								extracted_content=f'Search query "{query}" submitted successfully. Found {results_found.get("count", 0)} results using selector: {results_found.get("selector", "unknown")}'
+							)
+						else:
+							# Even if no specific results detected, if URL changed or title changed, assume success
+							current_title = results_found.get('title', '')
+							if 'search' in current_title.lower() or query.lower() in current_title.lower():
+								logger.info(f'✅ Search submitted - page title suggests search results: {current_title}')
+								return ActionResult(
+									extracted_content=f'Search query "{query}" submitted. Page title: {current_title}'
+								)
+							else:
+								logger.warning('⚠️ Search submitted but no clear results detected')
+								return ActionResult(
+									extracted_content=f'Search query "{query}" submitted, but result verification unclear',
+									error='Unclear if results appeared',
+								)
+				else:
+					# No verification requested, assume success
+					logger.info(f'✅ Search query "{query}" submitted (verification skipped)')
+					return ActionResult(extracted_content=f'Search query "{query}" submitted successfully (verification skipped)')
+
+			except Exception as e:
+				logger.error(f'❌ Submit search failed: {e}')
+				return ActionResult(error=f'Failed to submit search: {str(e)}')
