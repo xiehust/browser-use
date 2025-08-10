@@ -58,6 +58,8 @@ class SimplifiedNode:
 	should_display: bool = True
 	interactive_index: int | None = None
 
+	ignored_by_paint_order: bool = False
+
 	is_new: bool = False
 
 	def __json__(self) -> dict:

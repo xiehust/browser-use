@@ -108,11 +108,13 @@ def build_snapshot_lookup(
 						raw_x, raw_y, raw_width, raw_height = bounds[0], bounds[1], bounds[2], bounds[3]
 
 						# Apply device pixel ratio scaling to convert device pixels to CSS pixels
+						# Ensure device_pixel_ratio is never zero to prevent division by zero
+						safe_device_pixel_ratio = device_pixel_ratio if device_pixel_ratio > 0 else 1.0
 						bounding_box = DOMRect(
-							x=raw_x / device_pixel_ratio,
-							y=raw_y / device_pixel_ratio,
-							width=raw_width / device_pixel_ratio,
-							height=raw_height / device_pixel_ratio,
+							x=raw_x / safe_device_pixel_ratio,
+							y=raw_y / safe_device_pixel_ratio,
+							width=raw_width / safe_device_pixel_ratio,
+							height=raw_height / safe_device_pixel_ratio,
 						)
 
 					# Parse computed styles for this layout node

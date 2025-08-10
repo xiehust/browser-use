@@ -143,7 +143,13 @@ class DomService:
 			# Calculate device pixel ratio
 			device_width = visual_viewport.get('clientWidth', width)
 			css_width = css_visual_viewport.get('clientWidth', width)
-			device_pixel_ratio = device_width / css_width if css_width > 0 else 1.0
+			# Ensure we don't divide by zero and have reasonable bounds
+			if css_width <= 0 or device_width <= 0:
+				device_pixel_ratio = 1.0
+			else:
+				device_pixel_ratio = device_width / css_width
+				# Clamp to reasonable range to avoid extreme values
+				device_pixel_ratio = max(0.1, min(10.0, device_pixel_ratio))
 
 			return float(device_pixel_ratio)
 		except Exception as e:

@@ -34,7 +34,7 @@ async def test_focus_vs_all_elements():
 
 	# 10 Sample websites with various interactive elements
 	sample_websites = [
-		'https://glosbe.com/',
+		'https://apartments.com',
 		'https://www.google.com/travel/flights',
 		'https://www.amazon.com/s?k=laptop',
 		'https://github.com/trending',
@@ -92,7 +92,6 @@ async def test_focus_vs_all_elements():
 		return '\n'.join(lines)
 
 	await browser_session.start()
-	page = await browser_session.get_current_page()
 
 	# Show startup info
 	print('\n🌐 BROWSER-USE DOM EXTRACTION TESTER')
@@ -108,15 +107,15 @@ async def test_focus_vs_all_elements():
 
 		website = websites[current_website_index]
 		# sleep 2
-		await page.goto(website)
+		await browser_session._cdp_navigate(website)
 		await asyncio.sleep(1)
+
+		dom_service = DomService(browser_session)
 
 		last_clicked_index = None  # Track the index for text input
 		while True:
 			try:
-				page = await browser_session.get_current_page()
-				async with DomService(browser_session) as dom_service:
-					await remove_highlighting_script(dom_service)
+				await remove_highlighting_script(dom_service)
 
 				# 	all_elements_state = await dom_service.get_serialized_dom_tree()
 
@@ -140,14 +139,12 @@ async def test_focus_vs_all_elements():
 
 				# Get detailed timing info from DOM service
 				print('\nGetting detailed DOM timing...')
-				async with DomService(browser_session) as dom_service:
-					serialized_state, timing_info = await dom_service.get_serialized_dom_tree()
+				serialized_state, _, timing_info = await dom_service.get_serialized_dom_tree()
 
 				# Combine all timing info
 				all_timing = {'get_state_summary_total': get_state_time, **timing_info}
 
-				async with DomService(browser_session) as dom_service:
-					await inject_highlighting_script(dom_service, all_elements_state.dom_state.selector_map)
+				await inject_highlighting_script(dom_service, all_elements_state.dom_state.selector_map)
 
 				selector_map = all_elements_state.dom_state.selector_map
 				total_elements = len(selector_map.keys())
@@ -252,7 +249,7 @@ async def test_focus_vs_all_elements():
 						if clicked_index in selector_map:
 							element_node = selector_map[clicked_index]
 							print(f'Clicking element {clicked_index}: {element_node.tag_name}')
-							event = browser_session.event_bus.dispatch(ClickElementEvent(element_node=element_node))
+							event = browser_session.event_bus.dispatch(ClickElementEvent(node=element_node))
 							await event
 							print('Click successful.')
 					except ValueError:
@@ -277,26 +274,26 @@ async def test_focus_vs_all_elements():
 								print(f'Invalid index format: {parts[1]}')
 						else:
 							print("Invalid input format. Use 'c,index'.")
-					elif ',' in answer:
-						# Input text format: index,text
-						parts = answer.split(',', 1)
-						if len(parts) == 2:
-							try:
-								target_index = int(parts[0].strip())
-								text_to_input = parts[1]
-								if target_index in selector_map:
-									element_node = selector_map[target_index]
-									print(
-										f"Inputting text '{text_to_input}' into element {target_index}: {element_node.tag_name}"
-									)
-									await browser_session._input_text_element_node(element_node, text_to_input)
-									print('Input successful.')
-								else:
-									print(f'Invalid index: {target_index}')
-							except ValueError:
-								print(f'Invalid index format: {parts[0]}')
-						else:
-							print("Invalid input format. Use 'index,text'.")
+					# elif ',' in answer:
+					# 	# Input text format: index,text
+					# 	parts = answer.split(',', 1)
+					# 	if len(parts) == 2:
+					# 		try:
+					# 			target_index = int(parts[0].strip())
+					# 			text_to_input = parts[1]
+					# 			if target_index in selector_map:
+					# 				element_node = selector_map[target_index]
+					# 				print(
+					# 					f"Inputting text '{text_to_input}' into element {target_index}: {element_node.tag_name}"
+					# 				)
+					# 				await browser_session._input_text_element_node(element_node, text_to_input)
+					# 				print('Input successful.')
+					# 			else:
+					# 				print(f'Invalid index: {target_index}')
+					# 		except ValueError:
+					# 			print(f'Invalid index format: {parts[0]}')
+					# 	else:
+					# 		print("Invalid input format. Use 'index,text'.")
 
 				except Exception as action_e:
 					print(f'Action failed: {action_e}')
