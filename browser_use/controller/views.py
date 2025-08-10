@@ -92,3 +92,17 @@ class SubmitSearchAction(BaseModel):
 	query: str
 	results_selector: str | None = None  # Optional selector to verify results appeared
 	verify_results: bool = True  # Whether to verify results appeared
+
+
+class SelectAutocompleteAction(BaseModel):
+	input_index: int
+	text_to_type: str
+	suggestion_selector: str | None = None  # Optional specific selector for suggestions
+	select_first: bool = True  # Whether to select first suggestion or wait for specific text
+
+
+class HandleModalAction(BaseModel):
+	action: str  # 'open', 'close', 'wait_for'
+	trigger_selector: str | None = None  # Element to click to open modal
+	modal_selector: str | None = None  # Modal container selector
+	close_method: str = 'escape'  # 'escape', 'close_button', 'outside_click'

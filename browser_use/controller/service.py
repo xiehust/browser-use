@@ -5,6 +5,9 @@ import logging
 import time
 from typing import Generic, TypeVar
 
+# Global cache for DOM hash tracking to prevent duplicate extractions
+_extraction_hashes: dict[str, str] = {}
+
 try:
 	from lmnr import Laminar  # type: ignore
 except ImportError:
@@ -31,11 +34,13 @@ from browser_use.controller.views import (
 	CloseTabAction,
 	DoneAction,
 	GoToUrlAction,
+	HandleModalAction,
 	InputTextAction,
 	NoParamsAction,
 	ScrollAction,
 	ScrollUntilAction,
 	SearchGoogleAction,
+	SelectAutocompleteAction,
 	SendKeysAction,
 	StructuredOutputAction,
 	SubmitSearchAction,
@@ -512,7 +517,7 @@ class Controller(Generic[Context]):
 		):
 			"""Extract structured data from the current page using LLM."""
 
-			# GUARD 1: Check current URL - prevent extraction from about:blank or invalid URLs
+			# GUARD 1: Check current URL - prevent extraction from invalid URLs
 			try:
 				current_url = await browser_session.get_current_page_url()
 				if not current_url or current_url in ['about:blank', 'data:', 'chrome://']:
@@ -540,7 +545,84 @@ class Controller(Generic[Context]):
 					extracted_content=f'Error: Failed to access page content: {str(e)}. Check if page is accessible and try again.'
 				)
 
-			# GUARD 3: Convert to markdown and check for meaningful content
+			# GUARD 3: Scroll-to-load strategy for dynamic/infinite scroll content
+			try:
+				logger.info('📜 Performing scroll-to-load to ensure dynamic content is visible')
+
+				# Get initial page height
+				initial_height_result = await cdp_client.send.Runtime.evaluate(
+					params={'expression': 'document.body.scrollHeight'}
+				)
+				initial_height = initial_height_result.get('result', {}).get('value', 0)
+
+				# Scroll to bottom to trigger loading
+				await cdp_client.send.Runtime.evaluate(params={'expression': 'window.scrollTo(0, document.body.scrollHeight);'})
+				await asyncio.sleep(1.5)  # Wait for content to load
+
+				# Scroll to top to ensure full content is accessible
+				await cdp_client.send.Runtime.evaluate(params={'expression': 'window.scrollTo(0, 0);'})
+				await asyncio.sleep(0.5)
+
+				# Check if new content loaded
+				final_height_result = await cdp_client.send.Runtime.evaluate(params={'expression': 'document.body.scrollHeight'})
+				final_height = final_height_result.get('result', {}).get('value', 0)
+
+				if final_height > initial_height:
+					logger.info(f'📈 Dynamic content loaded: page grew from {initial_height}px to {final_height}px')
+
+			except Exception as e:
+				logger.warning(f'Scroll-to-load failed: {e}')
+
+			# GUARD 4: DOM hash tracking to prevent duplicate extractions
+			try:
+				# Calculate DOM content hash from first 50KB of text
+				dom_hash_result = await cdp_client.send.Runtime.evaluate(
+					params={
+						'expression': """
+						(() => {
+							const textContent = document.body.textContent || document.body.innerText || '';
+							const first50KB = textContent.substring(0, 50000);
+							// Simple hash function
+							let hash = 0;
+							for (let i = 0; i < first50KB.length; i++) {
+								const char = first50KB.charCodeAt(i);
+								hash = ((hash << 5) - hash) + char;
+								hash = hash & hash; // Convert to 32-bit integer
+							}
+							return {
+								hash: hash.toString(),
+								contentLength: textContent.length,
+								title: document.title,
+								url: window.location.href
+							};
+						})();
+					"""
+					}
+				)
+
+				dom_info = dom_hash_result.get('result', {}).get('value', {})
+				dom_hash = dom_info.get('hash', 'unknown')
+				content_length = dom_info.get('contentLength', 0)
+
+				# Check if we've seen this exact content before (simple check)
+				session_key = f'{browser_session.id}_{current_url}'
+				last_hash = _extraction_hashes.get(session_key)
+
+				if last_hash == dom_hash and content_length < 1000:
+					logger.warning(
+						f'🔄 DOM hash unchanged and content is minimal ({content_length} chars) - likely extracting same empty page'
+					)
+					return ActionResult(
+						extracted_content='Error: Attempting to extract from same minimal content. Try navigating to a different page or waiting for content to load.'
+					)
+
+				_extraction_hashes[session_key] = dom_hash
+				logger.debug(f'📋 DOM hash: {dom_hash[:10]}..., content length: {content_length}')
+
+			except Exception as e:
+				logger.warning(f'DOM hash tracking failed: {e}')
+
+			# GUARD 5: Convert to markdown and check for meaningful content
 			try:
 				import markdownify
 
@@ -569,7 +651,7 @@ class Controller(Generic[Context]):
 			if len(content) > 30000:
 				content = content[:30000] + '\n\n[Content truncated at 30k characters]'
 
-			# GUARD 4: Final content validation
+			# GUARD 6: Final content validation
 			if 'about:blank' in content.lower() or 'page not found' in content.lower():
 				logger.warning('🚫 Content indicates blank or error page')
 				return ActionResult(
@@ -585,7 +667,7 @@ class Controller(Generic[Context]):
 				UserMessage(
 					content=f"""You convert websites into structured information. Extract information from this webpage based on the query. Focus only on content relevant to the query. If
 1. The query is vague
-2. Does not make sense for the page
+2. Does not make sense for the page  
 3. Some/all of the information is not available
 
 Explain the content of the page and that the requested information is not available in the page. Respond in JSON format.
@@ -1773,3 +1855,695 @@ Website:
 			except Exception as e:
 				logger.error(f'❌ Submit search failed: {e}')
 				return ActionResult(error=f'Failed to submit search: {str(e)}')
+
+		@self.registry.action(
+			'Type into autocomplete field and select suggestion (handles dropdowns, suggestions)',
+			param_model=SelectAutocompleteAction,
+		)
+		async def select_autocomplete(params: SelectAutocompleteAction, browser_session: BrowserSession):
+			"""Type into autocomplete field and select a suggestion."""
+
+			try:
+				input_index = getattr(params, 'input_index', None)
+				text_to_type = getattr(params, 'text_to_type', '')
+				suggestion_selector = getattr(params, 'suggestion_selector', None)
+				select_first = getattr(params, 'select_first', True)
+
+				logger.info(f'🔍 Autocomplete: typing "{text_to_type}" into element {input_index}')
+
+				# Step 1: Type into the input field
+				if input_index:
+					input_result = await self.execute_action(
+						'input_text',
+						{'index': input_index, 'text': text_to_type},
+						browser_session=browser_session,
+						file_system=file_system,
+					)
+
+					if input_result and input_result.error:
+						return ActionResult(error=f'Failed to type into autocomplete field: {input_result.error}')
+				else:
+					return ActionResult(error='No input index provided for autocomplete')
+
+				# Step 2: Wait for suggestions to appear
+				await asyncio.sleep(1.0)  # Give time for suggestions to load
+
+				# Step 3: Look for and select suggestion
+				cdp_client = browser_session.cdp_client
+
+				# Define common autocomplete suggestion selectors
+				suggestion_selectors = [
+					suggestion_selector,  # User-provided selector (if any)
+					'[role="listbox"] [role="option"]',
+					'.autocomplete-suggestion',
+					'.suggestion',
+					'.autocomplete-item',
+					'[aria-autocomplete] + ul li',
+					'[aria-autocomplete] + div li',
+					'.dropdown-menu li',
+					'.dropdown-item',
+					'[class*="suggestion"]',
+					'[class*="autocomplete"]',
+					'ul li[data-value]',
+					'li[data-suggestion]',
+					# Google-style autocomplete
+					'.sbsb_c .sbqs_c',
+					'.pac-item',
+					# Maps/location autocomplete
+					'.pac-container .pac-item',
+				]
+
+				# Remove None values and empty strings
+				suggestion_selectors = [s for s in suggestion_selectors if s]
+
+				selection_result = await cdp_client.send.Runtime.evaluate(
+					params={
+						'expression': f"""
+						(() => {{
+							const selectors = {suggestion_selectors};
+							let selected = false;
+							let selectionInfo = null;
+							
+							// Try each selector to find suggestions
+							for (const selector of selectors) {{
+								try {{
+									const suggestions = document.querySelectorAll(selector);
+									if (suggestions.length === 0) continue;
+									
+									// Find visible suggestions
+									const visibleSuggestions = Array.from(suggestions).filter(item => {{
+										const rect = item.getBoundingClientRect();
+										const style = window.getComputedStyle(item);
+										return rect.width > 0 && rect.height > 0 && 
+											   style.display !== 'none' && 
+											   style.visibility !== 'hidden';
+									}});
+									
+									if (visibleSuggestions.length === 0) continue;
+									
+									// Select strategy
+									let targetSuggestion = null;
+									
+									if ({str(select_first).lower()}) {{
+										// Select first visible suggestion
+										targetSuggestion = visibleSuggestions[0];
+									}} else {{
+										// Look for suggestion that contains or matches our text
+										const searchText = '{text_to_type}'.toLowerCase();
+										targetSuggestion = visibleSuggestions.find(item => 
+											item.textContent && 
+											item.textContent.toLowerCase().includes(searchText)
+										) || visibleSuggestions[0]; // Fallback to first
+									}}
+									
+									if (targetSuggestion) {{
+										// Try clicking the suggestion
+										targetSuggestion.click();
+										selected = true;
+										selectionInfo = {{
+											selector: selector,
+											text: targetSuggestion.textContent.trim(),
+											totalSuggestions: visibleSuggestions.length
+										}};
+										break;
+									}}
+								}} catch (e) {{
+									continue; // Try next selector
+								}}
+							}}
+							
+							// If no suggestions found, try keyboard navigation
+							if (!selected) {{
+								try {{
+									// Find the input field that was typed into
+									const inputElement = document.querySelector('[tabindex], input, [contenteditable]');
+									if (inputElement) {{
+										inputElement.focus();
+										
+										// Try Arrow Down + Enter
+										const downEvent = new KeyboardEvent('keydown', {{ key: 'ArrowDown', code: 'ArrowDown' }});
+										inputElement.dispatchEvent(downEvent);
+										
+										// Wait a bit then Enter
+										setTimeout(() => {{
+											const enterEvent = new KeyboardEvent('keydown', {{ key: 'Enter', code: 'Enter' }});
+											inputElement.dispatchEvent(enterEvent);
+										}}, 100);
+										
+										selected = true;
+										selectionInfo = {{
+											method: 'keyboard_navigation',
+											text: 'ArrowDown + Enter'
+										}};
+									}}
+								}} catch (e) {{
+									// Ignore keyboard fallback errors
+								}}
+							}}
+							
+							return selected ? selectionInfo : null;
+						}})();
+					"""
+					}
+				)
+
+				result = selection_result.get('result', {}).get('value')
+
+				if result:
+					logger.info(
+						f'✅ Autocomplete suggestion selected: "{result.get("text", "")}" using {result.get("selector", result.get("method", "unknown"))}'
+					)
+
+					# Wait for any UI updates after selection
+					await asyncio.sleep(0.5)
+
+					return ActionResult(
+						extracted_content=f'Successfully selected autocomplete suggestion: "{result.get("text", "")}" from {result.get("totalSuggestions", 1)} available options'
+					)
+				else:
+					logger.warning(f'⚠️ No autocomplete suggestions found or selectable for: "{text_to_type}"')
+
+					# Check if input value changed (maybe autocomplete was automatic)
+					input_check = await cdp_client.send.Runtime.evaluate(
+						params={
+							'expression': f"""
+							(() => {{
+								const inputs = document.querySelectorAll('input, [contenteditable]');
+								for (const input of inputs) {{
+									if (input.value && input.value.toLowerCase().includes('{text_to_type.lower()}')) {{
+										return {{
+											found: true,
+											value: input.value,
+											automatic: true
+										}};
+									}}
+								}}
+								return {{ found: false }};
+							}})();
+						"""
+						}
+					)
+
+					input_result = input_check.get('result', {}).get('value', {})
+					if input_result.get('found'):
+						return ActionResult(
+							extracted_content=f'Autocomplete appears to have been handled automatically: "{input_result.get("value", "")}"'
+						)
+					else:
+						return ActionResult(
+							extracted_content=f'No autocomplete suggestions found for: "{text_to_type}". Input may not have autocomplete enabled.',
+							error='No suggestions available',
+						)
+
+			except Exception as e:
+				logger.error(f'❌ Autocomplete selection failed: {e}')
+				return ActionResult(error=f'Failed to select autocomplete suggestion: {str(e)}')
+
+		@self.registry.action(
+			'Handle modal dialogs - open, close, or wait for them to appear',
+			param_model=HandleModalAction,
+		)
+		async def handle_modal(params: HandleModalAction, browser_session: BrowserSession):
+			"""Handle modal dialogs and popups."""
+
+			try:
+				action = getattr(params, 'action', 'wait_for')
+				trigger_selector = getattr(params, 'trigger_selector', None)
+				modal_selector = getattr(params, 'modal_selector', None)
+				close_method = getattr(params, 'close_method', 'escape')
+
+				logger.info(f'🎭 Modal action: {action}')
+
+				cdp_client = browser_session.cdp_client
+
+				if action == 'open':
+					# Open modal by clicking trigger element
+					if not trigger_selector:
+						return ActionResult(error='No trigger_selector provided for modal open action')
+
+					# Click the trigger element
+					click_result = await cdp_client.send.Runtime.evaluate(
+						params={
+							'expression': f"""
+							(() => {{
+								const trigger = document.querySelector('{trigger_selector}');
+								if (trigger) {{
+									const rect = trigger.getBoundingClientRect();
+									const style = window.getComputedStyle(trigger);
+									
+									if (rect.width > 0 && rect.height > 0 && 
+										style.display !== 'none' && 
+										style.visibility !== 'hidden') {{
+										trigger.click();
+										return {{ clicked: true, text: trigger.textContent.trim() }};
+									}}
+								}}
+								return {{ clicked: false }};
+							}})();
+						"""
+						}
+					)
+
+					if not click_result.get('result', {}).get('value', {}).get('clicked'):
+						return ActionResult(error=f'Failed to click modal trigger: {trigger_selector}')
+
+					# Wait for modal to appear
+					await asyncio.sleep(1.0)
+
+					# Verify modal appeared
+					modal_check = await self._check_modal_presence(cdp_client, modal_selector)
+					if modal_check.get('found'):
+						logger.info('✅ Modal opened successfully')
+						return ActionResult(extracted_content=f'Modal opened by clicking: {trigger_selector}')
+					else:
+						return ActionResult(
+							extracted_content='Clicked trigger but modal may not have appeared',
+							error='Modal not detected after trigger',
+						)
+
+				elif action == 'close':
+					# Close modal using specified method
+					if close_method == 'escape':
+						# Try pressing Escape key
+						await cdp_client.send.Input.dispatchKeyEvent(params={'type': 'keyDown', 'key': 'Escape'})
+						await cdp_client.send.Input.dispatchKeyEvent(params={'type': 'keyUp', 'key': 'Escape'})
+						logger.info('🔐 Pressed Escape to close modal')
+
+					elif close_method == 'close_button':
+						# Look for close button
+						close_result = await cdp_client.send.Runtime.evaluate(
+							params={
+								'expression': """
+								(() => {
+									const closeSelectors = [
+										'[aria-label*="close"]', '[aria-label*="Close"]',
+										'button[class*="close"]', '.close', '.modal-close',
+										'[data-dismiss="modal"]', '[data-close]',
+										'.fa-times', '.fa-close', '.icon-close',
+										'button:contains("×")', 'button:contains("✕")',
+										'[role="dialog"] button:last-child'
+									];
+									
+									for (const selector of closeSelectors) {
+										try {
+											let elements;
+											if (selector.includes(':contains(')) {
+												const [baseSelector, textMatch] = selector.split(':contains(');
+												const text = textMatch.replace(/[()'"]/g, '');
+												elements = Array.from(document.querySelectorAll(baseSelector)).filter(el => 
+													el.textContent && el.textContent.includes(text)
+												);
+											} else {
+												elements = document.querySelectorAll(selector);
+											}
+											
+											for (const element of elements) {
+												const rect = element.getBoundingClientRect();
+												if (rect.width > 0 && rect.height > 0) {
+													element.click();
+													return { clicked: true, selector: selector };
+												}
+											}
+										} catch (e) {
+											continue;
+										}
+									}
+									return { clicked: false };
+								})();
+							"""
+							}
+						)
+
+						close_clicked = close_result.get('result', {}).get('value', {}).get('clicked', False)
+						if close_clicked:
+							logger.info('✅ Clicked close button to close modal')
+						else:
+							logger.warning('⚠️ No close button found, trying Escape as fallback')
+							await cdp_client.send.Input.dispatchKeyEvent(params={'type': 'keyDown', 'key': 'Escape'})
+							await cdp_client.send.Input.dispatchKeyEvent(params={'type': 'keyUp', 'key': 'Escape'})
+
+					elif close_method == 'outside_click':
+						# Click outside the modal
+						await cdp_client.send.Runtime.evaluate(
+							params={
+								'expression': """
+								(() => {
+									// Find modal container
+									const modalSelectors = [
+										'[role="dialog"]', '.modal', '.modal-dialog',
+										'[aria-modal="true"]', '.overlay', '.popup'
+									];
+									
+									let modal = null;
+									for (const selector of modalSelectors) {
+										modal = document.querySelector(selector);
+										if (modal) break;
+									}
+									
+									if (modal) {
+										// Click on body outside the modal
+										const rect = modal.getBoundingClientRect();
+										const clickX = Math.max(rect.right + 10, window.innerWidth - 50);
+										const clickY = Math.max(rect.bottom + 10, window.innerHeight - 50);
+										
+										const clickEvent = new MouseEvent('click', {
+											view: window,
+											bubbles: true,
+											cancelable: true,
+											clientX: clickX,
+											clientY: clickY
+										});
+										document.body.dispatchEvent(clickEvent);
+										return { clicked: true };
+									}
+									return { clicked: false };
+								})();
+							"""
+							}
+						)
+						logger.info('🎯 Clicked outside modal to close')
+
+					# Wait for modal to disappear
+					await asyncio.sleep(0.5)
+
+					# Verify modal closed
+					modal_check = await self._check_modal_presence(cdp_client, modal_selector)
+					if not modal_check.get('found'):
+						logger.info('✅ Modal closed successfully')
+						return ActionResult(extracted_content=f'Modal closed using method: {close_method}')
+					else:
+						return ActionResult(
+							extracted_content='Attempted to close modal but it may still be visible',
+							error='Modal still detected after close attempt',
+						)
+
+				elif action == 'wait_for':
+					# Wait for modal to appear
+					logger.info('⏳ Waiting for modal to appear...')
+
+					max_wait = 10  # seconds
+					check_interval = 0.5
+					waited = 0
+
+					while waited < max_wait:
+						modal_check = await self._check_modal_presence(cdp_client, modal_selector)
+						if modal_check.get('found'):
+							logger.info(f'✅ Modal appeared after {waited}s')
+							return ActionResult(
+								extracted_content=f'Modal detected: {modal_check.get("selector", "unknown selector")}'
+							)
+
+						await asyncio.sleep(check_interval)
+						waited += check_interval
+
+					# Timeout
+					logger.warning(f'⏰ Modal did not appear within {max_wait}s')
+					return ActionResult(error=f'Modal did not appear within {max_wait} seconds')
+
+				else:
+					return ActionResult(error=f'Unknown modal action: {action}')
+
+			except Exception as e:
+				logger.error(f'❌ Modal handling failed: {e}')
+				return ActionResult(error=f'Failed to handle modal: {str(e)}')
+
+		async def _check_modal_presence(self, cdp_client, modal_selector: str | None = None):
+			"""Helper method to check if a modal is present."""
+
+			# Define common modal selectors
+			selectors = [
+				modal_selector,  # User-provided selector
+				'[role="dialog"]',
+				'[aria-modal="true"]',
+				'.modal:not(.fade)',
+				'.modal.show',
+				'.modal.in',
+				'.modal-dialog',
+				'.modal-content',
+				'.overlay',
+				'.popup',
+				'.lightbox',
+				'[class*="modal"]:not([class*="hidden"])',
+				'dialog[open]',
+			]
+
+			# Remove None values
+			selectors = [s for s in selectors if s]
+
+			check_result = await cdp_client.send.Runtime.evaluate(
+				params={
+					'expression': f"""
+					(() => {{
+						const selectors = {selectors};
+						
+						for (const selector of selectors) {{
+							try {{
+								const elements = document.querySelectorAll(selector);
+								for (const element of elements) {{
+									const rect = element.getBoundingClientRect();
+									const style = window.getComputedStyle(element);
+									
+									// Check if modal is visible and has reasonable size
+									if (rect.width > 100 && rect.height > 100 && 
+										style.display !== 'none' && 
+										style.visibility !== 'hidden' &&
+										style.opacity !== '0') {{
+										return {{
+											found: true,
+											selector: selector,
+											size: {{ width: rect.width, height: rect.height }},
+											position: {{ x: rect.x, y: rect.y }}
+										}};
+									}}
+								}}
+							}} catch (e) {{
+								continue;
+							}}
+						}}
+						
+						return {{ found: false }};
+					}})();
+				"""
+				}
+			)
+
+			return check_result.get('result', {}).get('value', {'found': False})
+
+		@self.registry.action(
+			'Detect and dismiss blocking popups, overlays, and persistent dialogs',
+			param_model=NoParamsAction,
+		)
+		async def dismiss_popups(params: NoParamsAction, browser_session: BrowserSession):
+			"""Automatically detect and dismiss blocking popups and overlays."""
+
+			try:
+				cdp_client = browser_session.cdp_client
+				dismissed_count = 0
+
+				logger.info('🚫 Scanning for blocking popups and overlays...')
+
+				# Define comprehensive popup/overlay selectors
+				popup_selectors = [
+					# CAPTCHA and security overlays
+					'[class*="captcha"]',
+					'[id*="captcha"]',
+					'[class*="security"]',
+					'[class*="verification"]',
+					# Registration/signup overlays
+					'[class*="register"]',
+					'[class*="signup"]',
+					'[class*="join"]',
+					'[class*="subscribe"]',
+					'[class*="newsletter"]',
+					# Generic overlays
+					'[class*="overlay"]',
+					'[class*="modal"]',
+					'[class*="popup"]',
+					'[class*="lightbox"]',
+					'[class*="dialog"]',
+					# Fixed position blocking elements
+					'[style*="position: fixed"]',
+					'[style*="position:fixed"]',
+					'[style*="z-index: 999"]',
+					'[style*="z-index:999"]',
+					# Specific blocking patterns
+					'.block-overlay',
+					'.blocking-overlay',
+					'.page-overlay',
+					'[aria-modal="true"]',
+					'[role="dialog"]',
+					# Cookie banners (additional patterns)
+					'[class*="cookie"]',
+					'[id*="cookie"]',
+					'[class*="gdpr"]',
+					'[class*="consent"]',
+				]
+
+				dismiss_result = await cdp_client.send.Runtime.evaluate(
+					params={
+						'expression': f"""
+						(() => {{
+							const selectors = {popup_selectors};
+							let dismissedCount = 0;
+							let dismissedItems = [];
+							
+							// Try to dismiss each type of popup
+							for (const selector of selectors) {{
+								try {{
+									const elements = document.querySelectorAll(selector);
+									
+									for (const element of elements) {{
+										const rect = element.getBoundingClientRect();
+										const style = window.getComputedStyle(element);
+										
+										// Check if element is visible and potentially blocking
+										if (rect.width > 200 && rect.height > 100 && 
+											style.display !== 'none' && 
+											style.visibility !== 'hidden' &&
+											style.opacity !== '0' &&
+											(style.position === 'fixed' || style.position === 'absolute')) {{
+											
+											// Try multiple dismissal strategies
+											let dismissed = false;
+											
+											// Strategy 1: Look for close buttons within this element
+											const closeSelectors = [
+												'[aria-label*="close"]', '[aria-label*="Close"]',
+												'.close', '.close-btn', '.modal-close',
+												'[data-dismiss]', '[data-close]',
+												'button:contains("×")', 'button:contains("✕")',
+												'.fa-times', '.fa-close', '.icon-close',
+												'[class*="close"]'
+											];
+											
+											for (const closeSelector of closeSelectors) {{
+												try {{
+													let closeButtons;
+													if (closeSelector.includes(':contains(')) {{
+														const [baseSelector, textMatch] = closeSelector.split(':contains(');
+														const text = textMatch.replace(/[()'"]/g, '');
+														closeButtons = Array.from(element.querySelectorAll(baseSelector)).filter(btn => 
+															btn.textContent && btn.textContent.includes(text)
+														);
+													}} else {{
+														closeButtons = element.querySelectorAll(closeSelector);
+													}}
+													
+													if (closeButtons.length > 0) {{
+														closeButtons[0].click();
+														dismissed = true;
+														dismissedCount++;
+														dismissedItems.push({{
+															selector: selector,
+															method: 'close_button',
+															text: element.textContent.substring(0, 50)
+														}});
+														break;
+													}}
+												}} catch (e) {{
+													continue;
+												}}
+											}}
+											
+											// Strategy 2: Try clicking outside the popup
+											if (!dismissed) {{
+												try {{
+													const clickX = Math.max(rect.right + 10, window.innerWidth - 50);
+													const clickY = Math.max(rect.bottom + 10, window.innerHeight - 50);
+													
+													const clickEvent = new MouseEvent('click', {{
+														view: window,
+														bubbles: true,
+														cancelable: true,
+														clientX: clickX,
+														clientY: clickY
+													}});
+													document.body.dispatchEvent(clickEvent);
+													dismissed = true;
+													dismissedCount++;
+													dismissedItems.push({{
+														selector: selector,
+														method: 'outside_click',
+														text: element.textContent.substring(0, 50)
+													}});
+												}} catch (e) {{
+													// Ignore outside click errors
+												}}
+											}}
+											
+											// Strategy 3: Try hiding the element directly
+											if (!dismissed) {{
+												try {{
+													element.style.display = 'none';
+													element.style.visibility = 'hidden';
+													dismissed = true;
+													dismissedCount++;
+													dismissedItems.push({{
+														selector: selector,
+														method: 'force_hide',
+														text: element.textContent.substring(0, 50)
+													}});
+												}} catch (e) {{
+													// Ignore direct hiding errors
+												}}
+											}}
+										}}
+									}}
+								}} catch (e) {{
+									continue; // Try next selector
+								}}
+							}}
+							
+							// Also try pressing Escape key as a general dismissal
+							try {{
+								const escapeEvent = new KeyboardEvent('keydown', {{ key: 'Escape', code: 'Escape' }});
+								document.dispatchEvent(escapeEvent);
+								if (dismissedCount === 0) {{
+									dismissedItems.push({{
+										selector: 'keyboard',
+										method: 'escape_key',
+										text: 'Escape key pressed'
+									}});
+									dismissedCount = 1;
+								}}
+							}} catch (e) {{
+								// Ignore escape key errors
+							}}
+							
+							return {{
+								dismissedCount: dismissedCount,
+								items: dismissedItems,
+								timestamp: Date.now()
+							}};
+						}})();
+					"""
+					}
+				)
+
+				result = dismiss_result.get('result', {}).get('value', {})
+				dismissed_count = result.get('dismissedCount', 0)
+				dismissed_items = result.get('items', [])
+
+				if dismissed_count > 0:
+					logger.info(f'✅ Dismissed {dismissed_count} popup(s)/overlay(s)')
+
+					# Wait for UI to settle after dismissals
+					await asyncio.sleep(1.0)
+
+					# Create summary of what was dismissed
+					summary = []
+					for item in dismissed_items:
+						summary.append(
+							f'{item.get("method", "unknown")} on {item.get("selector", "unknown")}: {item.get("text", "")[:30]}'
+						)
+
+					return ActionResult(
+						extracted_content=f'Successfully dismissed {dismissed_count} blocking elements: {"; ".join(summary)}'
+					)
+				else:
+					logger.info('ℹ️ No blocking popups or overlays detected')
+					return ActionResult(extracted_content='No blocking popups or overlays found on current page')
+
+			except Exception as e:
+				logger.error(f'❌ Popup dismissal failed: {e}')
+				return ActionResult(error=f'Failed to dismiss popups: {str(e)}')
