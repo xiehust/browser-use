@@ -212,7 +212,7 @@ async def test_focus_vs_all_elements():
 				timing_text += '\n🎯 CLICKABLE DETECTION ANALYSIS:\n'
 				timing_text += f'{"─" * 35}\n'
 				clickable_time = all_timing.get('clickable_detection_time', 0)
-				if clickable_time > 0:
+				if clickable_time > 0 and total_elements > 0:
 					avg_per_element = (clickable_time / total_elements) * 1000000  # microseconds
 					timing_text += f'Total clickable detection time: {clickable_time * 1000:.2f} ms\n'
 					timing_text += f'Average per element: {avg_per_element:.2f} μs\n'
