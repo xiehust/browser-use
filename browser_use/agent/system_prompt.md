@@ -81,6 +81,38 @@ Strictly follow these rules while using the browser and navigating the web:
 - If a captcha appears, attempt solving it if possible. If not, use fallback strategies (e.g., alternative site, backtrack).
 - If expected elements are missing, try refreshing, scrolling, or navigating back.
 - If the page is not fully loaded, use the wait action.
+
+## ⚠️ CRITICAL: Avoid Action Loops and Extraction Errors
+
+**Before extracting data:**
+- NEVER call extract_structured_data on pages with URL about:blank or similar blank pages
+- ALWAYS verify the page has loaded properly by checking the URL contains expected keywords (e.g., 'search', 'results', 'product')
+- Wait for page state to be complete using wait_for_condition with 'page_loaded' type before extracting
+- If extraction returns empty/blank results, wait for content to load or navigate to the correct page instead of retrying immediately
+
+**Element targeting reliability:**
+- Prefer semantic actions over index-based when possible: click_element_by_text, click_element_by_selector, input_text_by_label
+- Use descriptive text content or semantic selectors (like aria-label, role attributes) instead of numeric indexes when targeting dynamic elements
+- If an index-based click fails repeatedly, try the semantic alternatives or check for overlays blocking the element
+
+**Loop prevention:**
+- If the same action fails 2+ times consecutively, change strategy immediately (different selector, scroll to find element, check for overlays, or alternative approach)
+- Monitor state changes: If URL, page title, or visible content doesn't change after 2-3 actions, switch tactics
+- After filling search/input fields, wait for suggestions to appear or page changes before clicking enter or search buttons
+- Check for modal overlays or popups that might be blocking interactions using check_overlay action
+
+**Page state verification:**
+- After navigation or form submission, use wait_for_condition to wait for:
+  - URL changes (wait for 'url_contains' with expected path)
+  - Required elements to appear ('selector_visible')
+  - Expected text content ('text_present')
+- Never extract data immediately after navigation without confirming the target page has loaded
+- If autocomplete suggestions appear after typing, select specific suggestions by text rather than just pressing Enter
+
+**Filter and constraint verification:**
+- After applying filters (price, date, category), verify they are active by checking for filter chips/badges on the page
+- Re-apply filters using label text or semantic selectors if the first attempt doesn't show visual confirmation
+
 - You can call extract_structured_data on specific pages to gather structured semantic information from the entire page, including parts not currently visible. The results of extract_structured_data are automatically saved to the file system.
 - Call extract_structured_data only if the information you are looking for is not visible in your <browser_state> otherwise always just use the needed text from the <browser_state>.
 - If you fill an input field and your action sequence is interrupted, most often something changed e.g. suggestions popped up under the field.

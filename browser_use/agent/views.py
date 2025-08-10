@@ -87,6 +87,18 @@ class AgentStepInfo:
 		return self.step_number >= self.max_steps - 1
 
 
+# State tracking for loop detection
+class AgentStateFingerprint(BaseModel):
+	"""Captures key state indicators to detect when actions aren't making progress"""
+
+	url: str = Field(description='Current page URL')
+	title: str = Field(description='Current page title')
+	visible_text_hash: str = Field(description='Hash of key visible text on page')
+	dom_element_count: int = Field(description='Number of interactive elements')
+	last_action: str = Field(description='Description of the last action taken')
+	timestamp: float = Field(description='When this state was captured')
+
+
 class ActionResult(BaseModel):
 	"""Result of executing an action"""
 

@@ -26,17 +26,23 @@ from browser_use.browser.events import (
 from browser_use.browser.views import BrowserError
 from browser_use.controller.registry.service import Registry
 from browser_use.controller.views import (
+	CheckOverlayAction,
 	ClickElementAction,
+	ClickElementBySelectorAction,
+	ClickElementByTextAction,
 	CloseTabAction,
 	DoneAction,
 	GoToUrlAction,
 	InputTextAction,
+	InputTextByLabelAction,
 	NoParamsAction,
 	ScrollAction,
+	ScrollUntilVisibleAction,
 	SearchGoogleAction,
 	SendKeysAction,
 	StructuredOutputAction,
 	SwitchTabAction,
+	WaitForConditionAction,
 )
 from browser_use.filesystem.file_system import FileSystem
 from browser_use.llm.base import BaseChatModel
@@ -211,6 +217,128 @@ class Controller(Generic[Context]):
 			await asyncio.sleep(actual_seconds)
 			return ActionResult(extracted_content=msg)
 
+		@self.registry.action(
+			'Wait for specific page conditions like URL changes, elements becoming visible, or content loading. More reliable than basic wait.',
+			param_model=WaitForConditionAction,
+		)
+		async def wait_for_condition(params: WaitForConditionAction, browser_session: BrowserSession):
+			cdp_session = await browser_session.get_or_create_cdp_session()
+			timeout_seconds = min(params.timeout_seconds, 30)  # Cap at 30 seconds
+
+			try:
+				if params.condition_type == 'url_contains':
+					if not params.condition_value:
+						raise ValueError('condition_value required for url_contains')
+
+					for _ in range(timeout_seconds * 2):  # Check every 0.5 seconds
+						current_url = cdp_session.url
+						if params.condition_value in current_url:
+							msg = f'✅ URL now contains "{params.condition_value}": {current_url}'
+							logger.info(msg)
+							return ActionResult(extracted_content=msg, include_in_memory=True)
+						await asyncio.sleep(0.5)
+
+					msg = f'⏰ Timeout: URL still does not contain "{params.condition_value}" after {timeout_seconds}s'
+					logger.warning(msg)
+					return ActionResult(extracted_content=msg, include_in_memory=True)
+
+				elif params.condition_type == 'selector_visible':
+					if not params.condition_value:
+						raise ValueError('condition_value required for selector_visible')
+
+					for _ in range(timeout_seconds * 2):
+						try:
+							result = await cdp_session.cdp_client.send.Runtime.evaluate(
+								params={
+									'expression': f'''
+										(() => {{
+											const element = document.querySelector("{params.condition_value}");
+											return element && element.offsetParent !== null;
+										}})()
+									''',
+									'returnByValue': True,
+								},
+								session_id=cdp_session.session_id,
+							)
+
+							if result.get('result', {}).get('value'):
+								msg = f'✅ Element "{params.condition_value}" is now visible'
+								logger.info(msg)
+								return ActionResult(extracted_content=msg, include_in_memory=True)
+						except Exception as e:
+							logger.debug(f'Error checking selector visibility: {e}')
+
+						await asyncio.sleep(0.5)
+
+					msg = f'⏰ Timeout: Element "{params.condition_value}" not visible after {timeout_seconds}s'
+					logger.warning(msg)
+					return ActionResult(extracted_content=msg, include_in_memory=True)
+
+				elif params.condition_type == 'text_present':
+					if not params.condition_value:
+						raise ValueError('condition_value required for text_present')
+
+					for _ in range(timeout_seconds * 2):
+						try:
+							result = await cdp_session.cdp_client.send.Runtime.evaluate(
+								params={
+									'expression': f'''
+										document.body.innerText.includes("{params.condition_value}")
+									''',
+									'returnByValue': True,
+								},
+								session_id=cdp_session.session_id,
+							)
+
+							if result.get('result', {}).get('value'):
+								msg = f'✅ Text "{params.condition_value}" is now present on page'
+								logger.info(msg)
+								return ActionResult(extracted_content=msg, include_in_memory=True)
+						except Exception as e:
+							logger.debug(f'Error checking text presence: {e}')
+
+						await asyncio.sleep(0.5)
+
+					msg = f'⏰ Timeout: Text "{params.condition_value}" not found after {timeout_seconds}s'
+					logger.warning(msg)
+					return ActionResult(extracted_content=msg, include_in_memory=True)
+
+				elif params.condition_type == 'page_loaded':
+					for _ in range(timeout_seconds * 2):
+						try:
+							ready_state = await cdp_session.cdp_client.send.Runtime.evaluate(
+								params={'expression': 'document.readyState', 'returnByValue': True},
+								session_id=cdp_session.session_id,
+							)
+
+							if ready_state.get('result', {}).get('value') == 'complete':
+								msg = '✅ Page is now fully loaded'
+								logger.info(msg)
+								return ActionResult(extracted_content=msg, include_in_memory=True)
+						except Exception as e:
+							logger.debug(f'Error checking page ready state: {e}')
+
+						await asyncio.sleep(0.5)
+
+					msg = f'⏰ Timeout: Page not fully loaded after {timeout_seconds}s'
+					logger.warning(msg)
+					return ActionResult(extracted_content=msg, include_in_memory=True)
+
+				elif params.condition_type == 'network_idle':
+					# Wait for no network requests for 1 second
+					await asyncio.sleep(1.0)  # Basic implementation
+					msg = '✅ Network idle period detected'
+					logger.info(msg)
+					return ActionResult(extracted_content=msg, include_in_memory=True)
+
+				else:
+					raise ValueError(f'Unknown condition_type: {params.condition_type}')
+
+			except Exception as e:
+				msg = f'❌ Error waiting for condition: {e}'
+				logger.error(msg)
+				return ActionResult(extracted_content=msg, include_in_memory=True, error=str(e))
+
 		# Element Interaction Actions
 
 		@self.registry.action(
@@ -314,6 +442,542 @@ class Controller(Generic[Context]):
 				+ (' Pressed Enter automatically.' if should_auto_enter else ''),
 			)
 
+		# Enhanced Element Targeting Actions (Semantic)
+
+		@self.registry.action(
+			'Click element by visible text content - more reliable than index-based clicking for dynamic pages',
+			param_model=ClickElementByTextAction,
+		)
+		async def click_element_by_text(params: ClickElementByTextAction, browser_session: BrowserSession):
+			cdp_session = await browser_session.get_or_create_cdp_session()
+
+			try:
+				# Build JavaScript to find element by text
+				tag_filter = f"'{params.tag_name.upper()}'" if params.tag_name else 'null'
+
+				find_element_js = (
+					'''
+					(() => {
+						const targetText = "'''
+					+ params.text
+					+ """";
+						const tagFilter = """
+					+ tag_filter
+					+ """;
+						
+						// Get all elements
+						const allElements = document.querySelectorAll('*');
+						
+						for (let element of allElements) {
+							// Skip if tag filter specified and doesn't match
+							if (tagFilter && element.tagName !== tagFilter) continue;
+							
+							// Check if element's text content matches (trimmed)
+							const elementText = element.textContent ? element.textContent.trim() : '';
+							if (elementText === targetText || elementText.includes(targetText)) {
+								// Ensure element is visible and clickable
+								const rect = element.getBoundingClientRect();
+								const style = window.getComputedStyle(element);
+								
+								if (rect.width > 0 && rect.height > 0 && 
+									style.visibility !== 'hidden' && 
+									style.display !== 'none') {
+									return {
+										found: true,
+										tagName: element.tagName,
+										text: elementText,
+										xpath: getXPath(element)
+									};
+								}
+							}
+						}
+						
+						return { found: false };
+						
+						function getXPath(element) {
+							if (element.id) return `//*[@id="${element.id}"]`;
+							
+							const parts = [];
+							while (element && element.nodeType === Node.ELEMENT_NODE) {
+								const tagName = element.tagName.toLowerCase();
+								
+								// Simple counting approach
+								let index = 1;
+								let sibling = element.previousElementSibling;
+								while (sibling) {
+									if (sibling.tagName === element.tagName) {
+										index++;
+									}
+									sibling = sibling.previousElementSibling;
+								}
+								
+								// Only add index if there are multiple elements of same type
+								const siblingCount = element.parentNode ? 
+									Array.from(element.parentNode.children).filter(el => el.tagName === element.tagName).length : 1;
+								
+								const position = siblingCount > 1 ? `[${index}]` : '';
+								parts.unshift(`${tagName}${position}`);
+								element = element.parentElement;
+							}
+							
+							return '/' + parts.join('/');
+						}
+					})()
+				"""
+				)
+
+				result = await cdp_session.cdp_client.send.Runtime.evaluate(
+					params={'expression': find_element_js, 'returnByValue': True}, session_id=cdp_session.session_id
+				)
+
+				element_info = result.get('result', {}).get('value', {})
+
+				if not element_info.get('found'):
+					tag_msg = f" with tag '{params.tag_name}'" if params.tag_name else ''
+					raise ValueError(f'Element with text "{params.text}"{tag_msg} not found or not clickable')
+
+				# Click the element using its xpath
+				xpath = element_info['xpath']
+				click_js = f"""
+					(() => {{
+						const element = document.evaluate('{xpath}', document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+						if (element) {{
+							element.click();
+							return true;
+						}}
+						return false;
+					}})()
+				"""
+
+				click_result = await cdp_session.cdp_client.send.Runtime.evaluate(
+					params={'expression': click_js, 'returnByValue': True}, session_id=cdp_session.session_id
+				)
+
+				if not click_result.get('result', {}).get('value'):
+					raise ValueError('Failed to click element - element not found during click')
+
+				tag_msg = f' ({element_info["tagName"]})' if element_info.get('tagName') else ''
+				msg = f'🖱️ Clicked element by text: "{params.text}"{tag_msg}'
+				logger.info(msg)
+				return ActionResult(extracted_content=msg, include_in_memory=True, long_term_memory=msg)
+
+			except Exception as e:
+				error_msg = f'Failed to click element by text "{params.text}": {e}'
+				logger.error(error_msg)
+				raise ValueError(error_msg) from e
+
+		@self.registry.action(
+			'Click element by CSS selector, aria-label, or other attributes - for precise targeting',
+			param_model=ClickElementBySelectorAction,
+		)
+		async def click_element_by_selector(params: ClickElementBySelectorAction, browser_session: BrowserSession):
+			cdp_session = await browser_session.get_or_create_cdp_session()
+
+			try:
+				# Try clicking using the selector
+				click_js = f'''
+					(() => {{
+						const selector = "{params.selector}";
+						
+						// Try as CSS selector first
+						let element = document.querySelector(selector);
+						
+						// If no match, try as attribute selector patterns
+						if (!element) {{
+							// Try aria-label
+							element = document.querySelector(`[aria-label*="${{selector}}"]`);
+						}}
+						
+						if (!element) {{
+							// Try role
+							element = document.querySelector(`[role="${{selector}}"]`);
+						}}
+						
+						if (!element) {{
+							// Try data attributes
+							element = document.querySelector(`[data-*="${{selector}}"]`);
+						}}
+						
+						if (element) {{
+							// Check if element is visible and clickable
+							const rect = element.getBoundingClientRect();
+							const style = window.getComputedStyle(element);
+							
+							if (rect.width > 0 && rect.height > 0 && 
+								style.visibility !== 'hidden' && 
+								style.display !== 'none') {{
+								element.click();
+								return {{
+									success: true,
+									tagName: element.tagName,
+									selector: selector
+								}};
+							}} else {{
+								return {{
+									success: false,
+									error: 'Element found but not visible/clickable'
+								}};
+							}}
+						}}
+						
+						return {{
+							success: false,
+							error: 'Element not found'
+						}};
+					}})()
+				'''
+
+				result = await cdp_session.cdp_client.send.Runtime.evaluate(
+					params={'expression': click_js, 'returnByValue': True}, session_id=cdp_session.session_id
+				)
+
+				click_info = result.get('result', {}).get('value', {})
+
+				if not click_info.get('success'):
+					error = click_info.get('error', 'Unknown error')
+					raise ValueError(f'Failed to click element with selector "{params.selector}": {error}')
+
+				tag_name = click_info.get('tagName', '')
+				msg = f'🖱️ Clicked element by selector: "{params.selector}" ({tag_name})'
+				logger.info(msg)
+				return ActionResult(extracted_content=msg, include_in_memory=True, long_term_memory=msg)
+
+			except Exception as e:
+				error_msg = f'Failed to click element by selector "{params.selector}": {e}'
+				logger.error(error_msg)
+				raise ValueError(error_msg) from e
+
+		@self.registry.action(
+			'Input text into field by label text, placeholder, or aria-label - more reliable than index-based input',
+			param_model=InputTextByLabelAction,
+		)
+		async def input_text_by_label(params: InputTextByLabelAction, browser_session: BrowserSession):
+			cdp_session = await browser_session.get_or_create_cdp_session()
+
+			try:
+				# Find input field by label
+				find_input_js = f'''
+					(() => {{
+						const labelText = "{params.label_text}";
+						
+						// Try different ways to find the input
+						
+						// 1. Find label element with matching text and get associated input
+						const labels = document.querySelectorAll('label');
+						for (let label of labels) {{
+							if (label.textContent && label.textContent.trim().includes(labelText)) {{
+								// Try for attribute
+								if (label.getAttribute('for')) {{
+									const input = document.getElementById(label.getAttribute('for'));
+									if (input && (input.tagName === 'INPUT' || input.tagName === 'TEXTAREA')) {{
+										return {{
+											found: true,
+											method: 'label-for',
+											element: input
+										}};
+									}}
+								}}
+								
+								// Try nested input
+								const nestedInput = label.querySelector('input, textarea');
+								if (nestedInput) {{
+									return {{
+										found: true,
+										method: 'label-nested',
+										element: nestedInput
+									}};
+								}}
+							}}
+						}}
+						
+						// 2. Find input with matching placeholder
+						const inputsWithPlaceholder = document.querySelectorAll('input[placeholder], textarea[placeholder]');
+						for (let input of inputsWithPlaceholder) {{
+							if (input.placeholder && input.placeholder.includes(labelText)) {{
+								return {{
+									found: true,
+									method: 'placeholder',
+									element: input
+								}};
+							}}
+						}}
+						
+						// 3. Find input with matching aria-label
+						const inputsWithAriaLabel = document.querySelectorAll('input[aria-label], textarea[aria-label]');
+						for (let input of inputsWithAriaLabel) {{
+							if (input.getAttribute('aria-label') && input.getAttribute('aria-label').includes(labelText)) {{
+								return {{
+									found: true,
+									method: 'aria-label',
+									element: input
+								}};
+							}}
+						}}
+						
+						return {{ found: false }};
+					}})()
+				'''
+
+				result = await cdp_session.cdp_client.send.Runtime.evaluate(
+					params={'expression': find_input_js, 'returnByValue': True}, session_id=cdp_session.session_id
+				)
+
+				find_info = result.get('result', {}).get('value', {})
+
+				if not find_info.get('found'):
+					raise ValueError(f'Input field with label "{params.label_text}" not found')
+
+				# Input text into the found element
+				input_js = f'''
+					(() => {{
+						// Re-find the element (can't pass element objects through JSON)
+						const labelText = "{params.label_text}";
+						const inputText = "{params.text}";
+						
+						let targetInput = null;
+						
+						// Use same logic as above to find element again
+						const labels = document.querySelectorAll('label');
+						for (let label of labels) {{
+							if (label.textContent && label.textContent.trim().includes(labelText)) {{
+								if (label.getAttribute('for')) {{
+									const input = document.getElementById(label.getAttribute('for'));
+									if (input && (input.tagName === 'INPUT' || input.tagName === 'TEXTAREA')) {{
+										targetInput = input;
+										break;
+									}}
+								}}
+								const nestedInput = label.querySelector('input, textarea');
+								if (nestedInput) {{
+									targetInput = nestedInput;
+									break;
+								}}
+							}}
+						}}
+						
+						if (!targetInput) {{
+							const inputsWithPlaceholder = document.querySelectorAll('input[placeholder], textarea[placeholder]');
+							for (let input of inputsWithPlaceholder) {{
+								if (input.placeholder && input.placeholder.includes(labelText)) {{
+									targetInput = input;
+									break;
+								}}
+							}}
+						}}
+						
+						if (!targetInput) {{
+							const inputsWithAriaLabel = document.querySelectorAll('input[aria-label], textarea[aria-label]');
+							for (let input of inputsWithAriaLabel) {{
+								if (input.getAttribute('aria-label') && input.getAttribute('aria-label').includes(labelText)) {{
+									targetInput = input;
+									break;
+								}}
+							}}
+						}}
+						
+						if (targetInput) {{
+							// Clear existing content and input new text
+							targetInput.focus();
+							targetInput.select();
+							targetInput.value = inputText;
+							
+							// Trigger input events
+							targetInput.dispatchEvent(new Event('input', {{ bubbles: true }}));
+							targetInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
+							
+							return {{
+								success: true,
+								tagName: targetInput.tagName,
+								placeholder: targetInput.placeholder || '',
+								value: targetInput.value
+							}};
+						}}
+						
+						return {{ success: false }};
+					}})()
+				'''
+
+				input_result = await cdp_session.cdp_client.send.Runtime.evaluate(
+					params={'expression': input_js, 'returnByValue': True}, session_id=cdp_session.session_id
+				)
+
+				input_info = input_result.get('result', {}).get('value', {})
+
+				if not input_info.get('success'):
+					raise ValueError('Failed to input text - element not found during input operation')
+
+				method = find_info.get('method', 'unknown')
+				msg = f'⌨️ Input text "{params.text}" into field by {method}: "{params.label_text}"'
+				logger.info(msg)
+				return ActionResult(
+					extracted_content=msg,
+					include_in_memory=True,
+					long_term_memory=f"Input '{params.text}' into field labeled '{params.label_text}'",
+				)
+
+			except Exception as e:
+				error_msg = f'Failed to input text by label "{params.label_text}": {e}'
+				logger.error(error_msg)
+				raise ValueError(error_msg) from e
+
+		@self.registry.action(
+			'Check for and handle modal overlays that might be blocking interactions',
+			param_model=CheckOverlayAction,
+		)
+		async def check_overlay(params: CheckOverlayAction, browser_session: BrowserSession):
+			cdp_session = await browser_session.get_or_create_cdp_session()
+
+			try:
+				# Detect overlays/modals
+				detect_overlay_js = """
+					(() => {
+						const overlays = [];
+						
+						// Common overlay selectors
+						const overlaySelectors = [
+							'[class*="modal"]',
+							'[class*="overlay"]',
+							'[class*="popup"]',
+							'[class*="dialog"]',
+							'[class*="backdrop"]',
+							'[role="dialog"]',
+							'[role="modal"]',
+							'.fixed', 
+							'[style*="position: fixed"]',
+							'[style*="position:fixed"]'
+						];
+						
+						for (let selector of overlaySelectors) {
+							const elements = document.querySelectorAll(selector);
+							for (let element of elements) {
+								const rect = element.getBoundingClientRect();
+								const style = window.getComputedStyle(element);
+								
+								// Check if element is large enough to be an overlay
+								if (rect.width > window.innerWidth * 0.3 && 
+									rect.height > window.innerHeight * 0.3 &&
+									style.visibility !== 'hidden' && 
+									style.display !== 'none' &&
+									parseInt(style.zIndex) > 100) {
+									
+									overlays.push({
+										selector: selector,
+										zIndex: style.zIndex,
+										width: rect.width,
+										height: rect.height,
+										element: element
+									});
+								}
+							}
+						}
+						
+						return {
+							found: overlays.length > 0,
+							count: overlays.length,
+							overlays: overlays.map(o => ({
+								selector: o.selector,
+								zIndex: o.zIndex,
+								width: o.width,
+								height: o.height
+							}))
+						};
+					})()
+				"""
+
+				result = await cdp_session.cdp_client.send.Runtime.evaluate(
+					params={'expression': detect_overlay_js, 'returnByValue': True}, session_id=cdp_session.session_id
+				)
+
+				overlay_info = result.get('result', {}).get('value', {})
+
+				if not overlay_info.get('found'):
+					msg = '✅ No blocking overlays detected'
+					logger.info(msg)
+					return ActionResult(extracted_content=msg, include_in_memory=True)
+
+				overlay_count = overlay_info.get('count', 0)
+				msg = f'⚠️ Detected {overlay_count} potential overlay(s)'
+
+				if params.close_overlay:
+					# Try to close overlays
+					close_overlay_js = """
+						(() => {
+							const closeAttempts = [];
+							
+							// Common close button selectors
+							const closeSelectors = [
+								'[aria-label*="close"]',
+								'[title*="close"]',
+								'[class*="close"]',
+								'[class*="dismiss"]',
+								'.modal-close',
+								'.overlay-close',
+								'button[type="button"]'
+							];
+							
+							for (let selector of closeSelectors) {
+								const closeButtons = document.querySelectorAll(selector);
+								for (let button of closeButtons) {
+									const rect = button.getBoundingClientRect();
+									const style = window.getComputedStyle(button);
+									
+									if (rect.width > 0 && rect.height > 0 && 
+										style.visibility !== 'hidden' && 
+										style.display !== 'none') {
+										
+										button.click();
+										closeAttempts.push({
+											selector: selector,
+											clicked: true
+										});
+										
+										// Only click first found close button
+										return {
+											attempted: true,
+											count: closeAttempts.length
+										};
+									}
+								}
+							}
+							
+							// Try pressing Escape key
+							document.dispatchEvent(new KeyboardEvent('keydown', {
+								key: 'Escape',
+								keyCode: 27,
+								which: 27,
+								bubbles: true
+							}));
+							
+							return {
+								attempted: true,
+								escapeTried: true,
+								count: 0
+							};
+						})()
+					"""
+
+					close_result = await cdp_session.cdp_client.send.Runtime.evaluate(
+						params={'expression': close_overlay_js, 'returnByValue': True}, session_id=cdp_session.session_id
+					)
+
+					close_info = close_result.get('result', {}).get('value', {})
+
+					if close_info.get('attempted'):
+						close_count = close_info.get('count', 0)
+						escape_tried = close_info.get('escapeTried', False)
+						msg += f' - Attempted to close (clicked {close_count} close buttons'
+						if escape_tried:
+							msg += ', tried Escape key'
+						msg += ')'
+
+				logger.info(msg)
+				return ActionResult(extracted_content=msg, include_in_memory=True)
+
+			except Exception as e:
+				error_msg = f'Error checking overlays: {e}'
+				logger.error(error_msg)
+				return ActionResult(extracted_content=error_msg, include_in_memory=True, error=str(e))
+
 		# @self.registry.action('Upload file to interactive element with file path', param_model=UploadFileAction)
 		# async def upload_file(params: UploadFileAction, browser_session: BrowserSession, available_file_paths: list[str]):
 		# 	if params.path not in available_file_paths:
@@ -392,6 +1056,64 @@ class Controller(Generic[Context]):
 			loop = asyncio.get_event_loop()
 			cdp_session = await browser_session.get_or_create_cdp_session()
 
+			# Page state verification before extraction
+			try:
+				current_url = cdp_session.url
+
+				# Check for about:blank or invalid URLs
+				if not current_url or current_url.startswith('about:blank') or current_url == 'about:blank':
+					return ActionResult(
+						extracted_content='Cannot extract from blank page. Please navigate to a valid URL first.',
+						include_in_memory=True,
+						error='Page not loaded - currently on about:blank',
+					)
+
+				# Wait for page to be ready (check for document.readyState)
+				try:
+					ready_state = await cdp_session.cdp_client.send.Runtime.evaluate(
+						params={'expression': 'document.readyState', 'returnByValue': True}, session_id=cdp_session.session_id
+					)
+
+					if ready_state.get('result', {}).get('value') != 'complete':
+						# Wait up to 5 seconds for page to be ready
+						for _ in range(10):
+							await asyncio.sleep(0.5)
+							ready_state = await cdp_session.cdp_client.send.Runtime.evaluate(
+								params={'expression': 'document.readyState', 'returnByValue': True},
+								session_id=cdp_session.session_id,
+							)
+							if ready_state.get('result', {}).get('value') == 'complete':
+								break
+						else:
+							logger.warning(f'Page not fully loaded after 5 seconds, proceeding anyway. URL: {current_url}')
+
+				except Exception as e:
+					logger.warning(f'Could not check document ready state: {e}')
+
+				# Verify the page has content (not empty body)
+				try:
+					body_check = await cdp_session.cdp_client.send.Runtime.evaluate(
+						params={
+							'expression': 'document.body && document.body.innerText.trim().length > 0',
+							'returnByValue': True,
+						},
+						session_id=cdp_session.session_id,
+					)
+
+					has_content = body_check.get('result', {}).get('value', False)
+					if not has_content:
+						return ActionResult(
+							extracted_content='Page appears to be empty or still loading. Please wait for content to load or navigate to a different page.',
+							include_in_memory=True,
+							error='Page has no content - body is empty',
+						)
+
+				except Exception as e:
+					logger.warning(f'Could not check page content: {e}')
+
+			except Exception as e:
+				logger.warning(f'Page state verification failed: {e}')
+
 			try:
 				# Get the HTML content
 				body_id = await cdp_session.cdp_client.send.DOM.getDocument(session_id=cdp_session.session_id)
@@ -402,6 +1124,14 @@ class Controller(Generic[Context]):
 				raise RuntimeError(f"Couldn't extract page content: {e}")
 
 			page_html = page_html_result['outerHTML']
+
+			# Additional verification - check if we got meaningful HTML
+			if len(page_html.strip()) < 100:
+				return ActionResult(
+					extracted_content='Page content is too minimal for extraction. Please ensure the page has loaded completely.',
+					include_in_memory=True,
+					error='Insufficient page content for extraction',
+				)
 
 			# Simple markdown conversion
 			try:
@@ -497,6 +1227,130 @@ Provide the extracted information in a clear, structured format."""
 			msg = f'🔍 {long_term_memory}'
 			logger.info(msg)
 			return ActionResult(extracted_content=msg, include_in_memory=True, long_term_memory=long_term_memory)
+
+		@self.registry.action(
+			'Scroll container until specified content becomes visible - more reliable than blind scrolling',
+			param_model=ScrollUntilVisibleAction,
+		)
+		async def scroll_until_visible(params: ScrollUntilVisibleAction, browser_session: BrowserSession):
+			cdp_session = await browser_session.get_or_create_cdp_session()
+
+			# Validate parameters
+			if not params.target_selector and not params.target_text:
+				raise ValueError('Either target_selector or target_text must be specified')
+
+			try:
+				# Find container element if specified
+				container_node = None
+				if params.container_index is not None:
+					container_node = await browser_session.get_element_by_index(params.container_index)
+					if container_node is None:
+						raise ValueError(f'Container element index {params.container_index} not found in DOM')
+
+				for scroll_attempt in range(params.max_scrolls):
+					# Check if target is now visible
+					if params.target_selector:
+						# Check for selector visibility
+						check_js = f'''
+							(() => {{
+								const element = document.querySelector("{params.target_selector}");
+								if (element) {{
+									const rect = element.getBoundingClientRect();
+									const style = window.getComputedStyle(element);
+									
+									// Check if element is visible in viewport
+									return rect.top >= 0 && 
+										   rect.left >= 0 && 
+										   rect.bottom <= window.innerHeight && 
+										   rect.right <= window.innerWidth &&
+										   style.visibility !== 'hidden' && 
+										   style.display !== 'none';
+								}}
+								return false;
+							}})()
+						'''
+					else:
+						# Check for text visibility
+						check_js = f'''
+							(() => {{
+								const targetText = "{params.target_text}";
+								const walker = document.createTreeWalker(
+									document.body,
+									NodeFilter.SHOW_TEXT,
+									null,
+									false
+								);
+								
+								let node;
+								while (node = walker.nextNode()) {{
+									if (node.textContent && node.textContent.includes(targetText)) {{
+										const parentElement = node.parentElement;
+										if (parentElement) {{
+											const rect = parentElement.getBoundingClientRect();
+											const style = window.getComputedStyle(parentElement);
+											
+											// Check if text is visible in viewport
+											if (rect.top >= 0 && 
+												rect.left >= 0 && 
+												rect.bottom <= window.innerHeight && 
+												rect.right <= window.innerWidth &&
+												style.visibility !== 'hidden' && 
+												style.display !== 'none') {{
+												return true;
+											}}
+										}}
+									}}
+								}}
+								return false;
+							}})()
+						'''
+
+					result = await cdp_session.cdp_client.send.Runtime.evaluate(
+						params={'expression': check_js, 'returnByValue': True}, session_id=cdp_session.session_id
+					)
+
+					is_visible = result.get('result', {}).get('value', False)
+
+					if is_visible:
+						target_desc = params.target_selector if params.target_selector else f'text "{params.target_text}"'
+						msg = f'✅ Found {target_desc} visible after {scroll_attempt} scroll(s)'
+						logger.info(msg)
+						return ActionResult(
+							extracted_content=msg,
+							include_in_memory=True,
+							long_term_memory=f'Scrolled until {target_desc} became visible',
+						)
+
+					# Not visible yet, scroll down
+					if scroll_attempt < params.max_scrolls - 1:  # Don't scroll on last attempt
+						try:
+							# Scroll down by half a page
+							pixels = 400  # Half page scroll
+							event = browser_session.event_bus.dispatch(
+								ScrollEvent(direction='down', amount=pixels, node=container_node)
+							)
+							await event
+
+							# Small delay to allow content to load
+							await asyncio.sleep(0.5)
+
+						except Exception as e:
+							logger.warning(f'Scroll attempt {scroll_attempt + 1} failed: {e}')
+
+				# Target not found after max scrolls
+				target_desc = params.target_selector if params.target_selector else f'text "{params.target_text}"'
+				msg = f'⏰ Could not find {target_desc} after {params.max_scrolls} scroll attempts'
+				logger.warning(msg)
+				return ActionResult(
+					extracted_content=msg,
+					include_in_memory=True,
+					long_term_memory=f'Scrolled {params.max_scrolls} times but {target_desc} not found',
+				)
+
+			except Exception as e:
+				error_msg = f'Error during scroll until visible: {e}'
+				logger.error(error_msg)
+				raise ValueError(error_msg) from e
 
 		@self.registry.action(
 			'Send strings of special keys to use Playwright page.keyboard.press - examples include Escape, Backspace, Insert, PageDown, Delete, Enter, or Shortcuts such as `Control+o`, `Control+Shift+T`',

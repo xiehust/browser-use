@@ -18,7 +18,6 @@ from dotenv import load_dotenv
 from browser_use.agent.cloud_events import (
 	CreateAgentOutputFileEvent,
 	CreateAgentSessionEvent,
-	CreateAgentStepEvent,
 	CreateAgentTaskEvent,
 	UpdateAgentTaskEvent,
 )
@@ -41,6 +40,7 @@ from browser_use.agent.message_manager.service import (
 )
 from browser_use.agent.prompts import SystemPrompt
 from browser_use.agent.views import (
+	ActionModel,
 	ActionResult,
 	AgentError,
 	AgentHistory,
@@ -48,6 +48,7 @@ from browser_use.agent.views import (
 	AgentOutput,
 	AgentSettings,
 	AgentState,
+	AgentStateFingerprint,
 	AgentStepInfo,
 	AgentStructuredOutput,
 	BrowserStateHistory,
@@ -284,6 +285,11 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 
 		# Initialize history
 		self.history = AgentHistoryList(history=[], usage=None)
+
+		# Initialize state tracking for loop detection
+		self._state_fingerprints: list[AgentStateFingerprint] = []
+		self._recent_action_descriptions: list[str] = []
+		self._loop_detection_window = 3  # Number of recent states to compare
 
 		# Initialize agent directory
 		import time
@@ -862,60 +868,139 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		return None
 
 	async def _finalize(self, browser_state_summary: BrowserStateSummary | None) -> None:
-		"""Finalize the step with history, logging, and events"""
-		step_end_time = time.time()
-		if not self.state.last_result:
-			return
+		"""Finalize the step: update counters, timing, and history"""
+		await self._raise_if_stopped_or_paused()
+
+		# Update state
+		self.state.n_steps += 1
+		self.step_end_time = time.time()
 
 		if browser_state_summary:
-			metadata = StepMetadata(
-				step_number=self.state.n_steps,
-				step_start_time=self.step_start_time,
-				step_end_time=step_end_time,
+			# Get screenshot path if it exists
+			screenshot_path = self.screenshot_service.last_screenshot_path if self.screenshot_service else None
+
+			# Create history item
+			history_item = AgentHistoryItem(
+				timestamp=self.step_start_time,
+				url=browser_state_summary.url,
+				title=browser_state_summary.title,
+				interacted_element=self.last_action_element_index,
+				agent_output=self.agent_output,
+				output=self.action_result.extracted_content if self.action_result else None,
+				screenshot_path=screenshot_path,
+				browser_state_summary=browser_state_summary,
+				duration_step=self.step_end_time - self.step_start_time,
+				metadata=StepMetadata(
+					viewport_size=browser_state_summary.viewport_size,
+					screenshot_size=browser_state_summary.screenshot_size,
+					element_tree_size=browser_state_summary.element_tree_size,
+					interacted_element_text=self.last_action_element_text,
+				),
 			)
 
-			# Use _make_history_item like main branch
-			await self._make_history_item(self.state.last_model_output, browser_state_summary, self.state.last_result, metadata)
+			# Add to history
+			self.history.history.append(history_item)
 
-		# Log step completion summary
-		self._log_step_completion_summary(self.step_start_time, self.state.last_result)
+		# Trim history if needed (keep most recent items)
+		if self.settings.max_history_items and len(self.history.history) > self.settings.max_history_items:
+			self.history.history = self.history.history[-self.settings.max_history_items :]
 
-		# Save file system state after step completion
-		self.save_file_system_state()
+		# Cloud callback only called if no errors
+		if self.agent_output and not self.is_agent_with_errors() and self.register_new_step_callback:
+			try:
+				await self._call_step_callback(
+					browser_state_summary or BrowserStateSummary(),
+					self.agent_output,
+					self.state.n_steps,
+				)
+			except Exception as e:
+				self.logger.warning(f'📞 Step callback failed: {e}')
 
-		# Emit both step created and executed events
-		if browser_state_summary and self.state.last_model_output:
-			# Extract key step data for the event
-			actions_data = []
-			if self.state.last_model_output.action:
-				for action in self.state.last_model_output.action:
-					action_dict = action.model_dump() if hasattr(action, 'model_dump') else {}
-					actions_data.append(action_dict)
+	async def _generate_state_fingerprint(
+		self, browser_state_summary: BrowserStateSummary, action_description: str
+	) -> AgentStateFingerprint:
+		"""Generate a fingerprint of the current state to detect loops"""
+		import hashlib
 
-			# Emit CreateAgentStepEvent
-			step_event = CreateAgentStepEvent.from_agent_step(
-				self,
-				self.state.last_model_output,
-				self.state.last_result,
-				actions_data,
-				browser_state_summary,
-			)
-			self.eventbus.dispatch(step_event)
+		# Extract key visible text for hashing
+		visible_text = ''
+		if browser_state_summary.clickable_elements_text:
+			# Sample key text elements to avoid huge strings
+			text_elements = browser_state_summary.clickable_elements_text[:1000]  # First 1000 chars
+			visible_text = text_elements
 
-		# Increment step counter after step is fully completed
-		self.state.n_steps += 1
+		# Create hash of visible text
+		text_hash = hashlib.md5(visible_text.encode('utf-8')).hexdigest()
 
-	async def _handle_final_step(self, step_info: AgentStepInfo | None = None) -> None:
-		"""Handle special processing for the last step"""
-		if step_info and step_info.is_last_step():
-			# Add last step warning if needed
-			msg = 'Now comes your last step. Use only the "done" action now. No other actions - so here your action sequence must have length 1.'
-			msg += '\nIf the task is not yet fully finished as requested by the user, set success in "done" to false! E.g. if not all steps are fully completed.'
-			msg += '\nIf the task is fully finished, set success in "done" to true.'
-			msg += '\nInclude everything you found out for the ultimate task in the done text.'
-			self.logger.info('Last step finishing up')
-			self._message_manager._add_context_message(UserMessage(content=msg))
-			self.AgentOutput = self.DoneAgentOutput
+		return AgentStateFingerprint(
+			url=browser_state_summary.url,
+			title=browser_state_summary.title,
+			visible_text_hash=text_hash,
+			dom_element_count=len(browser_state_summary.clickable_elements_id)
+			if browser_state_summary.clickable_elements_id
+			else 0,
+			last_action=action_description,
+			timestamp=time.time(),
+		)
+
+	async def _check_for_action_loops(self, current_fingerprint: AgentStateFingerprint) -> bool:
+		"""
+		Check if we're stuck in an action loop and return True if a loop is detected.
+		A loop is detected when:
+		1. The page state (URL, title, visible content) hasn't changed
+		2. The same action is being repeated
+		3. This pattern occurs within the detection window
+		"""
+		# Add current fingerprint to history
+		self._state_fingerprints.append(current_fingerprint)
+		self._recent_action_descriptions.append(current_fingerprint.last_action)
+
+		# Keep only recent fingerprints within the detection window
+		max_fingerprints = self._loop_detection_window * 2  # Allow for some extra history
+		if len(self._state_fingerprints) > max_fingerprints:
+			self._state_fingerprints = self._state_fingerprints[-max_fingerprints:]
+		if len(self._recent_action_descriptions) > max_fingerprints:
+			self._recent_action_descriptions = self._recent_action_descriptions[-max_fingerprints:]
+
+		# Need at least 3 fingerprints to detect a loop
+		if len(self._state_fingerprints) < 3:
+			return False
+
+		# Check for repeated state + action patterns
+		recent_fingerprints = self._state_fingerprints[-self._loop_detection_window :]
+
+		# Look for identical states with identical actions
+		identical_count = 0
+		for i in range(len(recent_fingerprints) - 1):
+			fp1 = recent_fingerprints[i]
+			fp2 = recent_fingerprints[i + 1]
+
+			# Compare state fingerprints
+			if (
+				fp1.url == fp2.url
+				and fp1.title == fp2.title
+				and fp1.visible_text_hash == fp2.visible_text_hash
+				and fp1.last_action == fp2.last_action
+			):
+				identical_count += 1
+
+		# If we have 2+ identical consecutive states with same actions, it's a loop
+		if identical_count >= 2:
+			self.logger.warning(f"🔄 Action loop detected: repeating '{current_fingerprint.last_action}' with no state change")
+			return True
+
+		# Check for action repetition without progress
+		recent_actions = self._recent_action_descriptions[-self._loop_detection_window :]
+		if len(recent_actions) >= 3:
+			# If the last 3 actions are the same and the state hasn't changed significantly
+			if (
+				len(set(recent_actions)) == 1  # All actions are identical
+				and len(set([fp.visible_text_hash for fp in recent_fingerprints])) <= 2
+			):  # Content hasn't changed much
+				self.logger.warning(f"🔄 Action repetition detected: '{recent_actions[0]}' repeated without progress")
+				return True
+
+		return False
 
 	async def _get_model_output_with_retry(self, input_messages: list[BaseMessage]) -> AgentOutput:
 		"""Get model output with retry logic for empty actions"""
