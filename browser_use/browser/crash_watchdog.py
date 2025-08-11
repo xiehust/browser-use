@@ -167,6 +167,11 @@ class CrashWatchdog(BaseWatchdog):
 
 	async def _on_target_crash_cdp(self, target_id: str) -> None:
 		"""Handle target crash detected via CDP."""
+		# Remove crashed session from pool
+		if session := self.browser_session._cdp_session_pool.pop(target_id, None):
+			await session.disconnect()
+			self.logger.info(f'[CrashWatchdog] Removed crashed session from pool: {target_id}')
+		
 		# Get target info
 		cdp_client = self.browser_session.cdp_client
 		targets = await cdp_client.send.Target.getTargets()
@@ -298,6 +303,11 @@ class CrashWatchdog(BaseWatchdog):
 			)
 		except Exception as e:
 			self.logger.error(f'[CrashWatchdog] ❌ Crashed session detected for target {self.browser_session.agent_focus}')
+			# Remove crashed session from pool
+			if self.browser_session.agent_focus and (target_id := self.browser_session.agent_focus.target_id):
+				if session := self.browser_session._cdp_session_pool.pop(target_id, None):
+					await session.disconnect()
+					self.logger.info(f'[CrashWatchdog] Removed crashed session from pool: {target_id}')
 			self.browser_session.agent_focus.target_id = None  # type: ignore
 
 		# Check browser process if we have PID
@@ -305,6 +315,12 @@ class CrashWatchdog(BaseWatchdog):
 			try:
 				if proc.status() in (psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD):
 					self.logger.error(f'[CrashWatchdog] Browser process {proc.pid} has crashed')
+					# Clear all sessions from pool when browser crashes
+					for session in self.browser_session._cdp_session_pool.values():
+						await session.disconnect()
+					self.browser_session._cdp_session_pool.clear()
+					self.logger.info('[CrashWatchdog] Cleared all sessions from pool due to browser crash')
+					
 					self.event_bus.dispatch(
 						BrowserErrorEvent(
 							error_type='BrowserProcessCrashed',

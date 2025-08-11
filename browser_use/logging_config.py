@@ -119,20 +119,30 @@ def setup_logging(stream=None, log_level=None, force_setup=False):
 	browser_use_logger.addHandler(console)
 	browser_use_logger.setLevel(log_level)
 
-	# Configure CDP logging to match browser_use level
-	# websockets.client emits the logs that cdp_use transforms to appear as cdp_use.client
-	cdp_loggers = [
-		'websockets.client',  # Controls emission of transformed cdp_use.client logs
-		'cdp_use',
-		'cdp_use.client',
-		'cdp_use.cdp',
-		'cdp_use.cdp.registry',
-	]
-	for logger_name in cdp_loggers:
-		cdp_logger = logging.getLogger(logger_name)
-		cdp_logger.setLevel(log_level)  # Same level as browser_use
-		cdp_logger.addHandler(console)  # Same handler as browser_use
-		cdp_logger.propagate = False
+	# Configure CDP logging using cdp_use's setup function
+	# This enables the formatted CDP output at the same level as browser_use
+	try:
+		from cdp_use.logging import setup_cdp_logging
+		# Use the same stream and level as browser_use
+		setup_cdp_logging(
+			level=log_level,
+			stream=stream or sys.stdout,
+			format_string='%(levelname)-8s [%(name)s] %(message)s' if log_type != 'result' else '%(message)s'
+		)
+	except ImportError:
+		# If cdp_use doesn't have the new logging module, fall back to manual config
+		cdp_loggers = [
+			'websockets.client',
+			'cdp_use',
+			'cdp_use.client',
+			'cdp_use.cdp',
+			'cdp_use.cdp.registry',
+		]
+		for logger_name in cdp_loggers:
+			cdp_logger = logging.getLogger(logger_name)
+			cdp_logger.setLevel(log_level)
+			cdp_logger.addHandler(console)
+			cdp_logger.propagate = False
 
 	logger = logging.getLogger('browser_use')
 	# logger.info('BrowserUse logging setup complete with level %s', log_type)

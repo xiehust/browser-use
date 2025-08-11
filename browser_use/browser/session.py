@@ -18,6 +18,7 @@ from browser_use.browser.events import (
 	BrowserConnectedEvent,
 	BrowserErrorEvent,
 	BrowserLaunchEvent,
+	BrowserLaunchResult,
 	BrowserStartEvent,
 	BrowserStateRequestEvent,
 	BrowserStopEvent,
@@ -198,6 +199,7 @@ class BrowserSession(BaseModel):
 	_default_action_watchdog: Any | None = PrivateAttr(default=None)
 	_dom_watchdog: Any | None = PrivateAttr(default=None)
 	_screenshot_watchdog: Any | None = PrivateAttr(default=None)
+	_permissions_watchdog: Any | None = PrivateAttr(default=None)
 
 	_logger: Any = PrivateAttr(default=None)
 
@@ -249,6 +251,7 @@ class BrowserSession(BaseModel):
 		self._default_action_watchdog = None
 		self._dom_watchdog = None
 		self._screenshot_watchdog = None
+		self._permissions_watchdog = None
 
 	def model_post_init(self, __context) -> None:
 		"""Register event handlers after model initialization."""
@@ -322,10 +325,8 @@ class BrowserSession(BaseModel):
 					await launch_event
 
 					# Get the CDP URL from LocalBrowserWatchdog handler result
-					results = await launch_event.event_results_flat_dict(
-						raise_if_none=True, raise_if_any=True, raise_if_conflicts=True
-					)
-					self.cdp_url = results.get('cdp_url')
+					launch_result: BrowserLaunchResult = await launch_event.event_result(raise_if_none=True, raise_if_any=True)
+					self.cdp_url = launch_result.cdp_url
 
 					if not self.cdp_url:
 						raise RuntimeError('LocalBrowserWatchdog failed to return a CDP URL for the launched browser')
@@ -334,12 +335,16 @@ class BrowserSession(BaseModel):
 
 			assert self.cdp_url and '://' in self.cdp_url
 
-			# Setup browser via CDP (for both local and remote cases)
-			await self.connect(cdp_url=self.cdp_url)
-			assert self.cdp_client is not None
+			# Only connect if not already connected
+			if self._cdp_client_root is None:
+				# Setup browser via CDP (for both local and remote cases)
+				await self.connect(cdp_url=self.cdp_url)
+				assert self.cdp_client is not None
 
-			# Notify that browser is connected (single place)
-			self.event_bus.dispatch(BrowserConnectedEvent(cdp_url=self.cdp_url))
+				# Notify that browser is connected (single place)
+				self.event_bus.dispatch(BrowserConnectedEvent(cdp_url=self.cdp_url))
+			else:
+				self.logger.debug('Already connected to CDP, skipping reconnection')
 
 			# Return the CDP URL for other components
 			return {'cdp_url': self.cdp_url}
@@ -384,7 +389,7 @@ class BrowserSession(BaseModel):
 					tab_index = len(targets) - 1
 					self.logger.info(f'Created new tab at index {tab_index}')
 					# Dispatch TabCreatedEvent for new tab
-					self.event_bus.dispatch(TabCreatedEvent(tab_index=tab_index, url='about:blank'))
+					self.event_bus.dispatch(TabCreatedEvent(tab_index=tab_index, url='about:blank', target_id=target_id))
 			else:
 				# Use current tab
 				target_id = self.agent_focus.target_id
@@ -690,6 +695,8 @@ class BrowserSession(BaseModel):
 		from browser_use.browser.dom_watchdog import DOMWatchdog
 		from browser_use.browser.downloads_watchdog import DownloadsWatchdog
 		from browser_use.browser.local_browser_watchdog import LocalBrowserWatchdog
+		from browser_use.browser.permissions_watchdog import PermissionsWatchdog
+		from browser_use.browser.popups_watchdog import PopupsWatchdog
 		from browser_use.browser.screenshot_watchdog import ScreenshotWatchdog
 		from browser_use.browser.security_watchdog import SecurityWatchdog
 		from browser_use.browser.storage_state_watchdog import StorageStateWatchdog
@@ -745,6 +752,18 @@ class BrowserSession(BaseModel):
 		# self.event_bus.on(TabCreatedEvent, self._aboutblank_watchdog.on_TabCreatedEvent)
 		# self.event_bus.on(TabClosedEvent, self._aboutblank_watchdog.on_TabClosedEvent)
 		await self._aboutblank_watchdog.attach_to_session()
+
+		# Initialize PopupsWatchdog
+		PopupsWatchdog.model_rebuild()
+		self._popups_watchdog = PopupsWatchdog(event_bus=self.event_bus, browser_session=self)
+		# self.event_bus.on(TabCreatedEvent, self._popups_watchdog.on_TabCreatedEvent)
+		await self._popups_watchdog.attach_to_session()
+
+		# Initialize PermissionsWatchdog
+		PermissionsWatchdog.model_rebuild()
+		self._permissions_watchdog = PermissionsWatchdog(event_bus=self.event_bus, browser_session=self)
+		# self.event_bus.on(BrowserConnectedEvent, self._permissions_watchdog.on_BrowserConnectedEvent)
+		await self._permissions_watchdog.attach_to_session()
 
 		# Initialize DefaultActionWatchdog
 		DefaultActionWatchdog.model_rebuild()
@@ -888,7 +907,7 @@ class BrowserSession(BaseModel):
 			for idx, target in enumerate(page_targets):
 				target_url = target.get('url', '')
 				self.logger.debug(f'Dispatching TabCreatedEvent for initial tab {idx}: {target_url}')
-				self.event_bus.dispatch(TabCreatedEvent(tab_index=idx, url=target_url))
+				self.event_bus.dispatch(TabCreatedEvent(tab_index=idx, url=target_url, target_id=target['targetId']))
 
 			# Dispatch initial focus event
 			if page_targets:
@@ -1408,9 +1427,8 @@ class BrowserSession(BaseModel):
 			if cdp_session:
 				target_sessions[target_id] = cdp_session.session_id
 
-			try:
-				# Try to get frame tree (not all target types support this)
 				try:
+					# Try to get frame tree (not all target types support this)
 					frame_tree_result = await cdp_session.cdp_client.send.Page.getFrameTree(session_id=cdp_session.session_id)
 
 					# Process the frame tree recursively
@@ -1484,13 +1502,9 @@ class BrowserSession(BaseModel):
 					# Process the entire frame tree
 					process_frame_tree(frame_tree_result.get('frameTree', {}))
 
-				except Exception:
+				except Exception as e:
 					# Target doesn't support Page domain or has no frames
-					pass
-
-			except Exception:
-				# Error processing this target
-				pass
+					self.logger.debug(f'Failed to get frame tree for target {target_id}: {e}')
 
 		# Second pass: populate backend node IDs and parent target IDs
 		# Only do this if cross-origin support is enabled
@@ -1621,6 +1635,8 @@ _watchdog_modules = [
 	'browser_use.browser.storage_state_watchdog.StorageStateWatchdog',
 	'browser_use.browser.security_watchdog.SecurityWatchdog',
 	'browser_use.browser.aboutblank_watchdog.AboutBlankWatchdog',
+	'browser_use.browser.popups_watchdog.PopupsWatchdog',
+	'browser_use.browser.permissions_watchdog.PermissionsWatchdog',
 	'browser_use.browser.default_action_watchdog.DefaultActionWatchdog',
 	'browser_use.browser.dom_watchdog.DOMWatchdog',
 	'browser_use.browser.screenshot_watchdog.ScreenshotWatchdog',

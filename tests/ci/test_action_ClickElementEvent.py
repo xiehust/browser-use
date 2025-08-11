@@ -1,4 +1,6 @@
 import asyncio
+import tempfile
+from pathlib import Path
 
 import pytest
 from pytest_httpserver import HTTPServer
@@ -10,6 +12,7 @@ from browser_use.controller.service import Controller
 from browser_use.controller.views import (
 	ClickElementAction,
 	GoToUrlAction,
+	UploadFileAction,
 )
 
 
@@ -235,7 +238,7 @@ class TestClickElementEvent:
 
 		# Get the link element (assuming it will be at index 0)
 		# First get the browser state to see what elements are available
-		state = await browser_session.get_browser_state_with_recovery()
+		state = await browser_session.get_browser_state_summary()
 
 		# Find the link element in the selector map
 		link_index = None
@@ -303,7 +306,7 @@ class TestClickElementEvent:
 		initial_tab_count = len(tabs)
 
 		# Get browser state and find link elements
-		state = await browser_session.get_browser_state_with_recovery()
+		state = await browser_session.get_browser_state_summary()
 		link_indices = []
 		for index, element in state.dom_state.selector_map.items():
 			if hasattr(element, 'tag_name') and element.tag_name == 'a':
@@ -711,3 +714,381 @@ class TestClickElementEvent:
 		assert 'select' in result.error.lower() and 'dropdown' in result.error.lower(), (
 			f'Error message should mention select/dropdown, got: {result.error}'
 		)
+
+	async def test_js_popup_auto_accept_and_navigation(self, controller, browser_session, base_url, http_server):
+		"""Test that JavaScript popups are automatically accepted and navigation continues."""
+		# Add route with JS popup and navigation link
+		http_server.expect_request('/popup_test').respond_with_data(
+			"""
+			<!DOCTYPE html>
+			<html>
+			<head>
+				<title>Popup Test</title>
+			</head>
+			<body>
+				<h1>JavaScript Popup Test</h1>
+				<button id="alertButton" onclick="alert('This is an alert!'); document.getElementById('result').textContent = 'Alert shown';">
+					Show Alert
+				</button>
+				<button id="confirmButton" onclick="if(confirm('Are you sure?')) { document.getElementById('result').textContent = 'Confirmed'; }">
+					Show Confirm
+				</button>
+				<a href="/page1" id="navLink">Navigate to Page 1</a>
+				<div id="result">No popup shown</div>
+			</body>
+			</html>
+			""",
+			content_type='text/html',
+		)
+
+		# Navigate to the popup test page
+		goto_action = {'go_to_url': GoToUrlAction(url=f'{base_url}/popup_test', new_tab=False)}
+
+		from browser_use.agent.views import ActionModel
+
+		class GoToUrlActionModel(ActionModel):
+			go_to_url: GoToUrlAction | None = None
+
+		await asyncio.wait_for(
+			controller.act(GoToUrlActionModel(**goto_action), browser_session),
+			timeout=5.0
+		)
+		await asyncio.sleep(0.5)
+
+		# Track DialogOpenedEvents
+		from browser_use.browser.events import DialogOpenedEvent
+
+		dialog_events = []
+
+		async def on_dialog_opened(event: DialogOpenedEvent):
+			dialog_events.append(event)
+
+		browser_session.event_bus.on(DialogOpenedEvent, on_dialog_opened)
+
+		# Get the clickable elements
+		await browser_session.get_browser_state_summary(cache_clickable_elements_hashes=True)
+		selector_map = await browser_session.get_selector_map()
+
+		# Find the alert button
+		alert_button_index = None
+		for idx, element in selector_map.items():
+			if element.attributes and element.attributes.get('id') == 'alertButton':
+				alert_button_index = idx
+				break
+
+		assert alert_button_index is not None, 'Could not find alert button'
+
+		# Click the alert button - should trigger popup
+		class ClickActionModel(ActionModel):
+			click_element_by_index: ClickElementAction | None = None
+
+		# Use timeout to prevent hanging
+		try:
+			result = await asyncio.wait_for(
+				controller.act(
+					ClickActionModel(click_element_by_index=ClickElementAction(index=alert_button_index)), 
+					browser_session
+				),
+				timeout=5.0
+			)
+		except asyncio.TimeoutError:
+			pytest.fail("Click action timed out - popup may not have been handled")
+
+		# Wait for popup to be handled
+		await asyncio.sleep(0.5)
+
+		# Verify no error (popup was handled automatically)
+		assert result.error is None, f'Click failed: {result.error}'
+
+		# Verify DialogOpenedEvent was dispatched (with timeout)
+		max_wait = 2.0
+		start_time = asyncio.get_event_loop().time()
+		while len(dialog_events) == 0 and (asyncio.get_event_loop().time() - start_time) < max_wait:
+			await asyncio.sleep(0.1)
+		
+		assert len(dialog_events) == 1, f'Expected 1 dialog event, got {len(dialog_events)}'
+		assert dialog_events[0].dialog_type == 'alert'
+		assert 'This is an alert!' in dialog_events[0].message
+		assert dialog_events[0].accepted is True
+
+		# Verify the page updated after alert was accepted
+		cdp_session = await browser_session.get_or_create_cdp_session()
+		result_js = await browser_session.cdp_client.send.Runtime.evaluate(
+			params={'expression': "document.getElementById('result').textContent", 'returnByValue': True},
+			session_id=cdp_session.session_id,
+		)
+		assert result_js.get('result', {}).get('value') == 'Alert shown'
+
+		# Clear dialog events
+		dialog_events.clear()
+
+		# Refresh selector map after the click
+		await browser_session.get_browser_state_summary(cache_clickable_elements_hashes=True)
+		selector_map = await browser_session.get_selector_map()
+
+		# Now test confirm dialog
+		confirm_button_index = None
+		for idx, element in selector_map.items():
+			if element.attributes and element.attributes.get('id') == 'confirmButton':
+				confirm_button_index = idx
+				break
+
+		assert confirm_button_index is not None, 'Could not find confirm button'
+
+		# Click the confirm button with timeout
+		try:
+			result = await asyncio.wait_for(
+				controller.act(
+					ClickActionModel(click_element_by_index=ClickElementAction(index=confirm_button_index)), 
+					browser_session
+				),
+				timeout=5.0
+			)
+		except asyncio.TimeoutError:
+			pytest.fail("Confirm button click timed out - popup may not have been handled")
+
+		await asyncio.sleep(0.5)
+
+		# Verify no error
+		assert result.error is None, f'Click failed: {result.error}'
+
+		# Wait for DialogOpenedEvent with timeout
+		start_time = asyncio.get_event_loop().time()
+		while len(dialog_events) == 0 and (asyncio.get_event_loop().time() - start_time) < max_wait:
+			await asyncio.sleep(0.1)
+
+		# Verify DialogOpenedEvent for confirm
+		assert len(dialog_events) == 1, f'Expected 1 dialog event, got {len(dialog_events)}'
+		assert dialog_events[0].dialog_type == 'confirm'
+		assert 'Are you sure?' in dialog_events[0].message
+		assert dialog_events[0].accepted is True
+
+		# Verify the page updated after confirm was accepted
+		result_js = await browser_session.cdp_client.send.Runtime.evaluate(
+			params={'expression': "document.getElementById('result').textContent", 'returnByValue': True},
+			session_id=cdp_session.session_id,
+		)
+		assert result_js.get('result', {}).get('value') == 'Confirmed'
+
+		# Refresh selector map before final navigation
+		await browser_session.get_browser_state_summary(cache_clickable_elements_hashes=True)
+		selector_map = await browser_session.get_selector_map()
+
+		# Finally, test that we can navigate after handling popups (browser didn't crash)
+		nav_link_index = None
+		for idx, element in selector_map.items():
+			if element.attributes and element.attributes.get('id') == 'navLink':
+				nav_link_index = idx
+				break
+
+		assert nav_link_index is not None, 'Could not find navigation link'
+
+		# Click the navigation link with timeout
+		try:
+			result = await asyncio.wait_for(
+				controller.act(
+					ClickActionModel(click_element_by_index=ClickElementAction(index=nav_link_index)), 
+					browser_session
+				),
+				timeout=5.0
+			)
+		except asyncio.TimeoutError:
+			pytest.fail("Navigation click timed out")
+
+		await asyncio.sleep(1)
+
+		# Verify navigation succeeded
+		assert result.error is None, f'Navigation failed: {result.error}'
+		current_url = await browser_session.get_current_page_url()
+		assert f'{base_url}/page1' in current_url, f'Navigation failed, current URL: {current_url}'
+
+		# Verify browser is still responsive
+		current_title = await browser_session.get_current_page_title()
+		assert 'Test Page 1' in current_title, f'Page title incorrect: {current_title}'
+
+	async def test_file_upload_click_and_verify(self, controller, browser_session, base_url, http_server):
+		"""Test that clicking a file upload element and uploading a file works correctly."""
+		# Create a temporary test file
+		with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as temp_file:
+			temp_file.write('Test file content for upload')
+			temp_file_path = temp_file.name
+		
+		try:
+			# Add route for file upload test page
+			http_server.expect_request('/fileupload').respond_with_data(
+				"""
+				<!DOCTYPE html>
+				<html>
+				<head>
+					<title>File Upload Test</title>
+					<style>
+						.upload-section {
+							margin: 20px;
+							padding: 20px;
+							border: 2px dashed #ccc;
+						}
+						#fileInfo {
+							margin-top: 20px;
+							padding: 10px;
+							border: 1px solid #ddd;
+							min-height: 50px;
+						}
+						.upload-label {
+							display: inline-block;
+							padding: 10px 20px;
+							background-color: #4CAF50;
+							color: white;
+							cursor: pointer;
+							border-radius: 4px;
+						}
+						.upload-label:hover {
+							background-color: #45a049;
+						}
+						input[type="file"] {
+							/* Hide the default file input */
+							display: none;
+						}
+					</style>
+				</head>
+				<body>
+					<h1>File Upload Test</h1>
+					<div class="upload-section">
+						<p>Click the button below to select a file:</p>
+						<label for="fileInput" class="upload-label">Choose File</label>
+						<input type="file" id="fileInput" name="fileInput" />
+						<div id="fileInfo">
+							<p id="fileName">No file selected</p>
+							<p id="fileSize"></p>
+							<p id="fileType"></p>
+						</div>
+					</div>
+					
+					<script>
+						document.getElementById('fileInput').addEventListener('change', function(e) {
+							const file = e.target.files[0];
+							if (file) {
+								document.getElementById('fileName').textContent = 'File name: ' + file.name;
+								document.getElementById('fileSize').textContent = 'File size: ' + file.size + ' bytes';
+								document.getElementById('fileType').textContent = 'File type: ' + (file.type || 'unknown');
+							} else {
+								document.getElementById('fileName').textContent = 'No file selected';
+								document.getElementById('fileSize').textContent = '';
+								document.getElementById('fileType').textContent = '';
+							}
+						});
+					</script>
+				</body>
+				</html>
+				""",
+				content_type='text/html',
+			)
+
+			# Navigate to the file upload test page
+			goto_action = {'go_to_url': GoToUrlAction(url=f'{base_url}/fileupload', new_tab=False)}
+
+			from browser_use.agent.views import ActionModel
+
+			class GoToUrlActionModel(ActionModel):
+				go_to_url: GoToUrlAction | None = None
+
+			await controller.act(GoToUrlActionModel(**goto_action), browser_session)
+
+			# Wait for the page to load
+			await asyncio.sleep(0.5)
+
+			# Initialize the DOM state to populate the selector map
+			await browser_session.get_browser_state_summary(cache_clickable_elements_hashes=True)
+
+			# Get the selector map
+			selector_map = await browser_session.get_selector_map()
+
+			# Find the label element that triggers the file input
+			label_index = None
+			for idx, element in selector_map.items():
+				if element.tag_name.lower() == 'label' and 'upload-label' in str(element.attributes.get('class', '')):
+					label_index = idx
+					break
+
+			assert label_index is not None, 'Could not find file upload label element'
+
+			# Create action model for file upload
+			class UploadFileActionModel(ActionModel):
+				upload_file_to_element: UploadFileAction | None = None
+
+			# Upload the file using the label index (should find the associated file input)
+			result = await controller.act(
+				UploadFileActionModel(upload_file_to_element=UploadFileAction(index=label_index, path=temp_file_path)),
+				browser_session,
+				available_file_paths=[temp_file_path],  # Pass the file path as available
+			)
+
+			# Verify the upload action succeeded
+			assert result.error is None, f'File upload failed: {result.error}'
+			assert result.extracted_content is not None
+			assert 'Successfully uploaded file' in result.extracted_content
+
+			# Wait a moment for the JavaScript to process the file
+			await asyncio.sleep(0.5)
+
+			# Verify the file was actually selected using CDP Runtime.evaluate
+			cdp_session = await browser_session.get_or_create_cdp_session()
+			
+			# Check if the file input has a file selected
+			file_check_js = await browser_session.cdp_client.send.Runtime.evaluate(
+				params={
+					'expression': """
+						(() => {
+							const input = document.getElementById('fileInput');
+							if (!input || !input.files || input.files.length === 0) {
+								return { hasFile: false };
+							}
+							const file = input.files[0];
+							return {
+								hasFile: true,
+								fileName: file.name,
+								fileSize: file.size,
+								fileType: file.type || 'text/plain'
+							};
+						})()
+					""",
+					'returnByValue': True,
+				},
+				session_id=cdp_session.session_id,
+			)
+			
+			file_info = file_check_js.get('result', {}).get('value', {})
+			
+			# Verify file was selected
+			assert file_info.get('hasFile') is True, 'File was not properly selected in the input element'
+			assert file_info.get('fileName', '').endswith('.txt'), f"Expected .txt file, got: {file_info.get('fileName')}"
+			assert file_info.get('fileSize', 0) > 0, 'File size should be greater than 0'
+
+			# Also verify the UI was updated (the file info div)
+			ui_check_js = await browser_session.cdp_client.send.Runtime.evaluate(
+				params={
+					'expression': """
+						(() => {
+							const fileName = document.getElementById('fileName').textContent;
+							const fileSize = document.getElementById('fileSize').textContent;
+							return {
+								fileNameText: fileName,
+								fileSizeText: fileSize,
+								hasFileInfo: !fileName.includes('No file selected')
+							};
+						})()
+					""",
+					'returnByValue': True,
+				},
+				session_id=cdp_session.session_id,
+			)
+			
+			ui_info = ui_check_js.get('result', {}).get('value', {})
+			
+			# Verify UI was updated
+			assert ui_info.get('hasFileInfo') is True, 'UI was not updated with file information'
+			assert '.txt' in ui_info.get('fileNameText', ''), f"File name not shown in UI: {ui_info.get('fileNameText')}"
+			assert 'bytes' in ui_info.get('fileSizeText', ''), f"File size not shown in UI: {ui_info.get('fileSizeText')}"
+
+		finally:
+			# Clean up the temporary file
+			Path(temp_file_path).unlink(missing_ok=True)
