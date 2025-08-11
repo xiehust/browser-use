@@ -77,7 +77,7 @@ async def main():
 	agent = Agent(task=task, llm=model, controller=controller, browser_session=browser_session)
 
 	await agent.run()
-	await browser_session.kill()
+	await browser_session.stop()
 
 	input('Press Enter to close...')
 

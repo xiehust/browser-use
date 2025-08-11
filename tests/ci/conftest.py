@@ -44,7 +44,7 @@ def setup_test_environment():
 	Automatically set up test environment for all tests.
 	"""
 
-	# Create a temporary directory for test config (but not for extensions)
+	# Create a temporary directory for test config
 	config_dir = tempfile.mkdtemp(prefix='browseruse_tests_')
 
 	original_env = {}
@@ -54,8 +54,7 @@ def setup_test_environment():
 		'BROWSER_USE_CLOUD_SYNC': 'true',
 		'BROWSER_USE_CLOUD_API_URL': 'http://placeholder-will-be-replaced-by-specific-test-fixtures',
 		'BROWSER_USE_CLOUD_UI_URL': 'http://placeholder-will-be-replaced-by-specific-test-fixtures',
-		# Don't set BROWSER_USE_CONFIG_DIR anymore - let it use the default ~/.config/browseruse
-		# This way extensions will be cached in ~/.config/browseruse/extensions
+		'BROWSER_USE_CONFIG_DIR': config_dir,
 	}
 
 	for key, value in test_env_vars.items():
@@ -168,8 +167,6 @@ async def browser_session():
 	await session.start()
 	yield session
 	await session.kill()
-	# Ensure event bus is properly stopped
-	await session.event_bus.stop(clear=True, timeout=5)
 
 
 @pytest.fixture(scope='function')

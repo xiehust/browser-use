@@ -4,7 +4,6 @@ import json
 import anyio
 
 from browser_use.browser import BrowserProfile, BrowserSession
-from browser_use.browser.events import ClickElementEvent
 from browser_use.dom.views import DOMBaseNode, DOMElementNode, DOMTextNode
 from browser_use.utils import time_execution_sync
 
@@ -89,8 +88,7 @@ async def test_highlight_elements():
 
 				# check if index of selector map are the same as index of items in dom_items
 
-				event = browser_session.event_bus.dispatch(ClickElementEvent(element_node=node_element))
-				await event
+				await browser_session._click_element_node(node_element)
 
 			except Exception as e:
 				print(e)

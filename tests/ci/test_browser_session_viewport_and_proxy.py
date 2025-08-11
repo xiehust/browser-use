@@ -42,13 +42,12 @@ async def test_window_size_with_real_browser():
 		)
 	)
 	await browser_session.start()
-	# Use CDP to evaluate JavaScript
-	cdp_session = await browser_session.get_or_create_cdp_session()
+	page = await browser_session.get_current_page()
+	assert page is not None, 'Failed to get current page'
 
 	# Get the context configuration used for browser window size
-	result = await cdp_session.cdp_client.send.Runtime.evaluate(
-		params={
-			'expression': """(() => {
+	video_size = await page.evaluate("""
+			() => {
 				// This returns information about the context recording settings
 				// which should match our configured video size (browser_window_size)
 				try {
@@ -64,27 +63,18 @@ async def test_window_size_with_real_browser():
 					width: window.innerWidth,
 					height: window.innerHeight
 				};
-			})()""",
-			'returnByValue': True
-		},
-		session_id=cdp_session.session_id
-	)
-	video_size = result.get('result', {}).get('value', {})
+			}
+		""")
 
 	# Let's also check the viewport size
-	result2 = await cdp_session.cdp_client.send.Runtime.evaluate(
-		params={
-			'expression': """(() => {
+	actual_size = await page.evaluate("""
+			() => {
 				return {
 					width: window.innerWidth,
 					height: window.innerHeight
 				}
-			})()""",
-			'returnByValue': True
-		},
-		session_id=cdp_session.session_id
-	)
-	actual_size = result2.get('result', {}).get('value', {})
+			}
+		""")
 
 	print(f'Browser configured window_size={browser_session.browser_profile.window_size}')
 	print(f'Browser configured viewport_size: {browser_session.browser_profile.viewport}')

@@ -30,16 +30,10 @@ class TestSequentialAgentsSimple:
 		await browser_session.start()
 
 		# Verify browser is running
-		# Get initial browser PID from local_browser_watchdog
-		initial_pid = browser_session.local_browser_watchdog._subprocess.pid if browser_session.local_browser_watchdog and browser_session.local_browser_watchdog._subprocess else None
+		initial_pid = browser_session.browser_pid
 		# Browser PID detection may fail in CI environments
 		# The important thing is that the browser is connected
-		# Verify session is connected
-		try:
-			url = await browser_session.get_current_page_url()
-			assert url is not None
-		except Exception:
-			assert False, 'Browser session is not connected'
+		assert await browser_session.is_connected(restart=False)
 
 		# Agent 1: Navigate to page 1
 		agent1_actions = [
@@ -64,13 +58,9 @@ class TestSequentialAgentsSimple:
 		assert history1.history[-1].state.url == httpserver.url_for('/page1')
 
 		# Verify browser session is still alive
-		# Verify session is still connected (checking internal state for test)
-		url = await browser_session.get_current_page_url()
-		assert url is not None
+		assert browser_session.initialized
 		if initial_pid is not None:
-			# Check browser PID is still the same
-			current_pid = browser_session.local_browser_watchdog._subprocess.pid if browser_session.local_browser_watchdog and browser_session.local_browser_watchdog._subprocess else None
-			assert current_pid == initial_pid
+			assert browser_session.browser_pid == initial_pid
 
 		# Delete agent1 and force garbage collection
 		del agent1
@@ -78,16 +68,10 @@ class TestSequentialAgentsSimple:
 		await asyncio.sleep(0.1)  # Give time for any async cleanup
 
 		# Verify browser is STILL alive after garbage collection
-		# Verify session is still connected (checking internal state for test)
-		url = await browser_session.get_current_page_url()
-		assert url is not None
+		assert browser_session.initialized
 		if initial_pid is not None:
-			# Check browser PID is still the same
-			current_pid = browser_session.local_browser_watchdog._subprocess.pid if browser_session.local_browser_watchdog and browser_session.local_browser_watchdog._subprocess else None
-			assert current_pid == initial_pid
-		# Verify session is still connected
-		url = await browser_session.get_current_page_url()
-		assert url is not None
+			assert browser_session.browser_pid == initial_pid
+		assert browser_session.browser_context is not None
 
 		# Agent 2: Navigate to page 2
 		agent2_actions = [
@@ -112,16 +96,10 @@ class TestSequentialAgentsSimple:
 		assert history2.history[-1].state.url == httpserver.url_for('/page2')
 
 		# Verify browser session is still alive after second agent
-		# Verify session is still connected (checking internal state for test)
-		url = await browser_session.get_current_page_url()
-		assert url is not None
+		assert browser_session.initialized
 		if initial_pid is not None:
-			# Check browser PID is still the same
-			current_pid = browser_session.local_browser_watchdog._subprocess.pid if browser_session.local_browser_watchdog and browser_session.local_browser_watchdog._subprocess else None
-			assert current_pid == initial_pid
-		# Verify session is still connected
-		url = await browser_session.get_current_page_url()
-		assert url is not None
+			assert browser_session.browser_pid == initial_pid
+		assert browser_session.browser_context is not None
 
 		# Clean up
 		await browser_session.kill()
@@ -163,15 +141,11 @@ class TestSequentialAgentsSimple:
 		await agent1.run(max_steps=2)
 
 		# Verify 2 tabs are open
-		# Check number of tabs
-		tabs = await browser_session.get_tabs()
-		assert len(tabs) == 2
+		assert len(browser_session.tabs) == 2
 		# Agent1 should be on the second tab (tab2)
 		assert agent1.browser_session is not None
-		# Check agent1 is on tab2
-		url1 = await agent1.browser_session.get_current_page_url()
-		assert url1 is not None
-		assert '/tab2' in url1
+		assert agent1.browser_session.agent_current_page is not None
+		assert '/tab2' in agent1.browser_session.agent_current_page.url
 
 		# Clean up agent1
 		del agent1
@@ -200,17 +174,11 @@ class TestSequentialAgentsSimple:
 
 		# Verify agent2 is on the first tab
 		assert agent2.browser_session is not None
-		# Check agent2 is on tab1
-		url2 = await agent2.browser_session.get_current_page_url()
-		assert url2 is not None
-		assert '/tab1' in url2
+		assert agent2.browser_session.agent_current_page is not None
+		assert '/tab1' in agent2.browser_session.agent_current_page.url
 
 		# Verify browser is still functional
-		# Verify session is still connected (checking internal state for test)
-		url = await browser_session.get_current_page_url()
-		assert url is not None
-		# Check number of tabs
-		tabs = await browser_session.get_tabs()
-		assert len(tabs) == 2
+		assert browser_session.initialized
+		assert len(browser_session.tabs) == 2
 
 		await browser_session.kill()

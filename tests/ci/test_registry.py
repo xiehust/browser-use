@@ -106,9 +106,7 @@ async def browser_session(base_url):
 		)
 	)
 	await browser_session.start()
-	from browser_use.browser.events import NavigateToUrlEvent
-	browser_session.event_bus.dispatch(NavigateToUrlEvent(url=f'{base_url}/test'))
-	await asyncio.sleep(0.5)  # Wait for navigation
+	await browser_session.navigate(f'{base_url}/test', new_tab=True)
 	yield browser_session
 	await browser_session.kill()
 
@@ -135,13 +133,11 @@ class TestActionRegistryParameterPatterns:
 
 		@registry.action('Action with individual params and browser')
 		async def action_with_browser(text: str, browser_session: BrowserSession):
-			url = await browser_session.get_current_page_url()
-			return ActionResult(extracted_content=f'Text: {text}, URL: {url}')
+			page = await browser_session.get_current_page()
+			return ActionResult(extracted_content=f'Text: {text}, URL: {page.url}')
 
 		# Navigate to test page first
-		from browser_use.browser.events import NavigateToUrlEvent
-		event = browser_session.event_bus.dispatch(NavigateToUrlEvent(url=f'{base_url}/test', new_tab=True))
-		await event
+		await browser_session.create_new_tab(f'{base_url}/test')
 
 		# Test execution
 		result = await registry.execute_action('action_with_browser', {'text': 'hello'}, browser_session=browser_session)
@@ -160,9 +156,7 @@ class TestActionRegistryParameterPatterns:
 			return ActionResult(extracted_content=f'Text: {text}, Page Title: {title}')
 
 		# Navigate to test page first
-		from browser_use.browser.events import NavigateToUrlEvent
-		event = browser_session.event_bus.dispatch(NavigateToUrlEvent(url=f'{base_url}/test', new_tab=True))
-		await event
+		await browser_session.create_new_tab(f'{base_url}/test')
 
 		# Test execution
 		result = await registry.execute_action('action_with_page', {'text': 'hello'}, browser_session=browser_session)
@@ -180,9 +174,7 @@ class TestActionRegistryParameterPatterns:
 			return ActionResult(extracted_content=f'Text: {params.text}, Number: {params.number}, Page Title: {title}')
 
 		# Navigate to test page first
-		from browser_use.browser.events import NavigateToUrlEvent
-		event = browser_session.event_bus.dispatch(NavigateToUrlEvent(url=f'{base_url}/test', new_tab=True))
-		await event
+		await browser_session.create_new_tab(f'{base_url}/test')
 
 		# Test execution
 		result = await registry.execute_action(
@@ -198,15 +190,13 @@ class TestActionRegistryParameterPatterns:
 
 		@registry.action('Action with pydantic model', param_model=ComplexParams)
 		async def pydantic_action(params: ComplexParams, browser_session: BrowserSession):
-			url = await browser_session.get_current_page_url()
+			page = await browser_session.get_current_page()
 			return ActionResult(
-				extracted_content=f'Text: {params.text}, Number: {params.number}, Flag: {params.optional_flag}, URL: {url}'
+				extracted_content=f'Text: {params.text}, Number: {params.number}, Flag: {params.optional_flag}, URL: {page.url}'
 			)
 
 		# Navigate to test page first
-		from browser_use.browser.events import NavigateToUrlEvent
-		event = browser_session.event_bus.dispatch(NavigateToUrlEvent(url=f'{base_url}/test', new_tab=True))
-		await event
+		await browser_session.create_new_tab(f'{base_url}/test')
 
 		# Test execution
 		result = await registry.execute_action(
@@ -232,16 +222,13 @@ class TestActionRegistryParameterPatterns:
 		):
 			llm_response = await page_extraction_llm.ainvoke([UserMessage(content='test')])
 			files = available_file_paths or []
-			url = page.url
 
 			return ActionResult(
-				extracted_content=f'Text: {text}, URL: {url}, LLM: {llm_response.completion}, Files: {len(files)}'
+				extracted_content=f'Text: {text}, URL: {page.url}, LLM: {llm_response.completion}, Files: {len(files)}'
 			)
 
 		# Navigate to test page first
-		from browser_use.browser.events import NavigateToUrlEvent
-		event = browser_session.event_bus.dispatch(NavigateToUrlEvent(url=f'{base_url}/test', new_tab=True))
-		await event
+		await browser_session.create_new_tab(f'{base_url}/test')
 
 		# Test execution
 		result = await registry.execute_action(
@@ -265,7 +252,7 @@ class TestActionRegistryParameterPatterns:
 
 		@registry.action('No params action', param_model=NoParamsAction)
 		async def no_params_action(params: NoParamsAction, page: Page):
-			return ActionResult(extracted_content=f'No params action executed on {url}')
+			return ActionResult(extracted_content=f'No params action executed on {page.url}')
 
 		# Test execution with any parameters (should be ignored)
 		result = await registry.execute_action(
@@ -282,13 +269,13 @@ class TestActionRegistryParameterPatterns:
 
 		@registry.action('Action with legacy browser param')
 		async def legacy_browser_action(text: str, browser: BrowserSession):
-			url = await browser.get_current_page_url()
-			return ActionResult(extracted_content=f'Legacy browser: {text}, URL: {url}')
+			page = await browser.get_current_page()
+			return ActionResult(extracted_content=f'Legacy browser: {text}, URL: {page.url}')
 
 		@registry.action('Action with legacy browser_context param')
 		async def legacy_context_action(text: str, browser_context: BrowserSession):
-			url = await browser_context.get_current_page_url()
-			return ActionResult(extracted_content=f'Legacy context: {text}, URL: {url}')
+			page = await browser_context.get_current_page()
+			return ActionResult(extracted_content=f'Legacy context: {text}, URL: {page.url}')
 
 		# Test legacy browser parameter
 		result1 = await registry.execute_action('legacy_browser_action', {'text': 'test1'}, browser_session=browser_session)
@@ -307,20 +294,20 @@ class TestActionRegistryParameterPatterns:
 		registry = Registry()
 
 		httpserver.expect_request('/test').respond_with_data('<html><body>Test Page</body></html>')
-		url = await browser_session.get_current_page_url()
+		page = await browser_session.get_current_page()
 		await page.goto(httpserver.url_for('/test'))
 
 		# Action that takes page directly (optimized pattern)
 		@registry.action('Action with direct page parameter')
 		async def direct_page_action(text: str, page: Page):
 			# This is the optimized pattern - no need to call get_current_page()
-			return ActionResult(extracted_content=f'Direct page: {text}, URL: {url}')
+			return ActionResult(extracted_content=f'Direct page: {text}, URL: {page.url}')
 
 		# Action that takes browser_session and calls get_current_page (old pattern)
 		@registry.action('Action with browser_session parameter')
 		async def browser_session_action(text: str, browser_session: BrowserSession):
-			url = await browser_session.get_current_page_url()
-			return ActionResult(extracted_content=f'Browser session: {text}, URL: {url}')
+			page = await browser_session.get_current_page()
+			return ActionResult(extracted_content=f'Browser session: {text}, URL: {page.url}')
 
 		# Test direct page parameter
 		result1 = await registry.execute_action('direct_page_action', {'text': 'optimized'}, browser_session=browser_session)
@@ -340,7 +327,7 @@ class TestActionRegistryParameterPatterns:
 
 		@registry.action('Pydantic action with page', param_model=PageActionParams)
 		async def pydantic_page_action(params: PageActionParams, page: Page):
-			return ActionResult(extracted_content=f'Pydantic page: {params.message}, URL: {url}')
+			return ActionResult(extracted_content=f'Pydantic page: {params.message}, URL: {page.url}')
 
 		result3 = await registry.execute_action('pydantic_page_action', {'message': 'pydantic'}, browser_session=browser_session)
 		assert result3.extracted_content is not None
@@ -356,8 +343,8 @@ class TestActionToActionCalling:
 
 		# Helper function that actions can call
 		async def helper_function(browser_session: BrowserSession, data: str):
-			url = await browser_session.get_current_page_url()
-			return f'Helper processed: {data} on {url}'
+			page = await browser_session.get_current_page()
+			return f'Helper processed: {data} on {page.url}'
 
 		@registry.action('First action')
 		async def first_action(text: str, browser_session: BrowserSession):
@@ -386,8 +373,8 @@ class TestActionToActionCalling:
 
 		# Simulate the _select_cell_or_range helper function
 		async def _select_cell_or_range(browser_session: BrowserSession, cell_or_range: str):
-			url = await browser_session.get_current_page_url()
-			return ActionResult(extracted_content=f'Selected cell {cell_or_range} on {url}')
+			page = await browser_session.get_current_page()
+			return ActionResult(extracted_content=f'Selected cell {cell_or_range} on {page.url}')
 
 		@registry.action('Select cell or range')
 		async def select_cell_or_range(cell_or_range: str, browser_session: BrowserSession):
@@ -437,8 +424,8 @@ class TestActionToActionCalling:
 
 		@registry.action('Base action')
 		async def base_action(value: str, browser_session: BrowserSession):
-			url = await browser_session.get_current_page_url()
-			return ActionResult(extracted_content=f'Base: {value} on {url}')
+			page = await browser_session.get_current_page()
+			return ActionResult(extracted_content=f'Base: {value} on {page.url}')
 
 		@registry.action('Middle action')
 		async def middle_action(input_val: str, browser_session: BrowserSession):
@@ -473,8 +460,8 @@ class TestRegistryEdgeCases:
 
 		@registry.action('Action that should reject positional args')
 		async def test_action(cell_or_range: str, browser_session: BrowserSession):
-			url = await browser_session.get_current_page_url()
-			return ActionResult(extracted_content=f'Selected cell {cell_or_range} on {url}')
+			page = await browser_session.get_current_page()
+			return ActionResult(extracted_content=f'Selected cell {cell_or_range} on {page.url}')
 
 		# Test that calling with positional arguments raises TypeError
 		with pytest.raises(
@@ -493,8 +480,8 @@ class TestRegistryEdgeCases:
 
 		@registry.action('Requires browser')
 		async def requires_browser(text: str, browser_session: BrowserSession):
-			url = await browser_session.get_current_page_url()
-			return ActionResult(extracted_content=f'Text: {text}, URL: {url}')
+			page = await browser_session.get_current_page()
+			return ActionResult(extracted_content=f'Text: {text}, URL: {page.url}')
 
 		# Should raise RuntimeError when browser_session is required but not provided
 		with pytest.raises(RuntimeError, match='requires browser_session but none provided'):
@@ -511,7 +498,7 @@ class TestRegistryEdgeCases:
 
 		@registry.action('Requires LLM')
 		async def requires_llm(text: str, browser_session: BrowserSession, page_extraction_llm: BaseChatModel):
-			url = await browser_session.get_current_page_url()
+			page = await browser_session.get_current_page()
 			llm_response = await page_extraction_llm.ainvoke([UserMessage(content='test')])
 			return ActionResult(extracted_content=f'Text: {text}, LLM: {llm_response.completion}')
 

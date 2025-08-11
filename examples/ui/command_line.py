@@ -91,7 +91,7 @@ async def main():
 	await agent.run(max_steps=25)
 
 	input('Press Enter to close the browser...')
-	await browser_session.kill()
+	await browser_session.close()
 
 
 if __name__ == '__main__':
