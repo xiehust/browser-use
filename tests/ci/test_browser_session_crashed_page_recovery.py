@@ -510,10 +510,10 @@ class TestBrowserSessionRecovery:
 		browser_pid = None
 		if hasattr(browser_session, 'local_browser_watchdog') and browser_session.local_browser_watchdog:
 			if (
-				hasattr(browser_session.local_browser_watchdog, '_subprocess')
-				and browser_session.local_browser_watchdog._subprocess
+				hasattr(browser_session._local_browser_watchdog, '_subprocess')
+				and browser_session._local_browser_watchdog._subprocess
 			):
-				browser_pid = browser_session.local_browser_watchdog._subprocess.pid
+				browser_pid = browser_session._local_browser_watchdog._subprocess.pid
 		assert browser_pid is not None, 'Browser PID must be available'
 
 		print(f'1️⃣ Browser PID: {browser_pid}')

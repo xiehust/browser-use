@@ -11,6 +11,7 @@ from browser_use.controller.views import (
 	GoToUrlAction,
 	InputTextAction,
 )
+from browser_use.dom.views import NodeType
 
 
 @pytest.fixture(scope='session')
@@ -469,7 +470,7 @@ class TestTypeTextEvent:
 			session_id='',
 			frame_id='',
 			target_id='',
-			node_type=1,
+			node_type=NodeType.ELEMENT_NODE,
 			node_name='body',
 			node_value='',
 			attributes={},
@@ -540,7 +541,7 @@ class TestTypeTextEvent:
 			session_id='',
 			frame_id='',
 			target_id='',
-			node_type=1,
+			node_type=NodeType.ELEMENT_NODE,
 			node_name='input',
 			node_value='',
 			attributes={'id': 'nonexistent'},
