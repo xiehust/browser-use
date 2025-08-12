@@ -1411,7 +1411,7 @@ class BrowserSession(BaseModel):
 			try:
 				# Try to get frame tree (not all target types support this)
 				try:
-					frame_tree_result = await cdp_session.cdp_client.send.Page.getFrameTree(session_id=cdp_session.session_id)
+					frame_tree_result = await cdp_session.cdp_client.send.Page.getFrameTree(session_id=cdp_session.session_id)  # type: ignore
 
 					# Process the frame tree recursively
 					def process_frame_tree(node, parent_frame_id=None):

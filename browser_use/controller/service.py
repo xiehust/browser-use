@@ -294,7 +294,7 @@ class Controller(Generic[Context]):
 						return None
 					if browser_session.is_file_input(n):
 						return n
-					for child in n.children_nodes:
+					for child in n.children_nodes or []:
 						result = find_file_input_in_descendants(child, depth - 1)
 						if result:
 							return result
@@ -311,7 +311,7 @@ class Controller(Generic[Context]):
 						return result
 					# Check all siblings and their descendants
 					if current.parent_node:
-						for sibling in current.parent_node.children_nodes:
+						for sibling in current.parent_node.children_nodes or []:
 							if sibling is current:
 								continue
 							if browser_session.is_file_input(sibling):
