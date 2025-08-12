@@ -396,6 +396,7 @@ class DOMTreeSerializer:
 		Check if an element should propagate bounds based on attributes.
 		If the element satisfies one of the patterns, it propagates bounds to all its children.
 		"""
+		return True
 		keys_to_check = ['tag', 'role']
 		for pattern in self.PROPAGATING_ELEMENTS:
 			# Check if the element satisfies the pattern
