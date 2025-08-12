@@ -9,6 +9,8 @@ This test module covers:
 5. Multiple concurrent sessions handling blocking pages
 """
 
+# pyright: reportAttributeAccessIssue=false, reportOptionalCall=false
+
 import asyncio
 import os
 import signal

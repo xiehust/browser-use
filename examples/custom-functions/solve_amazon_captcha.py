@@ -48,7 +48,7 @@ controller = Controller()
 	],
 )
 async def solve_amazon_captcha(browser_session: BrowserSession):
-	page = await browser_session.get_current_page()
+	page = await browser_session.get_current_page()  # type: ignore
 
 	# Find the captcha image and extract its src
 	captcha_img = page.locator('img[src*="amazon.com/captcha"]')
