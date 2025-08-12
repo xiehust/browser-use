@@ -244,6 +244,7 @@ class TestBrowserSessionRecovery:
 		print(f'1️⃣ Navigating to blocking page: {blocking_url}')
 		try:
 			from browser_use.browser.events import NavigateToUrlEvent
+
 			event = browser_session.event_bus.dispatch(NavigateToUrlEvent(url=blocking_url))
 			await event
 		except Exception as e:
@@ -281,6 +282,7 @@ class TestBrowserSessionRecovery:
 		try:
 			# Use a longer timeout since recovery takes time
 			from browser_use.browser.events import ScreenshotEvent
+
 			event = browser_session.event_bus.dispatch(ScreenshotEvent())
 			result = await asyncio.wait_for(event.event_result(), timeout=40.0)
 			screenshot = result.get('screenshot') if result else None
@@ -310,6 +312,7 @@ class TestBrowserSessionRecovery:
 		)
 
 		from browser_use.browser.events import NavigateToUrlEvent
+
 		event = browser_session.event_bus.dispatch(NavigateToUrlEvent(url=httpserver.url_for('/normal')))
 		await event
 
@@ -345,6 +348,7 @@ class TestBrowserSessionRecovery:
 		try:
 			print('2️⃣ Navigating to transient-block page...')
 			from browser_use.browser.events import NavigateToUrlEvent
+
 			event = browser_session.event_bus.dispatch(NavigateToUrlEvent(url=httpserver.url_for('/transient-block')))
 			await event
 			print('   Navigation completed')
@@ -365,6 +369,7 @@ class TestBrowserSessionRecovery:
 		print('5️⃣ Taking screenshot...')
 		try:
 			from browser_use.browser.events import ScreenshotEvent
+
 			event = browser_session.event_bus.dispatch(ScreenshotEvent())
 			result = await event.event_result()
 			screenshot = result.get('screenshot') if result else None
@@ -412,6 +417,7 @@ class TestBrowserSessionRecovery:
 		print('=== Cycle 1: Navigate to blocking page ===')
 		try:
 			from browser_use.browser.events import NavigateToUrlEvent
+
 			event = browser_session.event_bus.dispatch(NavigateToUrlEvent(url=httpserver.url_for('/block1')))
 			await event
 		except RuntimeError as e:
@@ -421,6 +427,7 @@ class TestBrowserSessionRecovery:
 		# Try screenshot (may trigger recovery)
 		try:
 			from browser_use.browser.events import ScreenshotEvent
+
 			event = browser_session.event_bus.dispatch(ScreenshotEvent())
 			await event
 		except Exception:
@@ -429,6 +436,7 @@ class TestBrowserSessionRecovery:
 		# Navigate to normal page
 		print('=== Cycle 1: Navigate to normal page ===')
 		from browser_use.browser.events import NavigateToUrlEvent
+
 		event = browser_session.event_bus.dispatch(NavigateToUrlEvent(url=httpserver.url_for('/normal1')))
 		await event
 		# Verify navigation succeeded by checking URL
@@ -439,6 +447,7 @@ class TestBrowserSessionRecovery:
 		print('=== Cycle 2: Navigate to another blocking page ===')
 		try:
 			from browser_use.browser.events import NavigateToUrlEvent
+
 			event = browser_session.event_bus.dispatch(NavigateToUrlEvent(url=httpserver.url_for('/block2')))
 			await event
 		except RuntimeError as e:
@@ -448,6 +457,7 @@ class TestBrowserSessionRecovery:
 		# Try screenshot again
 		try:
 			from browser_use.browser.events import ScreenshotEvent
+
 			event = browser_session.event_bus.dispatch(ScreenshotEvent())
 			await event
 		except Exception:
@@ -456,6 +466,7 @@ class TestBrowserSessionRecovery:
 		# Navigate to second normal page
 		print('=== Cycle 2: Navigate to another normal page ===')
 		from browser_use.browser.events import NavigateToUrlEvent
+
 		event = browser_session.event_bus.dispatch(NavigateToUrlEvent(url=httpserver.url_for('/normal2')))
 		await event
 		# Verify navigation succeeded by checking URL
@@ -472,6 +483,7 @@ class TestBrowserSessionRecovery:
 		# Navigate with a timeout - navigation should complete even though page is slow
 		start_time = time.time()
 		from browser_use.browser.events import NavigateToUrlEvent
+
 		event = browser_session.event_bus.dispatch(NavigateToUrlEvent(url=httpserver.url_for('/delayed')))
 		await event
 		elapsed = time.time() - start_time
@@ -486,6 +498,7 @@ class TestBrowserSessionRecovery:
 		# Verify we can navigate to another page
 		httpserver.expect_request('/normal').respond_with_data('<html><body>Normal</body></html>')
 		from browser_use.browser.events import NavigateToUrlEvent
+
 		event = browser_session.event_bus.dispatch(NavigateToUrlEvent(url=httpserver.url_for('/normal')))
 		await event
 		url2 = await browser_session.get_current_page_url()
@@ -496,7 +509,10 @@ class TestBrowserSessionRecovery:
 		# Get the browser process PID from local_browser_watchdog
 		browser_pid = None
 		if hasattr(browser_session, 'local_browser_watchdog') and browser_session.local_browser_watchdog:
-			if hasattr(browser_session.local_browser_watchdog, '_subprocess') and browser_session.local_browser_watchdog._subprocess:
+			if (
+				hasattr(browser_session.local_browser_watchdog, '_subprocess')
+				and browser_session.local_browser_watchdog._subprocess
+			):
 				browser_pid = browser_session.local_browser_watchdog._subprocess.pid
 		assert browser_pid is not None, 'Browser PID must be available'
 
@@ -517,6 +533,7 @@ class TestBrowserSessionRecovery:
 		print('3️⃣ Attempting to use crashed browser session...')
 		with pytest.raises(Exception) as exc_info:
 			from browser_use.browser.events import NavigateToUrlEvent
+
 			event = browser_session.event_bus.dispatch(NavigateToUrlEvent(url='about:blank'))
 			await event
 

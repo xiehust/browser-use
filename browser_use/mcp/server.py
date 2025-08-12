@@ -30,7 +30,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 try:
 	import psutil
@@ -77,7 +77,6 @@ _configure_mcp_server_logging()
 # Import browser_use modules
 from browser_use import ActionModel, Agent
 from browser_use.browser import BrowserProfile, BrowserSession
-from browser_use.browser.events import ClickElementEvent
 from browser_use.config import get_default_llm, get_default_profile, load_browser_use_config
 from browser_use.controller.service import Controller
 from browser_use.filesystem.file_system import FileSystem
@@ -589,7 +588,7 @@ class BrowserUseServer:
 			return 'Error: No browser session active'
 
 		from browser_use.browser.events import NavigateToUrlEvent
-		
+
 		if new_tab:
 			event = self.browser_session.event_bus.dispatch(NavigateToUrlEvent(url=url, new_tab=True))
 			await event
@@ -630,6 +629,7 @@ class BrowserUseServer:
 
 				# Open link in new tab
 				from browser_use.browser.events import NavigateToUrlEvent
+
 				event = self.browser_session.event_bus.dispatch(NavigateToUrlEvent(url=full_url, new_tab=True))
 				await event
 				tabs = await self.browser_session.get_tabs()
@@ -639,12 +639,14 @@ class BrowserUseServer:
 				# For non-link elements, just do a normal click
 				# Opening in new tab without href is not reliably supported
 				from browser_use.browser.events import ClickElementEvent
+
 				event = self.browser_session.event_bus.dispatch(ClickElementEvent(node=element))
 				await event
 				return f'Clicked element {index} (new tab not supported for non-link elements)'
 		else:
 			# Normal click
 			from browser_use.browser.events import ClickElementEvent
+
 			event = self.browser_session.event_bus.dispatch(ClickElementEvent(node=element))
 			await event
 			return f'Clicked element {index}'
@@ -659,6 +661,7 @@ class BrowserUseServer:
 			return f'Element with index {index} not found'
 
 		from browser_use.browser.events import TypeTextEvent
+
 		event = self.browser_session.event_bus.dispatch(TypeTextEvent(node=element, text=text))
 		await event
 		return f"Typed '{text}' into element {index}"
@@ -738,12 +741,14 @@ class BrowserUseServer:
 			return 'Error: No browser session active'
 
 		from browser_use.browser.events import ScrollEvent
-		
+
 		# Scroll by a standard amount (500 pixels)
-		event = self.browser_session.event_bus.dispatch(ScrollEvent(
-			direction=direction,  # type: ignore
-			amount=500
-		))
+		event = self.browser_session.event_bus.dispatch(
+			ScrollEvent(
+				direction=direction,  # type: ignore
+				amount=500,
+			)
+		)
 		await event
 		return f'Scrolled {direction}'
 
@@ -753,6 +758,7 @@ class BrowserUseServer:
 			return 'Error: No browser session active'
 
 		from browser_use.browser.events import GoBackEvent
+
 		event = self.browser_session.event_bus.dispatch(GoBackEvent())
 		await event
 		return 'Navigated back'
@@ -761,6 +767,7 @@ class BrowserUseServer:
 		"""Close the browser session."""
 		if self.browser_session:
 			from browser_use.browser.events import BrowserStopEvent
+
 			event = self.browser_session.event_bus.dispatch(BrowserStopEvent())
 			await event
 			self.browser_session = None
@@ -785,6 +792,7 @@ class BrowserUseServer:
 			return 'Error: No browser session active'
 
 		from browser_use.browser.events import SwitchTabEvent
+
 		event = self.browser_session.event_bus.dispatch(SwitchTabEvent(tab_index=tab_index))
 		await event
 		state = await self.browser_session.get_browser_state_summary()
@@ -799,6 +807,7 @@ class BrowserUseServer:
 		if 0 <= tab_index < len(tabs):
 			url = tabs[tab_index].url
 			from browser_use.browser.events import CloseTabEvent
+
 			event = self.browser_session.event_bus.dispatch(CloseTabEvent(tab_index=tab_index))
 			await event
 			return f'Closed tab {tab_index}: {url}'
