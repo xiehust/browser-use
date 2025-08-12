@@ -340,7 +340,7 @@ class Controller(Generic[Context]):
 						params={'expression': 'window.scrollY || window.pageYOffset || 0'}, session_id=cdp_session.session_id
 					)
 					current_scroll_y = scroll_info.get('result', {}).get('value', 0)
-				except:
+				except Exception:
 					current_scroll_y = 0
 
 				# Find all file inputs in the selector map and pick the closest one to scroll position
@@ -351,7 +351,7 @@ class Controller(Generic[Context]):
 					if browser_session.is_file_input(element):
 						# Get element's Y position
 						if element.absolute_position:
-							element_y = element.absolute_position.get('y', 0)
+							element_y = element.absolute_position.y
 							distance = abs(element_y - current_scroll_y)
 							if distance < min_distance:
 								min_distance = distance
@@ -802,7 +802,7 @@ Provide the extracted information in a clear, structured format."""
 				raise ValueError(error_msg) from e
 
 		@self.registry.action(
-			'Select dropdown option by exact text from any dropdown type (native <select>, ARIA menus, or custom dropdowns). Searches target element and children to find selectable options. You only need this for native dropdowns - for most other dropdowns you can just click and select the option yourself. Only use this if the click apporach does not work. Dont use this for non dropdowns.',
+			'Select dropdown option by exact text from any dropdown type (native <select>, ARIA menus, or custom dropdowns). Searches target element and children to find selectable options. You only need this for native dropdowns - for most other dropdowns you can just click and select the option yourself. Only use this if the click approach does not work. Dont use this for non dropdowns.',
 			param_model=SelectDropdownOptionAction,
 		)
 		async def select_dropdown_option(params: SelectDropdownOptionAction, browser_session: BrowserSession):

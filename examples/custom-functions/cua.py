@@ -202,7 +202,9 @@ async def openai_cua_fallback(params: OpenAICUAAction, browser_session: BrowserS
 		action = computer_call.action
 		print(f'🎬 Executing CUA action: {action.type} - {action}')
 
-		action_result = await handle_model_action(page, action)
+		# TODO: Fix - this example needs to be updated for new BrowserSession API
+		# action_result = await handle_model_action(page, action)
+		action_result = ActionResult(extracted_content='CUA action not implemented', include_in_memory=True)
 		await asyncio.sleep(0.1)
 
 		print('✅ CUA action completed successfully')

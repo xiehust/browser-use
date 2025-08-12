@@ -107,6 +107,7 @@ async def browser_session(base_url):
 	)
 	await browser_session.start()
 	from browser_use.browser.events import NavigateToUrlEvent
+
 	browser_session.event_bus.dispatch(NavigateToUrlEvent(url=f'{base_url}/test'))
 	await asyncio.sleep(0.5)  # Wait for navigation
 	yield browser_session
@@ -140,6 +141,7 @@ class TestActionRegistryParameterPatterns:
 
 		# Navigate to test page first
 		from browser_use.browser.events import NavigateToUrlEvent
+
 		event = browser_session.event_bus.dispatch(NavigateToUrlEvent(url=f'{base_url}/test', new_tab=True))
 		await event
 
@@ -161,6 +163,7 @@ class TestActionRegistryParameterPatterns:
 
 		# Navigate to test page first
 		from browser_use.browser.events import NavigateToUrlEvent
+
 		event = browser_session.event_bus.dispatch(NavigateToUrlEvent(url=f'{base_url}/test', new_tab=True))
 		await event
 
@@ -181,6 +184,7 @@ class TestActionRegistryParameterPatterns:
 
 		# Navigate to test page first
 		from browser_use.browser.events import NavigateToUrlEvent
+
 		event = browser_session.event_bus.dispatch(NavigateToUrlEvent(url=f'{base_url}/test', new_tab=True))
 		await event
 
@@ -205,6 +209,7 @@ class TestActionRegistryParameterPatterns:
 
 		# Navigate to test page first
 		from browser_use.browser.events import NavigateToUrlEvent
+
 		event = browser_session.event_bus.dispatch(NavigateToUrlEvent(url=f'{base_url}/test', new_tab=True))
 		await event
 
@@ -240,6 +245,7 @@ class TestActionRegistryParameterPatterns:
 
 		# Navigate to test page first
 		from browser_use.browser.events import NavigateToUrlEvent
+
 		event = browser_session.event_bus.dispatch(NavigateToUrlEvent(url=f'{base_url}/test', new_tab=True))
 		await event
 
@@ -264,8 +270,9 @@ class TestActionRegistryParameterPatterns:
 		"""Test action with NoParamsAction model"""
 
 		@registry.action('No params action', param_model=NoParamsAction)
-		async def no_params_action(params: NoParamsAction, page: Page):
-			return ActionResult(extracted_content=f'No params action executed on {url}')
+		async def no_params_action(params: NoParamsAction, browser_session: BrowserSession):
+			current_url = await browser_session.get_current_page_url()
+			return ActionResult(extracted_content=f'No params action executed on {current_url}')
 
 		# Test execution with any parameters (should be ignored)
 		result = await registry.execute_action(
@@ -308,13 +315,17 @@ class TestActionRegistryParameterPatterns:
 
 		httpserver.expect_request('/test').respond_with_data('<html><body>Test Page</body></html>')
 		url = await browser_session.get_current_page_url()
-		await page.goto(httpserver.url_for('/test'))
+		from browser_use.browser.events import NavigateToUrlEvent
 
-		# Action that takes page directly (optimized pattern)
-		@registry.action('Action with direct page parameter')
-		async def direct_page_action(text: str, page: Page):
-			# This is the optimized pattern - no need to call get_current_page()
-			return ActionResult(extracted_content=f'Direct page: {text}, URL: {url}')
+		event = browser_session.event_bus.dispatch(NavigateToUrlEvent(url=httpserver.url_for('/test')))
+		await event
+
+		# Action that takes browser_session parameter
+		@registry.action('Action with direct browser_session parameter')
+		async def direct_page_action(text: str, browser_session: BrowserSession):
+			# Get current URL from browser session
+			current_url = await browser_session.get_current_page_url()
+			return ActionResult(extracted_content=f'Direct page: {text}, URL: {current_url}')
 
 		# Action that takes browser_session and calls get_current_page (old pattern)
 		@registry.action('Action with browser_session parameter')

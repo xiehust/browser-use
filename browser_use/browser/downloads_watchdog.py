@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 import anyio
 from bubus import BaseEvent
+from cdp_use.cdp.browser import DownloadProgressEvent, DownloadWillBeginEvent
 from pydantic import PrivateAttr
 
 from browser_use.browser.events import (
@@ -20,7 +21,6 @@ from browser_use.browser.events import (
 	TabCreatedEvent,
 )
 from browser_use.browser.watchdog_base import BaseWatchdog
-from cdp_use.cdp.browser import DownloadProgressEvent, DownloadWillBeginEvent
 
 if TYPE_CHECKING:
 	pass
@@ -101,7 +101,7 @@ class DownloadsWatchdog(BaseWatchdog):
 	async def on_NavigationCompleteEvent(self, event: NavigationCompleteEvent) -> None:
 		"""Check for PDFs after navigation completes."""
 		self.logger.debug(f'[DownloadsWatchdog] NavigationCompleteEvent received for {event.url}, tab_index={event.tab_index}')
-		
+
 		# Clear PDF cache for the navigated URL since content may have changed
 		if event.url in self._pdf_viewer_cache:
 			del self._pdf_viewer_cache[event.url]
@@ -114,7 +114,7 @@ class DownloadsWatchdog(BaseWatchdog):
 
 		target_id = await self.browser_session.get_target_id_by_tab_index(event.tab_index)
 		self.logger.debug(f'[DownloadsWatchdog] Got target_id={target_id} for tab_index={event.tab_index}')
-		
+
 		if target_id:
 			is_pdf = await self.check_for_pdf_viewer(target_id)
 			if is_pdf:
@@ -454,7 +454,7 @@ class DownloadsWatchdog(BaseWatchdog):
 		Returns True if a PDF is detected and should be downloaded.
 		"""
 		self.logger.debug(f'[DownloadsWatchdog] Checking if target {target_id} is PDF viewer...')
-		
+
 		# Get target info to get URL
 		cdp_client = self.browser_session.cdp_client
 		targets = await cdp_client.send.Target.getTargets()
@@ -474,7 +474,7 @@ class DownloadsWatchdog(BaseWatchdog):
 		try:
 			# Create a temporary CDP session for this target without switching focus
 			import asyncio
-			
+
 			temp_session = await self.browser_session.get_or_create_cdp_session(target_id, focus=False)
 
 			result = await asyncio.wait_for(
@@ -570,7 +570,7 @@ class DownloadsWatchdog(BaseWatchdog):
 		Returns the download path if successful, None otherwise.
 		"""
 		self.logger.debug(f'[DownloadsWatchdog] trigger_pdf_download called for target_id={target_id}')
-		
+
 		if not self.browser_session.browser_profile.downloads_path:
 			self.logger.warning('[DownloadsWatchdog] ❌ No downloads path configured, cannot save PDF download')
 			return None
@@ -581,7 +581,7 @@ class DownloadsWatchdog(BaseWatchdog):
 		try:
 			# Create a temporary CDP session for this target without switching focus
 			import asyncio
-			
+
 			self.logger.debug(f'[DownloadsWatchdog] Creating CDP session for PDF download from target {target_id}')
 			temp_session = await self.browser_session.get_or_create_cdp_session(target_id, focus=False)
 
@@ -623,7 +623,7 @@ class DownloadsWatchdog(BaseWatchdog):
 				pdf_filename = os.path.basename(parsed.path) or 'document.pdf'
 				if not pdf_filename.endswith('.pdf'):
 					pdf_filename += '.pdf'
-			
+
 			self.logger.debug(f'[DownloadsWatchdog] Generated filename: {pdf_filename}')
 
 			# Check if already downloaded by looking in the downloads directory
@@ -697,7 +697,9 @@ class DownloadsWatchdog(BaseWatchdog):
 					# Verify file was written successfully
 					if os.path.exists(download_path):
 						actual_size = os.path.getsize(download_path)
-						self.logger.debug(f'[DownloadsWatchdog] PDF file written successfully: {download_path} ({actual_size} bytes)')
+						self.logger.debug(
+							f'[DownloadsWatchdog] PDF file written successfully: {download_path} ({actual_size} bytes)'
+						)
 					else:
 						self.logger.error(f'[DownloadsWatchdog] ❌ Failed to write PDF file to: {download_path}')
 						return None
