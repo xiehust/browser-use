@@ -120,10 +120,16 @@ class LocalBrowserWatchdog(BaseWatchdog):
 					browser_path = profile.executable_path
 					self.logger.debug(f'[LocalBrowserWatchdog] Using custom executable: {browser_path}')
 				else:
-					self.logger.debug('[LocalBrowserWatchdog] Getting browser path from playwright...')
-					# Get browser path from playwright in a subprocess to avoid thread issues
-					browser_path = await self._get_browser_path_via_subprocess()
-					self.logger.debug(f'[LocalBrowserWatchdog] Got browser path: {browser_path}')
+					self.logger.debug('[LocalBrowserWatchdog] Getting browser path...')
+					# Try static discovery first (faster, no subprocess)
+					browser_path = self._get_browser_path_static()
+					if browser_path:
+						self.logger.debug(f'[LocalBrowserWatchdog] Got browser path via static discovery: {browser_path}')
+					else:
+						self.logger.debug('[LocalBrowserWatchdog] Static discovery failed, falling back to subprocess method...')
+						# Fallback to subprocess method if static discovery fails
+						browser_path = await self._get_browser_path_via_subprocess()
+						self.logger.debug(f'[LocalBrowserWatchdog] Got browser path via subprocess: {browser_path}')
 
 				# Launch browser subprocess directly
 				self.logger.debug(f'[LocalBrowserWatchdog] Launching browser subprocess with {len(launch_args)} args...')
@@ -188,6 +194,56 @@ class LocalBrowserWatchdog(BaseWatchdog):
 		if self._original_user_data_dir is not None:
 			profile.user_data_dir = self._original_user_data_dir
 		raise RuntimeError(f'Failed to launch browser after {max_retries} attempts')
+
+	@staticmethod
+	def _get_browser_path_static() -> str | None:
+		"""Get browser executable path using static discovery without starting Playwright."""
+		import os
+		import platform
+		from pathlib import Path
+
+		# Method 1: Check PLAYWRIGHT_BROWSERS_PATH environment variable
+		browsers_path = os.environ.get('PLAYWRIGHT_BROWSERS_PATH')
+
+		if browsers_path:
+			base_path = Path(browsers_path)
+		else:
+			# Method 2: Use default Playwright cache locations
+			system = platform.system()
+			if system == 'Darwin':  # macOS
+				base_path = Path.home() / 'Library' / 'Caches' / 'ms-playwright'
+			elif system == 'Linux':
+				cache_home = os.environ.get('XDG_CACHE_HOME', str(Path.home() / '.cache'))
+				base_path = Path(cache_home) / 'ms-playwright'
+			elif system == 'Windows':
+				base_path = Path.home() / 'AppData' / 'Local' / 'ms-playwright'
+			else:
+				return None
+
+		if not base_path.exists():
+			return None
+
+		# Find the latest chromium directory
+		chromium_dirs = sorted(base_path.glob('chromium-*'), reverse=True)
+		if not chromium_dirs:
+			return None
+
+		latest_chromium = chromium_dirs[0]
+
+		# Platform-specific executable paths
+		if platform.system() == 'Darwin':  # macOS
+			executable = latest_chromium / 'chrome-mac' / 'Chromium.app' / 'Contents' / 'MacOS' / 'Chromium'
+		elif platform.system() == 'Linux':
+			executable = latest_chromium / 'chrome-linux' / 'chrome'
+		elif platform.system() == 'Windows':
+			executable = latest_chromium / 'chrome-win' / 'chrome.exe'
+		else:
+			return None
+
+		if executable.exists():
+			return str(executable)
+
+		return None
 
 	@staticmethod
 	async def _get_browser_path_via_subprocess() -> str:
