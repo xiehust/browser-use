@@ -29,18 +29,6 @@ class ClickableElementDetector:
 
 			for prop in node.ax_node.properties:
 				try:
-					# EXCLUSION RULES: These properties prevent interactivity
-					if prop.name == 'disabled' and prop.value:
-						return False
-					if prop.name == 'hidden' and prop.value:
-						return False
-					if prop.name == 'hiddenRoot' and prop.value:
-						return False
-					if prop.name == 'readonly' and prop.value:
-						return False
-					if prop.name == 'busy' and prop.value:
-						return False
-
 					# TIER 1: Always interactive (strong indicators)
 					# Direct interaction capabilities
 					if prop.name in ['focusable', 'editable', 'settable'] and prop.value:
@@ -50,6 +38,18 @@ class ClickableElementDetector:
 					if prop.name in ['checked', 'expanded', 'pressed', 'selected']:
 						# These properties only exist on interactive elements
 						return True
+
+					# EXCLUSION RULES: These properties prevent interactivity
+					if prop.name == 'disabled' and prop.value:
+						return False
+					# if prop.name == 'hidden' and prop.value:
+					# 	return False
+					# if prop.name == 'hiddenRoot' and prop.value:
+					# 	return False
+					if prop.name == 'readonly' and prop.value:
+						return False
+					if prop.name == 'busy' and prop.value:
+						return False
 
 					# Interactive widget attributes
 					if prop.name == 'hasPopup' and prop.value:
@@ -89,19 +89,19 @@ class ClickableElementDetector:
 		# 	return True
 
 		# Check for interactive attributes
-		# if node.attributes:
-		# 	# Event handlers or interactive attributes
-		# 	interactive_attributes = {
-		# 		'onclick',
-		# 		'onmousedown',
-		# 		'onmouseup',
-		# 		'onkeydown',
-		# 		'onkeyup',
-		# 		'tabindex',
-		# 		'contenteditable',
-		# 	}
-		# 	if any(attr in node.attributes for attr in interactive_attributes):
-		# 		return True
+		if node.attributes:
+			# Event handlers or interactive attributes
+			interactive_attributes = {
+				'onclick',
+				'onmousedown',
+				'onmouseup',
+				'onkeydown',
+				'onkeyup',
+				'tabindex',
+				'contenteditable',
+			}
+			if any(attr in node.attributes for attr in interactive_attributes):
+				return True
 
 		# Accessibility tree roles (fallback check)
 		# if node.ax_node and node.ax_node.role:
@@ -126,25 +126,25 @@ class ClickableElementDetector:
 		# 		return True
 
 		# Enhanced cursor style detection
-		# if node.snapshot_node and node.snapshot_node.cursor_style:
-		# 	interactive_cursors = {
-		# 		'pointer',
-		# 		'move',
-		# 		'text',
-		# 		'grab',
-		# 		'grabbing',
-		# 		'cell',
-		# 		'copy',
-		# 		'alias',
-		# 		'all-scroll',
-		# 		'col-resize',
-		# 		'context-menu',
-		# 		'crosshair',
-		# 		'help',
-		# 		'zoom-in',
-		# 		'zoom-out',
-		# 	}
-		# 	if node.snapshot_node.cursor_style in interactive_cursors:
-		# 		return True
+		if node.snapshot_node and node.snapshot_node.cursor_style:
+			interactive_cursors = {
+				'pointer',
+				'move',
+				'text',
+				'grab',
+				'grabbing',
+				'cell',
+				'copy',
+				'alias',
+				'all-scroll',
+				'col-resize',
+				'context-menu',
+				'crosshair',
+				'help',
+				'zoom-in',
+				'zoom-out',
+			}
+			if node.snapshot_node.cursor_style in interactive_cursors:
+				return True
 
 		return False

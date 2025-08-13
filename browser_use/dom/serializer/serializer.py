@@ -156,7 +156,7 @@ class DOMTreeSerializer:
 			is_interactive = self._is_interactive_cached(node)
 
 			is_visible = node.snapshot_node and node.is_visible
-			is_scrollable = node.is_actually_scrollable
+			is_scrollable = node.is_scrollable
 
 			# Include if interactive (regardless of visibility), or scrollable, or has children to process
 			should_include = (is_interactive and is_visible) or is_scrollable or node.children_and_shadow_roots
@@ -203,7 +203,7 @@ class DOMTreeSerializer:
 
 		if (
 			(is_interactive_opt and is_visible)  # Only keep interactive nodes that are visible
-			or node.original_node.is_actually_scrollable
+			or node.original_node.is_scrollable
 			or node.original_node.node_type == NodeType.TEXT_NODE
 			or node.children
 		):
@@ -433,7 +433,7 @@ class DOMTreeSerializer:
 				return '\n'.join(formatted_text)
 
 			# Add element with interactive_index if clickable, scrollable, or iframe
-			is_any_scrollable = node.original_node.is_actually_scrollable
+			is_any_scrollable = node.original_node.is_scrollable
 			if node.interactive_index is not None or is_any_scrollable or node.original_node.tag_name.upper() == 'IFRAME':
 				next_depth += 1
 
@@ -459,12 +459,6 @@ class DOMTreeSerializer:
 					line += f' {attributes_html_str}'
 
 				line += ' />'
-
-				# Add scroll information for scrollable elements
-				if is_any_scrollable:
-					scroll_info_text = node.original_node.get_scroll_info_text()
-					if scroll_info_text:
-						line += f' ({scroll_info_text})'
 
 				formatted_text.append(line)
 
