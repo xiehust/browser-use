@@ -3,6 +3,21 @@ from browser_use.dom.views import EnhancedDOMTreeNode, NodeType
 
 class ClickableElementDetector:
 	@staticmethod
+	def _has_visible_size(node: EnhancedDOMTreeNode) -> bool:
+		"""
+		Check if node has non-zero dimensions (not collapsed/hidden).
+		
+		Returns:
+			True if element has visible size (width > 0 and height > 0)
+			True if no bounds info available (assume visible)
+			False if element has zero width or height
+		"""
+		if not (node.snapshot_node and node.snapshot_node.bounds):
+			return True  # No bounds info, assume visible
+		bounds = node.snapshot_node.bounds
+		return bounds.height > 0 and bounds.width > 0
+	
+	@staticmethod
 	def _check_accessibility_properties(node: EnhancedDOMTreeNode) -> bool:
 		"""
 		Enhanced accessibility property checks with comprehensive coverage.
@@ -131,9 +146,10 @@ class ClickableElementDetector:
 		if node.tag_name in {'html', 'body'}:
 			return False
 
-		# RELAXED SIZE CHECK: Allow all elements including size 0 (they might be interactive overlays, etc.)
-		# Note: Size 0 elements can still be interactive (e.g., invisible clickable overlays)
-		# Visibility is determined separately by CSS styles, not just bounding box size
+		# Skip elements with zero height or width (collapsed/hidden elements)
+		# These are often dropdown menus or expandable content that's not currently visible
+		if not ClickableElementDetector._has_visible_size(node):
+			return False
 
 		# Check accessibility properties
 		if ClickableElementDetector._check_accessibility_properties(node):
