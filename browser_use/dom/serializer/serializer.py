@@ -282,13 +282,9 @@ class DOMTreeSerializer:
 		# Check if this node starts new propagation (even if excluded!)
 		new_bounds = None
 		tag = node.original_node.tag_name.lower()
-		role = node.original_node.attributes.get('role') if node.original_node.attributes else None
-		attributes = {
-			'tag': tag,
-			'role': role,
-		}
-		# Check if this element matches any propagating element pattern
-		if self._is_propagating_element(attributes):
+		
+		# Check if this element should propagate bounds (includes both patterns and ax properties)
+		if self._is_propagating_element(node.original_node):
 			# This node propagates bounds to ALL its descendants
 			if node.original_node.snapshot_node and node.original_node.snapshot_node.bounds:
 				new_bounds = PropagatingBounds(
@@ -327,33 +323,23 @@ class DOMTreeSerializer:
 		# EXCEPTION RULES - Keep these even if contained:
 
 		child_tag = node.original_node.tag_name.lower()
-		child_role = node.original_node.attributes.get('role') if node.original_node.attributes else None
-		child_attributes = {
-			'tag': child_tag,
-			'role': child_role,
-		}
 
 		# 1. Never exclude form elements (they need individual interaction)
 		if child_tag in ['input', 'select', 'textarea', 'label']:
 			return False
 
-		# 2. Keep if child is also a propagating element
-		# (might have stopPropagation, e.g., button in button)
-		if self._is_propagating_element(child_attributes):
+		# 2. Keep if has event handlers or interactive attributes
+		if ClickableElementDetector._check_accessibility_properties(node.original_node) or ClickableElementDetector._has_event_handlers_or_interactive_attributes(node.original_node):
 			return False
 
-		# 3. Keep if has explicit onclick handler
-		if node.original_node.attributes and 'onclick' in node.original_node.attributes:
-			return False
-
-		# 4. Keep if has aria-label suggesting it's independently interactive
+		# 3. Keep if has aria-label suggesting it's independently interactive
 		if node.original_node.attributes:
 			aria_label = node.original_node.attributes.get('aria-label')
 			if aria_label and aria_label.strip():
 				# Has meaningful aria-label, likely interactive
 				return False
 
-		# 5. Keep if has role suggesting interactivity
+		# 4. Keep if has role suggesting interactivity
 		if node.original_node.attributes:
 			role = node.original_node.attributes.get('role')
 			if role in ['button', 'link', 'checkbox', 'radio', 'tab', 'menuitem']:
@@ -390,11 +376,24 @@ class DOMTreeSerializer:
 			count = self._count_excluded_nodes(child, count)
 		return count
 
-	def _is_propagating_element(self, attributes: dict[str, str | None]) -> bool:
+	def _is_propagating_element(self, node: EnhancedDOMTreeNode) -> bool:
 		"""
-		Check if an element should propagate bounds based on attributes.
-		If the element satisfies one of the patterns, it propagates bounds to all its children.
+		Check if an element should propagate bounds to its children.
+		This includes predefined patterns, interactive accessibility properties, and pointer cursor.
 		"""
+		# Check if has interactive accessibility properties
+		if ClickableElementDetector._check_accessibility_properties(node):
+			return True
+		
+		# Check if has pointer cursor (elements with pointer cursor should propagate to avoid duplicate clicks)
+		if ClickableElementDetector._has_interactive_cursor(node):
+			return True
+		
+		# Check predefined propagating element patterns
+		tag = node.tag_name.lower()
+		role = node.attributes.get('role') if node.attributes else None
+		attributes = {'tag': tag, 'role': role}
+		
 		keys_to_check = ['tag', 'role']
 		for pattern in self.PROPAGATING_ELEMENTS:
 			# Check if the element satisfies the pattern
