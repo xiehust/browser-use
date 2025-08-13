@@ -351,26 +351,34 @@ class BrowserSession(BaseModel):
 			if not self.cdp_url:
 				if self.is_local:
 					# Launch local browser using event-driven approach
+					self.logger.debug('Dispatching BrowserLaunchEvent...')
 					launch_event = self.event_bus.dispatch(BrowserLaunchEvent())
 					await launch_event
 
 					# Get the CDP URL from LocalBrowserWatchdog handler result
-					launch_result: BrowserLaunchResult = cast(
-						BrowserLaunchResult, await launch_event.event_result(raise_if_none=True, raise_if_any=True)
-					)
-					self.cdp_url = launch_result.cdp_url
+					try:
+						launch_result: BrowserLaunchResult = cast(
+							BrowserLaunchResult, await launch_event.event_result(raise_if_none=True, raise_if_any=True)
+						)
+						self.cdp_url = launch_result.cdp_url
+						self.logger.debug(f'Browser launched successfully with CDP URL: {self.cdp_url}')
+					except Exception as launch_error:
+						self.logger.error(f'Failed to get browser launch result: {launch_error}')
+						raise RuntimeError(f'Browser launch failed: {launch_error}') from launch_error
 				else:
 					raise ValueError('Got BrowserSession(is_local=False) but no cdp_url was provided to connect to!')
 
-			assert self.cdp_url and '://' in self.cdp_url
+			assert self.cdp_url and '://' in self.cdp_url, f'Invalid CDP URL: {self.cdp_url}'
 
 			# Only connect if not already connected
 			if self._cdp_client_root is None:
 				# Setup browser via CDP (for both local and remote cases)
+				self.logger.debug(f'Connecting to CDP at {self.cdp_url}...')
 				await self.connect(cdp_url=self.cdp_url)
-				assert self.cdp_client is not None
+				assert self.cdp_client is not None, 'CDP client failed to initialize'
 
 				# Notify that browser is connected (single place)
+				self.logger.debug('Dispatching BrowserConnectedEvent...')
 				self.event_bus.dispatch(BrowserConnectedEvent(cdp_url=self.cdp_url))
 			else:
 				self.logger.debug('Already connected to CDP, skipping reconnection')

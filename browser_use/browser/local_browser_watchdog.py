@@ -121,9 +121,15 @@ class LocalBrowserWatchdog(BaseWatchdog):
 					self.logger.debug(f'[LocalBrowserWatchdog] Using custom executable: {browser_path}')
 				else:
 					self.logger.debug('[LocalBrowserWatchdog] Getting browser path from playwright...')
-					# Get browser path from playwright in a subprocess to avoid thread issues
-					browser_path = await self._get_browser_path_via_subprocess()
-					self.logger.debug(f'[LocalBrowserWatchdog] Got browser path: {browser_path}')
+					try:
+						# Get browser path from playwright in a subprocess to avoid thread issues
+						browser_path = await self._get_browser_path_via_subprocess()
+						self.logger.debug(f'[LocalBrowserWatchdog] Got browser path: {browser_path}')
+					except Exception as e:
+						self.logger.warning(f'[LocalBrowserWatchdog] Failed to get browser path from playwright: {e}')
+						# Try common fallback paths
+						browser_path = self._get_fallback_browser_path()
+						self.logger.info(f'[LocalBrowserWatchdog] Using fallback browser path: {browser_path}')
 
 				# Launch browser subprocess directly
 				self.logger.debug(f'[LocalBrowserWatchdog] Launching browser subprocess with {len(launch_args)} args...')
@@ -195,57 +201,148 @@ class LocalBrowserWatchdog(BaseWatchdog):
 		import json
 		import sys
 
+		# First try to get path without subprocess (faster and more reliable)
+		try:
+			from playwright.async_api import async_playwright
+
+			playwright = await async_playwright().start()
+			try:
+				path = playwright.chromium.executable_path
+				return path
+			finally:
+				await playwright.stop()
+		except Exception as direct_error:
+			# If direct access fails, try subprocess as fallback
+			pass
+
 		# Python code to run in subprocess
 		get_path_code = """
 import asyncio
 import json
 import sys
+import signal
+import os
 
-async def get_path():
-    from playwright.async_api import async_playwright
-    playwright = await async_playwright().start()
-    try:
-        path = playwright.chromium.executable_path
-        print(json.dumps({"path": path}))
-    finally:
-        await playwright.stop()
+def timeout_handler(signum, frame):
+    print(json.dumps({"error": "timeout"}))
+    sys.exit(1)
 
-asyncio.run(get_path())
+def sigterm_handler(signum, frame):
+    print(json.dumps({"error": "terminated"}))
+    sys.exit(1)
+
+# Set up signal handlers for subprocess
+if os.name != 'nt':  # Not Windows
+    signal.signal(signal.SIGALRM, timeout_handler)
+    signal.signal(signal.SIGTERM, sigterm_handler)
+    signal.alarm(8)  # 8 second timeout within subprocess
+
+try:
+    async def get_path():
+        from playwright.async_api import async_playwright
+        playwright = await async_playwright().start()
+        try:
+            path = playwright.chromium.executable_path
+            print(json.dumps({"path": path}))
+        finally:
+            await playwright.stop()
+
+    asyncio.run(get_path())
+except Exception as e:
+    print(json.dumps({"error": str(e)}))
+    sys.exit(1)
+finally:
+    if os.name != 'nt':  # Not Windows
+        signal.alarm(0)  # Cancel the alarm
 """
 
 		# Run in subprocess with timeout
-		process = await asyncio.create_subprocess_exec(
-			sys.executable,
-			'-c',
-			get_path_code,
-			stdout=asyncio.subprocess.PIPE,
-			stderr=asyncio.subprocess.PIPE,
-		)
-
+		process = None
 		try:
+			process = await asyncio.create_subprocess_exec(
+				sys.executable,
+				'-c',
+				get_path_code,
+				stdout=asyncio.subprocess.PIPE,
+				stderr=asyncio.subprocess.PIPE,
+			)
+
 			# Wait for result with timeout
-			stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=10.0)
+			stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=12.0)
 
 			# Parse the result
 			if stdout:
 				result = json.loads(stdout.decode())
-				return result['path']
-			else:
-				# Fallback to default location if subprocess fails
-				error_msg = stderr.decode() if stderr else 'Unknown error'
-				raise RuntimeError(f'Failed to get browser path from playwright: {error_msg}')
+				if 'path' in result:
+					return result['path']
+				elif 'error' in result:
+					raise RuntimeError(f'Subprocess error: {result["error"]}')
 
-		except TimeoutError:
+			# If no stdout or invalid JSON, try stderr
+			error_msg = stderr.decode() if stderr else 'Unknown error'
+			raise RuntimeError(f'Failed to get browser path from playwright: {error_msg}')
+
+		except asyncio.TimeoutError:
 			# Kill the subprocess if it times out
-			process.kill()
-			await process.wait()
-			raise RuntimeError('Timeout getting browser path from playwright')
+			if process and process.returncode is None:
+				try:
+					process.kill()
+					await asyncio.wait_for(process.wait(), timeout=2.0)
+				except:
+					pass
+			raise RuntimeError('Timeout getting browser path from playwright subprocess')
 		except Exception as e:
 			# Make sure subprocess is terminated
-			if process.returncode is None:
-				process.kill()
-				await process.wait()
+			if process and process.returncode is None:
+				try:
+					process.kill()
+					await asyncio.wait_for(process.wait(), timeout=2.0)
+				except:
+					pass
 			raise RuntimeError(f'Error getting browser path: {e}')
+
+	@staticmethod
+	def _get_fallback_browser_path() -> str:
+		"""Get fallback browser path when playwright fails."""
+		import os
+		import platform
+		from pathlib import Path
+
+		system = platform.system()
+
+		# Common Chrome/Chromium paths by OS
+		if system == 'Linux':
+			paths = [
+				'/usr/bin/google-chrome',
+				'/usr/bin/google-chrome-stable',
+				'/usr/bin/chromium',
+				'/usr/bin/chromium-browser',
+				'/snap/bin/chromium',
+				'/usr/bin/chrome',
+			]
+		elif system == 'Darwin':  # macOS
+			paths = [
+				'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+				'/Applications/Chromium.app/Contents/MacOS/Chromium',
+			]
+		elif system == 'Windows':
+			paths = [
+				f'{os.environ.get("PROGRAMFILES", "C:/Program Files")}/Google/Chrome/Application/chrome.exe',
+				f'{os.environ.get("PROGRAMFILES(X86)", "C:/Program Files (x86)")}/Google/Chrome/Application/chrome.exe',
+				f'{os.environ.get("LOCALAPPDATA", "C:/Users/Public/AppData/Local")}/Google/Chrome/Application/chrome.exe',
+			]
+		else:
+			raise RuntimeError(f'Unsupported platform: {system}')
+
+		# Try each path
+		for path in paths:
+			if Path(path).exists():
+				return path
+
+		# If no fallback found, raise error
+		raise RuntimeError(
+			f'No Chrome/Chromium browser found on {system}. Please install Chrome or set executable_path in BrowserProfile.'
+		)
 
 	@staticmethod
 	def _find_free_port() -> int:

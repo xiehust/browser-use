@@ -82,8 +82,8 @@ class StorageStateWatchdog(BaseWatchdog):
 		if self._monitoring_task and not self._monitoring_task.done():
 			return
 
-		assert self.browser_session.cdp_client is not None
-
+		# Don't assert CDP client here - let the monitoring task handle it gracefully
+		# This prevents race condition during browser startup
 		self._monitoring_task = asyncio.create_task(self._monitor_storage_changes())
 		# self.logger.info('[StorageStateWatchdog] Started storage monitoring task')
 
@@ -117,9 +117,24 @@ class StorageStateWatchdog(BaseWatchdog):
 
 	async def _monitor_storage_changes(self) -> None:
 		"""Periodically check for storage changes and auto-save."""
+		# Wait for CDP client to be available before starting monitoring
+		for _ in range(30):  # Wait up to 30 seconds for CDP client
+			if self.browser_session.cdp_client:
+				break
+			await asyncio.sleep(1.0)
+
+		if not self.browser_session.cdp_client:
+			self.logger.warning('[StorageStateWatchdog] CDP client not available after 30s, stopping monitoring')
+			return
+
 		while True:
 			try:
 				await asyncio.sleep(self.auto_save_interval)
+
+				# Check if CDP client is still available
+				if not self.browser_session.cdp_client:
+					self.logger.warning('[StorageStateWatchdog] CDP client disconnected, stopping monitoring')
+					break
 
 				# Check if cookies have changed
 				if await self._have_cookies_changed():
@@ -130,6 +145,8 @@ class StorageStateWatchdog(BaseWatchdog):
 				break
 			except Exception as e:
 				self.logger.error(f'[StorageStateWatchdog] Error in monitoring loop: {e}')
+				# Add a small delay before retrying to prevent rapid error loops
+				await asyncio.sleep(5.0)
 
 	async def _have_cookies_changed(self) -> bool:
 		"""Check if cookies have changed since last save."""
@@ -223,7 +240,7 @@ class StorageStateWatchdog(BaseWatchdog):
 	async def _load_storage_state(self, path: str | None = None) -> None:
 		"""Load browser storage state from file."""
 		if not self.browser_session.cdp_client:
-			self.logger.warning('[StorageStateWatchdog] No CDP client available for loading')
+			self.logger.debug('[StorageStateWatchdog] CDP client not yet available for loading storage state, skipping')
 			return
 
 		load_path = path or self.browser_session.browser_profile.storage_state

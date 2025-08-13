@@ -232,7 +232,7 @@ class BrowserStartEvent(BaseEvent):
 	cdp_url: str | None = None
 	launch_options: dict[str, Any] = Field(default_factory=dict)
 
-	event_timeout: float | None = 30.0  # seconds
+	event_timeout: float | None = 60.0  # seconds - increased from 30s to allow for slower systems
 
 
 class BrowserStopEvent(BaseEvent):
