@@ -18,71 +18,73 @@ class ClickableElementDetector:
 		if node.tag_name in {'html', 'body'}:
 			return False
 
-		# RELAXED SIZE CHECK: Allow all elements including size 0 (they might be interactive overlays, etc.)
-		# Note: Size 0 elements can still be interactive (e.g., invisible clickable overlays)
-		# Visibility is determined separately by CSS styles, not just bounding box size
+		# # RELAXED SIZE CHECK: Allow all elements including size 0 (they might be interactive overlays, etc.)
+		# # Note: Size 0 elements can still be interactive (e.g., invisible clickable overlays)
+		# # Visibility is determined separately by CSS styles, not just bounding box size
 
-		# SEARCH ELEMENT DETECTION: Check for search-related classes and attributes
-		if node.attributes:
-			search_indicators = {
-				'search',
-				'magnify',
-				'glass',
-				'lookup',
-				'find',
-				'query',
-				'search-icon',
-				'search-btn',
-				'search-button',
-				'searchbox',
-			}
+		# # SEARCH ELEMENT DETECTION: Check for search-related classes and attributes
+		# if node.attributes:
+		# 	search_indicators = {
+		# 		'search',
+		# 		'magnify',
+		# 		'glass',
+		# 		'lookup',
+		# 		'find',
+		# 		'query',
+		# 		'search-icon',
+		# 		'search-btn',
+		# 		'search-button',
+		# 		'searchbox',
+		# 	}
 
-			# Check class names for search indicators
-			class_list = node.attributes.get('class', '').lower().split()
-			if any(indicator in ' '.join(class_list) for indicator in search_indicators):
-				return True
+		# 	# Check class names for search indicators
+		# 	class_list = node.attributes.get('class', '').lower().split()
+		# 	if any(indicator in ' '.join(class_list) for indicator in search_indicators):
+		# 		return True
 
-			# Check id for search indicators
-			element_id = node.attributes.get('id', '').lower()
-			if any(indicator in element_id for indicator in search_indicators):
-				return True
+		# 	# Check id for search indicators
+		# 	element_id = node.attributes.get('id', '').lower()
+		# 	if any(indicator in element_id for indicator in search_indicators):
+		# 		return True
 
-			# Check data attributes for search functionality
-			for attr_name, attr_value in node.attributes.items():
-				if attr_name.startswith('data-') and any(indicator in attr_value.lower() for indicator in search_indicators):
-					return True
+		# 	# Check data attributes for search functionality
+		# 	for attr_name, attr_value in node.attributes.items():
+		# 		if attr_name.startswith('data-') and any(indicator in attr_value.lower() for indicator in search_indicators):
+		# 			return True
 
 		# Enhanced accessibility property checks - direct clear indicators only
 		if node.ax_node and node.ax_node.properties:
 			for prop in node.ax_node.properties:
-				try:
-					# aria disabled
-					if prop.name == 'disabled' and prop.value:
-						return False
+				# try:
+				# aria disabled
+				# if prop.name == 'disabled' and prop.value:
+				# 	return False
 
-					# aria hidden
-					if prop.name == 'hidden' and prop.value:
-						return False
+				# # aria hidden
+				# if prop.name == 'hidden' and prop.value:
+				# 	return False
 
-					# Direct interactiveness indicators
-					if prop.name in ['focusable', 'editable', 'settable'] and prop.value:
-						return True
+				# Direct interactiveness indicators
+				if prop.name in ['focusable', 'editable', 'settable'] and prop.value:
+					return True
 
-					# Interactive state properties (presence indicates interactive widget)
-					if prop.name in ['checked', 'expanded', 'pressed', 'selected']:
-						# These properties only exist on interactive elements
-						return True
+				# 	# Interactive state properties (presence indicates interactive widget)
+				# 	if prop.name in ['checked', 'expanded', 'pressed', 'selected']:
+				# 		# These properties only exist on interactive elements
+				# 		return True
 
-					# Form-related interactiveness
-					if prop.name in ['required', 'autocomplete'] and prop.value:
-						return True
+				# 	# Form-related interactiveness
+				# 	if prop.name in ['required', 'autocomplete'] and prop.value:
+				# 		return True
 
-					# Elements with keyboard shortcuts are interactive
-					if prop.name == 'keyshortcuts' and prop.value:
-						return True
-				except (AttributeError, ValueError):
-					# Skip properties we can't process
-					continue
+				# 	# Elements with keyboard shortcuts are interactive
+				# 	if prop.name == 'keyshortcuts' and prop.value:
+				# 		return True
+				# except (AttributeError, ValueError):
+				# 	# Skip properties we can't process
+				# 	continue
+
+		return False
 
 		# ENHANCED TAG CHECK: Include truly interactive elements
 		interactive_tags = {
@@ -99,7 +101,7 @@ class ClickableElementDetector:
 		}
 		if node.tag_name in interactive_tags:
 			return True
-		
+
 		# SVG elements need special handling - only interactive if they have explicit handlers
 		# svg_tags = {'svg', 'path', 'circle', 'rect', 'polygon', 'ellipse', 'line', 'polyline', 'g'}
 		# if node.tag_name in svg_tags:
