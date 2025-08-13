@@ -146,29 +146,16 @@ class LocalBrowserWatchdog(BaseWatchdog):
 				self.logger.debug(f'[LocalBrowserWatchdog] Browser path: {browser_path}')
 				self.logger.debug(f'[LocalBrowserWatchdog] Debug port: {debug_port}')
 
-				# Create subprocess with timeout
-				try:
-					subprocess = await asyncio.wait_for(
-						asyncio.create_subprocess_exec(
-							browser_path,
-							*launch_args,
-							stdout=asyncio.subprocess.PIPE,
-							stderr=asyncio.subprocess.PIPE,
-						),
-						timeout=10.0,  # 10 second timeout for subprocess creation
-					)
-				except asyncio.TimeoutError:
-					raise RuntimeError(f'Browser subprocess creation timed out after 10 seconds. Browser path: {browser_path}')
+				subprocess = await asyncio.create_subprocess_exec(
+					browser_path,
+					*launch_args,
+					stdout=asyncio.subprocess.PIPE,
+					stderr=asyncio.subprocess.PIPE,
+				)
 				self.logger.debug(f'[LocalBrowserWatchdog] Browser subprocess launched with PID: {subprocess.pid}')
 
 				# Convert to psutil.Process
 				process = psutil.Process(subprocess.pid)
-
-				# Verify process is running
-				if not process.is_running():
-					raise RuntimeError(f'Browser process {subprocess.pid} failed to start or exited immediately')
-
-				self.logger.debug(f'[LocalBrowserWatchdog] Browser process {subprocess.pid} is running')
 
 				# Wait for CDP to be ready and get the URL
 				self.logger.debug(f'[LocalBrowserWatchdog] Waiting for CDP to be ready on port {debug_port}...')
@@ -229,121 +216,55 @@ class LocalBrowserWatchdog(BaseWatchdog):
 		import json
 		import sys
 
-		# First try a simple fallback approach (no Playwright)
-		try:
-			return LocalBrowserWatchdog._get_fallback_browser_path()
-		except Exception:
-			# If fallback fails, try subprocess with Playwright
-			pass
-
 		# Python code to run in subprocess
 		get_path_code = """
 import asyncio
 import json
 import sys
-import signal
-import os
-
-def timeout_handler(signum, frame):
-    print(json.dumps({"error": "timeout"}))
-    sys.exit(1)
-
-def sigterm_handler(signum, frame):
-    print(json.dumps({"error": "terminated"}))
-    sys.exit(1)
-
-# Set up signal handlers for subprocess
-if os.name != 'nt':  # Not Windows
-    signal.signal(signal.SIGALRM, timeout_handler)
-    signal.signal(signal.SIGTERM, sigterm_handler)
-    signal.alarm(6)  # 6 second timeout within subprocess (reduced from 8)
 
 try:
     async def get_path():
+        from playwright.async_api import async_playwright
+        playwright = await async_playwright().start()
         try:
-            from playwright.async_api import async_playwright
-            # Use a shorter timeout for playwright startup
-            playwright = await asyncio.wait_for(async_playwright().start(), timeout=4.0)
-            try:
-                path = playwright.chromium.executable_path
-                print(json.dumps({"path": path}))
-            finally:
-                try:
-                    await asyncio.wait_for(playwright.stop(), timeout=1.0)
-                except:
-                    pass  # Ignore cleanup errors
-        except asyncio.TimeoutError:
-            print(json.dumps({"error": "playwright_timeout"}))
-            sys.exit(1)
-        except Exception as e:
-            print(json.dumps({"error": f"playwright_error: {e}"}))
-            sys.exit(1)
+            path = playwright.chromium.executable_path
+            print(json.dumps({"path": path}))
+        finally:
+            await playwright.stop()
 
     asyncio.run(get_path())
 except Exception as e:
     print(json.dumps({"error": str(e)}))
     sys.exit(1)
-finally:
-    if os.name != 'nt':  # Not Windows
-        signal.alarm(0)  # Cancel the alarm
 """
 
-		# Run in subprocess with timeout
-		process = None
+		# Create subprocess to run the code
+		process = await asyncio.create_subprocess_exec(
+			sys.executable,
+			'-c',
+			get_path_code,
+			stdout=asyncio.subprocess.PIPE,
+			stderr=asyncio.subprocess.PIPE,
+		)
+
+		stdout, stderr = await process.communicate()
+
+		if process.returncode != 0:
+			error_msg = stderr.decode('utf-8', errors='ignore') if stderr else 'Unknown subprocess error'
+			raise RuntimeError(f'Browser path detection failed: {error_msg}')
+
 		try:
-			process = await asyncio.create_subprocess_exec(
-				sys.executable,
-				'-c',
-				get_path_code,
-				stdout=asyncio.subprocess.PIPE,
-				stderr=asyncio.subprocess.PIPE,
-			)
+			result = json.loads(stdout.decode('utf-8'))
+		except json.JSONDecodeError:
+			raise RuntimeError(f'Invalid JSON output from browser path detection: {stdout.decode("utf-8", errors="ignore")}')
 
-			# Wait for result with timeout
-			stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=8.0)
+		if 'error' in result:
+			raise RuntimeError(f'Browser path detection error: {result["error"]}')
 
-			# Parse the result
-			if stdout:
-				try:
-					result = json.loads(stdout.decode())
-					if 'path' in result:
-						return result['path']
-					elif 'error' in result:
-						error_type = result['error']
-						if 'timeout' in error_type or 'playwright_timeout' in error_type:
-							raise RuntimeError(f'Playwright subprocess timed out: {error_type}')
-						else:
-							raise RuntimeError(f'Subprocess error: {error_type}')
-				except json.JSONDecodeError:
-					# stdout isn't valid JSON, treat as error
-					pass
+		if 'path' not in result:
+			raise RuntimeError('No browser path found in subprocess output')
 
-			# If no stdout or invalid JSON, try stderr
-			error_msg = stderr.decode() if stderr else 'Unknown error'
-			raise RuntimeError(f'Failed to get browser path from playwright subprocess: {error_msg}')
-
-		except asyncio.TimeoutError:
-			# Kill the subprocess if it times out
-			if process and process.returncode is None:
-				try:
-					process.kill()
-					await asyncio.wait_for(process.wait(), timeout=2.0)
-				except:
-					pass
-			raise RuntimeError(
-				'Timeout getting browser path from playwright subprocess. Consider installing Chrome/Chromium or setting BrowserProfile(executable_path="/path/to/browser")'
-			)
-		except Exception as e:
-			# Make sure subprocess is terminated
-			if process and process.returncode is None:
-				try:
-					process.kill()
-					await asyncio.wait_for(process.wait(), timeout=2.0)
-				except:
-					pass
-			raise RuntimeError(
-				f'Error getting browser path from subprocess: {e}. Consider installing Chrome/Chromium or setting BrowserProfile(executable_path="/path/to/browser")'
-			)
+		return result['path']
 
 	@staticmethod
 	def _get_fallback_browser_path() -> str:
@@ -422,21 +343,13 @@ finally:
 					raise TimeoutError(f'Browser did not start within {timeout} seconds')
 
 				async with aiohttp.ClientSession() as session:
-					# Use a shorter timeout for individual requests
-					async with session.get(
-						f'http://localhost:{port}/json/version', timeout=aiohttp.ClientTimeout(total=2.0)
-					) as resp:
+					async with session.get(f'http://localhost:{port}/json/version') as resp:
 						if resp.status == 200:
 							# Chrome is ready
 							return f'http://localhost:{port}/'
 						else:
 							# Chrome is starting up and returning 502/500 errors
 							await asyncio.sleep(check_interval)
-			except asyncio.CancelledError:
-				# Handle cancellation gracefully
-				raise TimeoutError(
-					f'Browser startup was cancelled after {asyncio.get_event_loop().time() - start_time:.1f} seconds'
-				)
 			except Exception:
 				# Connection error - Chrome might not be ready yet
 				await asyncio.sleep(check_interval)
