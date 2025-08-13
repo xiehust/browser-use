@@ -1712,8 +1712,6 @@ Provide the extracted information in a clear, structured format."""
 							context=context,
 						)
 					except Exception as e:
-						if Laminar is not None:
-							span.record_exception(e)
 						result = ActionResult(error=str(e))
 
 					if Laminar is not None:

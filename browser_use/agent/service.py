@@ -1494,6 +1494,18 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		total_actions = len(actions)
 
 		assert self.browser_session is not None, 'BrowserSession is not set up'
+
+		# Ensure browser session is ready before executing actions
+		if self.browser_session.cdp_client is None:
+			self.logger.warning('Browser session CDP client not ready, waiting for initialization...')
+			# Wait up to 10 seconds for CDP client to be ready
+			for _ in range(100):  # 100 * 0.1 = 10 seconds
+				if self.browser_session.cdp_client is not None:
+					break
+				await asyncio.sleep(0.1)
+
+			if self.browser_session.cdp_client is None:
+				raise RuntimeError('Browser session failed to initialize - CDP client not ready after 10 seconds')
 		try:
 			if (
 				self.browser_session._cached_browser_state_summary is not None

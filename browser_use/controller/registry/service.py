@@ -364,7 +364,11 @@ class Registry(Generic[Context]):
 				except Exception:
 					special_context['page_url'] = None
 
-				# Add cdp_client
+				# Add cdp_client with safety check
+				if browser_session.cdp_client is None:
+					raise RuntimeError(
+						'Browser session not fully initialized - CDP client is not ready. Please ensure the browser has started before executing actions.'
+					)
 				special_context['cdp_client'] = browser_session.cdp_client
 
 			# All functions are now normalized to accept kwargs only
