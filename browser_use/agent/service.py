@@ -1300,7 +1300,24 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 			event = self.browser_session.event_bus.dispatch(BrowserStartEvent())
 			await event
 
-			self.logger.debug('🔧 Browser session started with watchdogs attached')
+			# Ensure CDP client is ready after browser start
+			if self.browser_session._cdp_client_root is None:
+				self.logger.warning('CDP client not ready after BrowserStartEvent, waiting for initialization...')
+				# Wait up to 30 seconds for CDP client to be ready
+				for wait_count in range(300):  # 300 * 0.1 = 30 seconds
+					if self.browser_session._cdp_client_root is not None:
+						self.logger.info(f'CDP client became ready after {wait_count * 0.1:.1f} seconds')
+						break
+					await asyncio.sleep(0.1)
+
+				if self.browser_session._cdp_client_root is None:
+					self.logger.error('Browser session failed to initialize - CDP client not ready after BrowserStartEvent')
+					self.logger.error(
+						f'Browser session state: cdp_url={self.browser_session.cdp_url}, is_local={self.browser_session.is_local}'
+					)
+					raise RuntimeError('Browser session failed to initialize - CDP client not ready after BrowserStartEvent')
+
+			self.logger.debug('🔧 Browser session started with watchdogs attached and CDP client ready')
 
 			# Check if task contains a URL and navigate to it immediately (only if preload is enabled)
 			if self.preload:
@@ -1494,18 +1511,6 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		total_actions = len(actions)
 
 		assert self.browser_session is not None, 'BrowserSession is not set up'
-
-		# Ensure browser session is ready before executing actions
-		if self.browser_session.cdp_client is None:
-			self.logger.warning('Browser session CDP client not ready, waiting for initialization...')
-			# Wait up to 10 seconds for CDP client to be ready
-			for _ in range(100):  # 100 * 0.1 = 10 seconds
-				if self.browser_session.cdp_client is not None:
-					break
-				await asyncio.sleep(0.1)
-
-			if self.browser_session.cdp_client is None:
-				raise RuntimeError('Browser session failed to initialize - CDP client not ready after 10 seconds')
 		try:
 			if (
 				self.browser_session._cached_browser_state_summary is not None

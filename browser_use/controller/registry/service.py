@@ -365,7 +365,7 @@ class Registry(Generic[Context]):
 					special_context['page_url'] = None
 
 				# Add cdp_client with safety check
-				if browser_session.cdp_client is None:
+				if browser_session._cdp_client_root is None:
 					raise RuntimeError(
 						'Browser session not fully initialized - CDP client is not ready. Please ensure the browser has started before executing actions.'
 					)
