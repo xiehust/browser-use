@@ -121,12 +121,35 @@ class LocalBrowserWatchdog(BaseWatchdog):
 					self.logger.debug(f'[LocalBrowserWatchdog] Using custom executable: {browser_path}')
 				else:
 					self.logger.debug('[LocalBrowserWatchdog] Getting browser path from playwright...')
-					try:
-						# Get browser path from playwright in a subprocess to avoid thread issues
-						browser_path = await self._get_browser_path_via_subprocess()
-						self.logger.debug(f'[LocalBrowserWatchdog] Got browser path: {browser_path}')
-					except Exception as e:
-						self.logger.warning(f'[LocalBrowserWatchdog] Failed to get browser path from playwright: {e}')
+
+					# Try browser path detection with retries
+					browser_path = None
+					for path_attempt in range(3):  # Try up to 3 times
+						try:
+							# Get browser path from playwright with quick timeout
+							browser_path = await asyncio.wait_for(
+								self._get_browser_path_via_subprocess(),
+								timeout=5.0,  # 5 second timeout - should be super quick
+							)
+							self.logger.debug(f'[LocalBrowserWatchdog] Got browser path: {browser_path}')
+							break  # Success, exit retry loop
+						except asyncio.TimeoutError:
+							self.logger.warning(
+								f'[LocalBrowserWatchdog] Browser path detection timed out (attempt {path_attempt + 1}/3)'
+							)
+							if path_attempt < 2:  # Not the last attempt
+								await asyncio.sleep(0.5)  # Brief delay before retry
+								continue
+						except Exception as e:
+							self.logger.warning(
+								f'[LocalBrowserWatchdog] Browser path detection failed (attempt {path_attempt + 1}/3): {e}'
+							)
+							if path_attempt < 2:  # Not the last attempt
+								await asyncio.sleep(0.5)  # Brief delay before retry
+								continue
+
+					# If browser path detection failed, try fallback
+					if browser_path is None:
 						try:
 							# Try common fallback paths
 							browser_path = self._get_fallback_browser_path()
@@ -135,11 +158,12 @@ class LocalBrowserWatchdog(BaseWatchdog):
 							self.logger.error(f'[LocalBrowserWatchdog] Fallback browser path also failed: {fallback_error}')
 							# If this is the first attempt, continue to the next attempt with temp dir
 							if attempt < max_retries - 1:
+								self.logger.warning(
+									f'[LocalBrowserWatchdog] Retrying browser launch (attempt {attempt + 1}/{max_retries})'
+								)
 								continue
 							else:
-								raise RuntimeError(
-									f'Failed to find browser executable. Playwright error: {e}, Fallback error: {fallback_error}'
-								)
+								raise RuntimeError('Failed to find browser executable. All path detection methods failed')
 
 				# Launch browser subprocess directly
 				self.logger.debug(f'[LocalBrowserWatchdog] Launching browser subprocess with {len(launch_args)} args...')
@@ -216,6 +240,20 @@ class LocalBrowserWatchdog(BaseWatchdog):
 		import json
 		import sys
 
+		# First try direct Playwright access (faster and more reliable)
+		try:
+			from playwright.async_api import async_playwright
+
+			playwright = await async_playwright().start()
+			try:
+				path = playwright.chromium.executable_path
+				return path
+			finally:
+				await playwright.stop()
+		except Exception as direct_error:
+			# If direct access fails, try subprocess as fallback
+			pass
+
 		# Python code to run in subprocess
 		get_path_code = """
 import asyncio
@@ -238,33 +276,44 @@ except Exception as e:
     sys.exit(1)
 """
 
-		# Create subprocess to run the code
-		process = await asyncio.create_subprocess_exec(
-			sys.executable,
-			'-c',
-			get_path_code,
-			stdout=asyncio.subprocess.PIPE,
-			stderr=asyncio.subprocess.PIPE,
-		)
-
-		stdout, stderr = await process.communicate()
-
-		if process.returncode != 0:
-			error_msg = stderr.decode('utf-8', errors='ignore') if stderr else 'Unknown subprocess error'
-			raise RuntimeError(f'Browser path detection failed: {error_msg}')
-
+		# Create subprocess to run the code with timeout
 		try:
-			result = json.loads(stdout.decode('utf-8'))
-		except json.JSONDecodeError:
-			raise RuntimeError(f'Invalid JSON output from browser path detection: {stdout.decode("utf-8", errors="ignore")}')
+			process = await asyncio.wait_for(
+				asyncio.create_subprocess_exec(
+					sys.executable,
+					'-c',
+					get_path_code,
+					stdout=asyncio.subprocess.PIPE,
+					stderr=asyncio.subprocess.PIPE,
+				),
+				timeout=10.0,  # 10 second timeout for subprocess creation
+			)
 
-		if 'error' in result:
-			raise RuntimeError(f'Browser path detection error: {result["error"]}')
+			stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=15.0)
 
-		if 'path' not in result:
-			raise RuntimeError('No browser path found in subprocess output')
+			if process.returncode != 0:
+				error_msg = stderr.decode('utf-8', errors='ignore') if stderr else 'Unknown subprocess error'
+				raise RuntimeError(f'Browser path detection failed: {error_msg}')
 
-		return result['path']
+			try:
+				result = json.loads(stdout.decode('utf-8'))
+			except json.JSONDecodeError:
+				raise RuntimeError(f'Invalid JSON output from browser path detection: {stdout.decode("utf-8", errors="ignore")}')
+
+			if 'error' in result:
+				raise RuntimeError(f'Browser path detection error: {result["error"]}')
+
+			if 'path' not in result:
+				raise RuntimeError('No browser path found in subprocess output')
+
+			return result['path']
+
+		except asyncio.TimeoutError:
+			# If subprocess times out, try fallback browser paths
+			raise RuntimeError('Browser path detection timed out, trying fallback paths')
+		except asyncio.CancelledError:
+			# If subprocess is cancelled, try fallback browser paths
+			raise RuntimeError('Browser path detection was cancelled, trying fallback paths')
 
 	@staticmethod
 	def _get_fallback_browser_path() -> str:
