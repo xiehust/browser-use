@@ -22,168 +22,129 @@ class ClickableElementDetector:
 		# Note: Size 0 elements can still be interactive (e.g., invisible clickable overlays)
 		# Visibility is determined separately by CSS styles, not just bounding box size
 
-		# SEARCH ELEMENT DETECTION: Check for search-related classes and attributes
-		if node.attributes:
-			search_indicators = {
-				'search',
-				'magnify',
-				'glass',
-				'lookup',
-				'find',
-				'query',
-				'search-icon',
-				'search-btn',
-				'search-button',
-				'searchbox',
-			}
-
-			# Check class names for search indicators
-			class_list = node.attributes.get('class', '').lower().split()
-			if any(indicator in ' '.join(class_list) for indicator in search_indicators):
-				return True
-
-			# Check id for search indicators
-			element_id = node.attributes.get('id', '').lower()
-			if any(indicator in element_id for indicator in search_indicators):
-				return True
-
-			# Check data attributes for search functionality
-			for attr_name, attr_value in node.attributes.items():
-				if attr_name.startswith('data-') and any(indicator in attr_value.lower() for indicator in search_indicators):
-					return True
-
-		# Enhanced accessibility property checks - direct clear indicators only
+		# Enhanced accessibility property checks with comprehensive coverage
 		if node.ax_node and node.ax_node.properties:
+			if node.ax_node.ignored:  # all ignored nodes are not interactive
+				return False
+
 			for prop in node.ax_node.properties:
 				try:
-					# aria disabled
+					# EXCLUSION RULES: These properties prevent interactivity
 					if prop.name == 'disabled' and prop.value:
 						return False
-
-					# aria hidden
 					if prop.name == 'hidden' and prop.value:
 						return False
+					if prop.name == 'hiddenRoot' and prop.value:
+						return False
+					if prop.name == 'readonly' and prop.value:
+						return False
+					if prop.name == 'busy' and prop.value:
+						return False
 
-					# Direct interactiveness indicators
+					# TIER 1: Always interactive (strong indicators)
+					# Direct interaction capabilities
 					if prop.name in ['focusable', 'editable', 'settable'] and prop.value:
 						return True
 
-					# Interactive state properties (presence indicates interactive widget)
+					# Widget states (only interactive elements have these)
 					if prop.name in ['checked', 'expanded', 'pressed', 'selected']:
 						# These properties only exist on interactive elements
 						return True
 
-					# Form-related interactiveness
+					# Interactive widget attributes
+					if prop.name == 'hasPopup' and prop.value:
+						return True
+					if prop.name == 'multiselectable' and prop.value:
+						return True
+
+					# TIER 2: Contextually interactive (moderate indicators)
+					# Form/input related
 					if prop.name in ['required', 'autocomplete'] and prop.value:
+						return True
+					if prop.name in ['valuemin', 'valuemax', 'valuetext'] and prop.value:
 						return True
 
 					# Elements with keyboard shortcuts are interactive
 					if prop.name == 'keyshortcuts' and prop.value:
 						return True
+
 				except (AttributeError, ValueError):
 					# Skip properties we can't process
 					continue
 
-		# ENHANCED TAG CHECK: Include truly interactive elements
-		interactive_tags = {
-			'button',
-			'input',
-			'select',
-			'textarea',
-			'a',
-			'label',
-			'details',
-			'summary',
-			'option',
-			'optgroup',
-		}
-		if node.tag_name in interactive_tags:
-			return True
-		
-		# SVG elements need special handling - only interactive if they have explicit handlers
-		# svg_tags = {'svg', 'path', 'circle', 'rect', 'polygon', 'ellipse', 'line', 'polyline', 'g'}
-		# if node.tag_name in svg_tags:
-		# 	# Only consider SVG elements interactive if they have:
-		# 	# 1. Explicit event handlers
-		# 	# 2. Interactive role attributes
-		# 	# 3. Cursor pointer style
-		# 	if node.attributes:
-		# 		# Check for event handlers
-		# 		if any(attr.startswith('on') for attr in node.attributes):
-		# 			return True
-		# 		# Check for interactive roles
-		# 		if node.attributes.get('role') in {'button', 'link', 'menuitem'}:
-		# 			return True
-		# 		# Check for cursor pointer (indicating clickability)
-		# 		if node.attributes.get('style') and 'cursor: pointer' in node.attributes.get('style', ''):
-		# 			return True
-		# 	# Otherwise, SVG elements are decorative
-		# 	return False
+		# Enhanced tag check: Include truly interactive elements
+		# interactive_tags = {
+		# 	'button',
+		# 	'input',
+		# 	'select',
+		# 	'textarea',
+		# 	'a',
+		# 	'label',
+		# 	'details',
+		# 	'summary',
+		# 	'option',
+		# 	'optgroup',
+		# }
+		# if node.tag_name in interactive_tags:
+		# 	return True
 
-		# Tertiary check: elements with interactive attributes
-		if node.attributes:
-			# Check for event handlers or interactive attributes
-			interactive_attributes = {'onclick', 'onmousedown', 'onmouseup', 'onkeydown', 'onkeyup', 'tabindex'}
-			if any(attr in node.attributes for attr in interactive_attributes):
-				return True
+		# Check for interactive attributes
+		# if node.attributes:
+		# 	# Event handlers or interactive attributes
+		# 	interactive_attributes = {
+		# 		'onclick',
+		# 		'onmousedown',
+		# 		'onmouseup',
+		# 		'onkeydown',
+		# 		'onkeyup',
+		# 		'tabindex',
+		# 		'contenteditable',
+		# 	}
+		# 	if any(attr in node.attributes for attr in interactive_attributes):
+		# 		return True
 
-			# Check for interactive ARIA roles
-			if 'role' in node.attributes:
-				interactive_roles = {
-					'button',
-					'link',
-					'menuitem',
-					'option',
-					'radio',
-					'checkbox',
-					'tab',
-					'textbox',
-					'combobox',
-					'slider',
-					'spinbutton',
-					'search',
-					'searchbox',
-				}
-				if node.attributes['role'] in interactive_roles:
-					return True
+		# Accessibility tree roles (fallback check)
+		# if node.ax_node and node.ax_node.role:
+		# 	interactive_ax_roles = {
+		# 		'button',
+		# 		'link',
+		# 		'menuitem',
+		# 		'option',
+		# 		'radio',
+		# 		'checkbox',
+		# 		'tab',
+		# 		'textbox',
+		# 		'combobox',
+		# 		'slider',
+		# 		'spinbutton',
+		# 		'listbox',
+		# 		'search',
+		# 		'searchbox',
+		# 		'switch',
+		# 	}
+		# 	if node.ax_node.role in interactive_ax_roles:
+		# 		return True
 
-		# Quaternary check: accessibility tree roles
-		if node.ax_node and node.ax_node.role:
-			interactive_ax_roles = {
-				'button',
-				'link',
-				'menuitem',
-				'option',
-				'radio',
-				'checkbox',
-				'tab',
-				'textbox',
-				'combobox',
-				'slider',
-				'spinbutton',
-				'listbox',
-				'search',
-				'searchbox',
-			}
-			if node.ax_node.role in interactive_ax_roles:
-				return True
-
-		# ICON AND SMALL ELEMENT CHECK: Elements that might be icons
-		if (
-			node.snapshot_node
-			and node.snapshot_node.bounds
-			and 10 <= node.snapshot_node.bounds.width <= 50  # Icon-sized elements
-			and 10 <= node.snapshot_node.bounds.height <= 50
-		):
-			# Check if this small element has interactive properties
-			if node.attributes:
-				# Small elements with these attributes are likely interactive icons
-				icon_attributes = {'class', 'role', 'onclick', 'data-action', 'aria-label'}
-				if any(attr in node.attributes for attr in icon_attributes):
-					return True
-
-		# Final fallback: cursor style indicates interactivity (for cases Chrome missed)
-		if node.snapshot_node and node.snapshot_node.cursor_style and node.snapshot_node.cursor_style == 'pointer':
-			return True
+		# Enhanced cursor style detection
+		# if node.snapshot_node and node.snapshot_node.cursor_style:
+		# 	interactive_cursors = {
+		# 		'pointer',
+		# 		'move',
+		# 		'text',
+		# 		'grab',
+		# 		'grabbing',
+		# 		'cell',
+		# 		'copy',
+		# 		'alias',
+		# 		'all-scroll',
+		# 		'col-resize',
+		# 		'context-menu',
+		# 		'crosshair',
+		# 		'help',
+		# 		'zoom-in',
+		# 		'zoom-out',
+		# 	}
+		# 	if node.snapshot_node.cursor_style in interactive_cursors:
+		# 		return True
 
 		return False
