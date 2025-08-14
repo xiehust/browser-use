@@ -530,22 +530,19 @@ class Controller(Generic[Context]):
 				raise RuntimeError(f'Could not convert html to markdown: {type(e).__name__}')
 
 			# Simple truncation to 30k characters
-			if len(content) > 40000:
-				content = content[:40000] + '\n\n... [Content truncated at 30k characters] ...'
+			if len(content) > 30000:
+				content = content[:30000] + '\n\n... [Content truncated at 30k characters] ...'
 
 			# Simple prompt
-			prompt = f"""You convert websites into structured information. Extract information from this webpage based on the query. Focus only on content relevant to the query. If 
-1. The query is vague
-2. Does not make sense for the page
-3. Some/all of the information is not available
+			prompt = f"""Extract the requested information from this webpage content.
+If you get a query which does not make sense given the content - explain briefly whats on the page, and that you don't have access to the requested information.
+			
+Query: {query}
 
-Explain the content of the page and that the requested information is not available in the page. Respond in JSON format.
-<query>
-{query}
-</query>
-<website_content>
+Webpage Content:
 {content}
-</website_content>"""
+
+Provide the extracted information in a clear, structured format."""
 
 # 			prompt = f"""Extract the requested information from this webpage content.
 # If you get a query which does not make sense given the content - explain briefly whats on the page, and that you don't have access to the requested information.
