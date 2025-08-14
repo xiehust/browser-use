@@ -284,10 +284,9 @@ class DOMTreeSerializer:
 		# Check if this node starts new propagation (even if excluded!)
 		new_bounds = None
 		tag = node.original_node.tag_name.lower()
-		
+
 		# Check if this element should propagate bounds (includes both patterns and ax properties)
-		if self._is_propagating_element(node.original_node):
-			# This node propagates bounds to ALL its descendants
+		if self._is_propagating_element(node.original_node):  # This node propagates bounds to ALL its descendants
 			if node.original_node.snapshot_node and node.original_node.snapshot_node.bounds:
 				new_bounds = PropagatingBounds(
 					tag=tag,
@@ -331,7 +330,9 @@ class DOMTreeSerializer:
 			return False
 
 		# 2. Keep if has event handlers or interactive attributes
-		if ClickableElementDetector._check_accessibility_properties(node.original_node) or ClickableElementDetector._has_event_handlers_or_interactive_attributes(node.original_node):
+		if ClickableElementDetector._check_accessibility_properties(
+			node.original_node
+		) or ClickableElementDetector._has_event_handlers_or_interactive_attributes(node.original_node):
 			return False
 
 		# 3. Keep if has aria-label suggesting it's independently interactive
@@ -386,16 +387,15 @@ class DOMTreeSerializer:
 		# Check if has interactive accessibility properties
 		if ClickableElementDetector._check_accessibility_properties(node):
 			return True
-		
+
 		# Check if has pointer cursor (elements with pointer cursor should propagate to avoid duplicate clicks)
 		if ClickableElementDetector._has_interactive_cursor(node):
 			return True
-		
+
 		# Check predefined propagating element patterns
 		tag = node.tag_name.lower()
 		role = node.attributes.get('role') if node.attributes else None
 		attributes = {'tag': tag, 'role': role}
-		
 		keys_to_check = ['tag', 'role']
 		for pattern in self.PROPAGATING_ELEMENTS:
 			# Check if the element satisfies the pattern
@@ -434,7 +434,8 @@ class DOMTreeSerializer:
 				return '\n'.join(formatted_text)
 
 			# Add element with interactive_index if clickable, scrollable, or iframe
-			is_any_scrollable = node.original_node.is_scrollable
+			is_any_scrollable = node.original_node.is_actually_scrollable or node.original_node.is_scrollable
+			should_show_scroll = node.original_node.should_show_scroll_info
 			if node.interactive_index is not None or is_any_scrollable or node.original_node.tag_name.upper() == 'IFRAME':
 				next_depth += 1
 
@@ -442,13 +443,13 @@ class DOMTreeSerializer:
 				attributes_html_str = DOMTreeSerializer._build_attributes_string(node.original_node, include_attributes, '')
 
 				# Build the line
-				if is_any_scrollable and node.interactive_index is None:
-					# Scrollable but not clickable
+				if should_show_scroll and node.interactive_index is None:
+					# Scrollable container but not clickable
 					line = f'{depth_str}|SCROLL|<{node.original_node.tag_name}'
 				elif node.interactive_index is not None:
 					# Clickable (and possibly scrollable)
 					new_prefix = '*' if node.is_new else ''
-					scroll_prefix = '|SCROLL+' if is_any_scrollable else '['
+					scroll_prefix = '|SCROLL+' if should_show_scroll else '['
 					line = f'{depth_str}{new_prefix}{scroll_prefix}{node.interactive_index}]<{node.original_node.tag_name}'
 				elif node.original_node.tag_name.upper() == 'IFRAME':
 					# Iframe element (not interactive)
@@ -460,6 +461,12 @@ class DOMTreeSerializer:
 					line += f' {attributes_html_str}'
 
 				line += ' />'
+
+				# Add scroll information only when we should show it
+				if should_show_scroll:
+					scroll_info_text = node.original_node.get_scroll_info_text()
+					if scroll_info_text:
+						line += f' ({scroll_info_text})'
 
 				formatted_text.append(line)
 

@@ -6,7 +6,6 @@ class ClickableElementDetector:
 	def _has_visible_size(node: EnhancedDOMTreeNode) -> bool:
 		"""
 		Check if node has non-zero dimensions (not collapsed/hidden).
-		
 		Returns:
 			True if element has visible size (width > 0 and height > 0)
 			True if no bounds info available (assume visible)
@@ -16,19 +15,16 @@ class ClickableElementDetector:
 			return True  # No bounds info, assume visible
 		bounds = node.snapshot_node.bounds
 		return bounds.height > 0 and bounds.width > 0
-	
 	@staticmethod
 	def _check_accessibility_properties(node: EnhancedDOMTreeNode) -> bool:
 		"""
 		Enhanced accessibility property checks with comprehensive coverage.
-		
 		Returns:
 			True if interactive based on accessibility properties
 			False if not interactive or no conclusive determination
 		"""
 		if not (node.ax_node and node.ax_node.properties):
 			return False
-			
 		if node.ax_node.ignored:  # all ignored nodes are not interactive
 			return False
 
@@ -76,20 +72,17 @@ class ClickableElementDetector:
 			except (AttributeError, ValueError):
 				# Skip properties we can't process
 				continue
-				
 		return False
 
 	@staticmethod
 	def _has_event_handlers_or_interactive_attributes(node: EnhancedDOMTreeNode) -> bool:
 		"""
 		Check for event handlers or interactive attributes.
-		
 		Returns:
 			True if node has event handlers or interactive attributes
 		"""
 		if not node.attributes:
 			return False
-			
 		# Event handlers and interactive attributes
 		event_handlers_and_interactive_attrs = {
 			# Event handlers
@@ -108,13 +101,11 @@ class ClickableElementDetector:
 	def _has_interactive_cursor(node: EnhancedDOMTreeNode) -> bool:
 		"""
 		Enhanced cursor style detection.
-		
 		Returns:
 			True if node has an interactive cursor style
 		"""
 		if not (node.snapshot_node and node.snapshot_node.cursor_style):
 			return False
-			
 		interactive_cursors = {
 			'pointer',
 			'move',

@@ -46,6 +46,8 @@ DEFAULT_INCLUDE_ATTRIBUTES = [
 	'level',
 	'busy',
 	'live',
+	# Accessibility name (contains text content for StaticText elements)
+	'ax_name',
 ]
 
 
@@ -409,6 +411,209 @@ class EnhancedDOMTreeNode:
 		"""
 
 		return f'<{self.tag_name}>{cap_text_length(self.get_all_children_text(), max_text_length) or ""}'
+
+	@property
+	def is_actually_scrollable(self) -> bool:
+		"""
+		Enhanced scroll detection that combines CDP detection with CSS analysis.
+
+		This detects scrollable elements that Chrome's CDP might miss, which is common
+		in iframes and dynamically sized containers.
+		"""
+		# First check if CDP already detected it as scrollable
+		if self.is_scrollable:
+			return True
+
+		# Enhanced detection for elements CDP missed
+		if not self.snapshot_node:
+			return False
+
+		# Check scroll vs client rects - this is the most reliable indicator
+		scroll_rects = self.snapshot_node.scrollRects
+		client_rects = self.snapshot_node.clientRects
+
+		if scroll_rects and client_rects:
+			# Content is larger than visible area = scrollable
+			has_vertical_scroll = scroll_rects.height > client_rects.height + 1  # +1 for rounding
+			has_horizontal_scroll = scroll_rects.width > client_rects.width + 1
+
+			if has_vertical_scroll or has_horizontal_scroll:
+				# Also check CSS to make sure scrolling is allowed
+				if self.snapshot_node.computed_styles:
+					styles = self.snapshot_node.computed_styles
+
+					overflow = styles.get('overflow', 'visible').lower()
+					overflow_x = styles.get('overflow-x', overflow).lower()
+					overflow_y = styles.get('overflow-y', overflow).lower()
+
+					# Only allow scrolling if overflow is explicitly set to auto, scroll, or overlay
+					# Do NOT consider 'visible' overflow as scrollable - this was causing the issue
+					allows_scroll = (
+						overflow in ['auto', 'scroll', 'overlay']
+						or overflow_x in ['auto', 'scroll', 'overlay']
+						or overflow_y in ['auto', 'scroll', 'overlay']
+					)
+
+					return allows_scroll
+				else:
+					# No CSS info, but content overflows - be more conservative
+					# Only consider it scrollable if it's a common scrollable container element
+					scrollable_tags = {'div', 'main', 'section', 'article', 'aside', 'body', 'html'}
+					return self.tag_name.lower() in scrollable_tags
+
+		return False
+
+	@property
+	def should_show_scroll_info(self) -> bool:
+		"""
+		Simple check: show scroll info only if this element is scrollable
+		and doesn't have a scrollable parent (to avoid nested scroll spam).
+
+		Special case for iframes: Always show scroll info since Chrome might not
+		always detect iframe scrollability correctly (scrollHeight: 0 issue).
+		"""
+		# Special case: Always show scroll info for iframe elements
+		# Even if not detected as scrollable, they might have scrollable content
+		if self.tag_name.lower() == 'iframe':
+			return True
+
+		# Must be scrollable first for non-iframe elements
+		if not (self.is_scrollable or self.is_actually_scrollable):
+			return False
+
+		# Always show for iframe content documents (body/html)
+		if self.tag_name.lower() in {'body', 'html'}:
+			return True
+
+		# Don't show if parent is already scrollable (avoid nested spam)
+		if self.parent_node and (self.parent_node.is_scrollable or self.parent_node.is_actually_scrollable):
+			return False
+
+		return True
+
+	def _find_html_in_content_document(self) -> 'EnhancedDOMTreeNode | None':
+		"""Find HTML element in iframe content document."""
+		if not self.content_document:
+			return None
+
+		# Check if content document itself is HTML
+		if self.content_document.tag_name.lower() == 'html':
+			return self.content_document
+
+		# Look through children for HTML element
+		if self.content_document.children_nodes:
+			for child in self.content_document.children_nodes:
+				if child.tag_name.lower() == 'html':
+					return child
+
+		return None
+
+	@property
+	def scroll_info(self) -> dict[str, Any] | None:
+		"""Calculate scroll information for this element if it's scrollable."""
+		if not self.is_actually_scrollable or not self.snapshot_node:
+			return None
+
+		# Get scroll and client rects from snapshot data
+		scroll_rects = self.snapshot_node.scrollRects
+		client_rects = self.snapshot_node.clientRects
+		bounds = self.snapshot_node.bounds
+
+		if not scroll_rects or not client_rects:
+			return None
+
+		# Calculate scroll position and percentages
+		scroll_top = scroll_rects.y
+		scroll_left = scroll_rects.x
+
+		# Total scrollable height and width
+		scrollable_height = scroll_rects.height
+		scrollable_width = scroll_rects.width
+
+		# Visible (client) dimensions
+		visible_height = client_rects.height
+		visible_width = client_rects.width
+
+		# Calculate how much content is above/below/left/right of current view
+		content_above = max(0, scroll_top)
+		content_below = max(0, scrollable_height - visible_height - scroll_top)
+		content_left = max(0, scroll_left)
+		content_right = max(0, scrollable_width - visible_width - scroll_left)
+
+		# Calculate scroll percentages
+		vertical_scroll_percentage = 0
+		horizontal_scroll_percentage = 0
+
+		if scrollable_height > visible_height:
+			max_scroll_top = scrollable_height - visible_height
+			vertical_scroll_percentage = (scroll_top / max_scroll_top) * 100 if max_scroll_top > 0 else 0
+
+		if scrollable_width > visible_width:
+			max_scroll_left = scrollable_width - visible_width
+			horizontal_scroll_percentage = (scroll_left / max_scroll_left) * 100 if max_scroll_left > 0 else 0
+
+		# Calculate pages equivalent (using visible height as page unit)
+		pages_above = content_above / visible_height if visible_height > 0 else 0
+		pages_below = content_below / visible_height if visible_height > 0 else 0
+		total_pages = scrollable_height / visible_height if visible_height > 0 else 1
+
+		return {
+			'scroll_top': scroll_top,
+			'scroll_left': scroll_left,
+			'scrollable_height': scrollable_height,
+			'scrollable_width': scrollable_width,
+			'visible_height': visible_height,
+			'visible_width': visible_width,
+			'content_above': content_above,
+			'content_below': content_below,
+			'content_left': content_left,
+			'content_right': content_right,
+			'vertical_scroll_percentage': round(vertical_scroll_percentage, 1),
+			'horizontal_scroll_percentage': round(horizontal_scroll_percentage, 1),
+			'pages_above': round(pages_above, 1),
+			'pages_below': round(pages_below, 1),
+			'total_pages': round(total_pages, 1),
+			'can_scroll_up': content_above > 0,
+			'can_scroll_down': content_below > 0,
+			'can_scroll_left': content_left > 0,
+			'can_scroll_right': content_right > 0,
+		}
+
+	def get_scroll_info_text(self) -> str:
+		"""Get human-readable scroll information text for this element."""
+		# Special case for iframes: check content document for scroll info
+		if self.tag_name.lower() == 'iframe':
+			# Try to get scroll info from the HTML document inside the iframe
+			if self.content_document:
+				# Look for HTML element in content document
+				html_element = self._find_html_in_content_document()
+				if html_element and html_element.scroll_info:
+					info = html_element.scroll_info
+					# Provide minimal but useful scroll info
+					pages_below = info.get('pages_below', 0)
+					pages_above = info.get('pages_above', 0)
+					v_pct = int(info.get('vertical_scroll_percentage', 0))
+
+					if pages_below > 0 or pages_above > 0:
+						return f'scroll: {pages_above:.1f}↑ {pages_below:.1f}↓ {v_pct}%'
+
+			return 'scroll'
+
+		scroll_info = self.scroll_info
+		if not scroll_info:
+			return ''
+
+		parts = []
+
+		# Vertical scroll info (concise format)
+		if scroll_info['scrollable_height'] > scroll_info['visible_height']:
+			parts.append(f'{scroll_info["pages_above"]:.1f} pages above, {scroll_info["pages_below"]:.1f} pages below')
+
+		# Horizontal scroll info (concise format)
+		if scroll_info['scrollable_width'] > scroll_info['visible_width']:
+			parts.append(f'horizontal {scroll_info["horizontal_scroll_percentage"]:.0f}%')
+
+		return ' '.join(parts)
 
 	@property
 	def element_hash(self) -> int:
