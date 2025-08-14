@@ -173,6 +173,13 @@ class DefaultActionWatchdog(BaseWatchdog):
 				params={'targetId': self.browser_session.agent_focus.target_id}
 			)
 
+			# IMPORTANT: clear the selector map cache even if no navigation has happened!
+			# it's calculated based on visible elements, and if we don't clear it, it will be wrong
+			self.browser_session._cached_browser_state_summary = None
+			self.browser_session._cached_selector_map.clear()
+			if self.browser_session._dom_watchdog:
+				self.browser_session._dom_watchdog.clear_cache()
+
 			# Log success
 			self.logger.info(f'📜 Scrolled {event.direction} by {event.amount} pixels')
 			return None
@@ -775,7 +782,7 @@ class DefaultActionWatchdog(BaseWatchdog):
 					session_id=cdp_session.session_id,
 				)
 				# Small delay between characters
-				await asyncio.sleep(0.05)
+				await asyncio.sleep(0.09)
 
 		except Exception as e:
 			self.logger.error(f'Failed to input text via CDP: {type(e).__name__}: {e}')
