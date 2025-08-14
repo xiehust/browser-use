@@ -543,16 +543,6 @@ Webpage Content:
 
 Provide the extracted information in a clear, structured format."""
 
-# 			prompt = f"""Extract the requested information from this webpage content.
-# If you get a query which does not make sense given the content - explain briefly whats on the page, and that you don't have access to the requested information.
-			
-# Query: {query}
-
-# Webpage Content:
-# {content}
-
-# Provide the extracted information in a clear, structured format."""
-
 			try:
 				response = await asyncio.wait_for(
 					page_extraction_llm.ainvoke([UserMessage(content=prompt)]),
