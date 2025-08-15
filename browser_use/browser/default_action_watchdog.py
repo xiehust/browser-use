@@ -5,6 +5,8 @@ import json
 import platform
 from typing import Any
 
+from pydantic import PrivateAttr
+
 from browser_use.browser.events import (
 	ClickElementEvent,
 	GetDropdownOptionsEvent,
@@ -36,9 +38,38 @@ UploadFileEvent.model_rebuild()
 class DefaultActionWatchdog(BaseWatchdog):
 	"""Handles default browser actions like click, type, and scroll using CDP."""
 
+	# Track new tabs detected via CDP events
+	_new_tab_event: asyncio.Event = PrivateAttr(default_factory=asyncio.Event)
+	_cdp_listeners_setup: bool = PrivateAttr(default=False)
+	_detected_new_target_id: str | None = PrivateAttr(default=None)
+
+	async def _setup_target_listeners(self):
+		"""Set up CDP Target event listeners for instant new tab detection."""
+		if self._cdp_listeners_setup or not self.browser_session._cdp_client_root:
+			return
+
+		def on_target_attached(event_data, session_id=None):
+			"""Handle Target.attachedToTarget events for instant new tab detection."""
+			target_info = event_data.get('targetInfo', {})
+			target_type = target_info.get('type')
+			if target_type == 'page':
+				target_id = target_info.get('targetId')
+				self.logger.debug(f'🎯 New page target detected via CDP event: {target_id}')
+				# Store the new target ID for direct switching
+				self._detected_new_target_id = target_id
+				self._new_tab_event.set()
+
+		# Register on the root CDP client to catch all target events
+		self.browser_session._cdp_client_root.register.Target.attachedToTarget(on_target_attached)
+		self._cdp_listeners_setup = True
+		self.logger.debug('🎯 Set up CDP Target event listeners for instant tab detection')
+
 	async def on_ClickElementEvent(self, event: ClickElementEvent) -> None:
 		"""Handle click request with CDP."""
 		try:
+			# Set up CDP event listeners for instant tab detection
+			await self._setup_target_listeners()
+
 			# Check if session is alive before attempting any operations
 			if not self.browser_session.agent_focus or not self.browser_session.agent_focus.target_id:
 				error_msg = 'Cannot execute click: browser session is corrupted (target_id=None). Session may have crashed.'
@@ -52,6 +83,9 @@ class DefaultActionWatchdog(BaseWatchdog):
 
 			# Track initial number of tabs to detect new tab opening
 			initial_target_ids = await self.browser_session._cdp_get_all_pages()
+
+			# Clear previous new tab event
+			self._new_tab_event.clear()
 
 			# Check if element is a file input (should not be clicked)
 			if self.browser_session.is_file_input(element_node):
@@ -74,8 +108,9 @@ class DefaultActionWatchdog(BaseWatchdog):
 				self.logger.info(f'🖱️ {msg}')
 			self.logger.debug(f'Element xpath: {element_node.xpath}')
 
-			# Wait a bit for potential new tab to be created
+			# Wait longer for potential new tab to be created
 			# This is necessary because tab creation is async and might not be immediate
+			# Increased from 0.5s to 1.5s to give more time for tab detection
 			await asyncio.sleep(0.5)
 
 			# Clear cached state after click action since DOM might have changed
@@ -84,14 +119,22 @@ class DefaultActionWatchdog(BaseWatchdog):
 			self.browser_session._cached_selector_map.clear()
 			if self.browser_session._dom_watchdog:
 				self.browser_session._dom_watchdog.clear_cache()
-			# Successfully clicked, always reset session back to parent page session context
-			self.browser_session.agent_focus = await self.browser_session.get_or_create_cdp_session(
-				target_id=starting_target_id, focus=True
-			)
 
-			# Check if a new tab was opened
-			after_target_ids = await self.browser_session._cdp_get_all_pages()
-			if len(after_target_ids) > len(initial_target_ids):
+			# Check if a new tab was opened using instant event detection
+			new_tab_detected = False
+
+			# Wait briefly for the CDP event (max 0.5s) - much faster than polling!
+			try:
+				await asyncio.wait_for(self._new_tab_event.wait(), timeout=0.5)
+				new_tab_detected = True
+				self.logger.debug('🎯 New tab detected via CDP event!')
+			except asyncio.TimeoutError:
+				# No new tab event fired, fallback to counting check
+				after_target_ids = await self.browser_session._cdp_get_all_pages()
+				new_tab_detected = len(after_target_ids) > len(initial_target_ids)
+				self.logger.debug(f'🔍 Fallback tab detection: before={len(initial_target_ids)}, after={len(after_target_ids)}')
+
+			if new_tab_detected:
 				new_tab_msg = 'New tab opened - switching to it'
 				msg += f' - {new_tab_msg}'
 				self.logger.info(f'🔗 {new_tab_msg}')
@@ -102,11 +145,29 @@ class DefaultActionWatchdog(BaseWatchdog):
 					# slightly counter-intuitive, when new_tab=True we dont actually want to switch to it,
 					# the agent is instructed that new_tab=True is equivalent to ctrl+click which opens in the background,
 					# so in multi_act it usually already sends [click_element_by_index(123, new_tab=True), switch_tab(-1)] anyway
-					from browser_use.browser.events import SwitchTabEvent
 
-					last_tab_index = len(after_target_ids) - 1
-					switch_event = await self.event_bus.dispatch(SwitchTabEvent(tab_index=last_tab_index))
-					await switch_event
+					# Switch directly to the new tab using the target ID from the CDP event
+					if hasattr(self, '_detected_new_target_id') and self._detected_new_target_id:
+						try:
+							await self.browser_session.get_or_create_cdp_session(
+								target_id=self._detected_new_target_id, focus=True
+							)
+							self.logger.info(f'✅ Switched to new tab: {self._detected_new_target_id[:12]}...')
+							self._detected_new_target_id = None
+						except Exception as e:
+							self.logger.error(f'❌ Failed to switch to new tab: {e}')
+							self._detected_new_target_id = None
+
+				else:
+					# new_tab=True means keep focus on original tab after click
+					self.browser_session.agent_focus = await self.browser_session.get_or_create_cdp_session(
+						target_id=starting_target_id, focus=True
+					)
+			else:
+				# No new tab opened, reset session back to parent page session context
+				self.browser_session.agent_focus = await self.browser_session.get_or_create_cdp_session(
+					target_id=starting_target_id, focus=True
+				)
 
 			return None
 		except Exception as e:
