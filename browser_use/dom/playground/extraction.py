@@ -10,7 +10,7 @@ import tiktoken
 from browser_use.agent.prompts import AgentMessagePrompt
 from browser_use.browser import BrowserProfile, BrowserSession
 from browser_use.browser.events import ClickElementEvent, TypeTextEvent
-from browser_use.browser.types import ViewportSize
+from browser_use.browser.profile import ViewportSize
 from browser_use.dom.debug.highlights import inject_highlighting_script, remove_highlighting_script
 from browser_use.dom.service import DomService
 from browser_use.dom.views import DEFAULT_INCLUDE_ATTRIBUTES
@@ -23,7 +23,7 @@ async def test_focus_vs_all_elements():
 	# async with async_patchright() as patchright:
 	browser_session = BrowserSession(
 		browser_profile=BrowserProfile(
-			# executable_path='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+			executable_path='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
 			window_size=ViewportSize(width=1100, height=1000),
 			disable_security=False,
 			wait_for_network_idle_page_load_time=1,
@@ -34,6 +34,7 @@ async def test_focus_vs_all_elements():
 
 	# 10 Sample websites with various interactive elements
 	sample_websites = [
+		'https://napaonline.com',
 		'https://browser-use.github.io/stress-tests/challenges/iframe-inception-level1.html',
 		'https://browser-use.github.io/stress-tests/challenges/angular-form.html',
 		'https://www.google.com/travel/flights',

@@ -33,7 +33,7 @@ class ClickableElementDetector:
 		# Visibility is determined separately by CSS styles, not just bounding box size
 
 		# SEARCH ELEMENT DETECTION: Check for search-related classes and attributes
-		if node.attributes:
+		if node.attributes and False:
 			search_indicators = {
 				'search',
 				'magnify',
@@ -93,6 +93,11 @@ class ClickableElementDetector:
 				except (AttributeError, ValueError):
 					# Skip properties we can't process
 					continue
+
+			if node.ax_node.ignored:
+				return False
+
+		return False
 
 		# ENHANCED TAG CHECK: Include truly interactive elements
 		interactive_tags = {
