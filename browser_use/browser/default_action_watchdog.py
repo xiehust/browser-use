@@ -1097,6 +1097,10 @@ class DefaultActionWatchdog(BaseWatchdog):
 		"""Handle send keys request with CDP."""
 		cdp_session = await self.browser_session.get_or_create_cdp_session()
 		try:
+			# Ensure the current page is focused before sending keys
+			await cdp_session.cdp_client.send.Target.activateTarget(params={'targetId': cdp_session.target_id})
+			await cdp_session.cdp_client.send.Runtime.runIfWaitingForDebugger()
+
 			# Parse key combination
 			keys = event.keys.lower()
 
@@ -1161,18 +1165,35 @@ class DefaultActionWatchdog(BaseWatchdog):
 
 				key = key_map.get(keys, keys)
 
-				# Use rawKeyDown for special keys (non-text producing keys)
-				# Use keyDown only for regular text characters
-				key_type = 'rawKeyDown' if keys in key_map else 'keyDown'
+				# Special handling for Enter key - needs 3-step sequence for form submission
+				if keys in ['enter', 'return']:
+					# Enter needs: rawKeyDown → char → keyUp for form submission
+					await cdp_session.cdp_client.send.Input.dispatchKeyEvent(
+						params={'type': 'rawKeyDown', 'windowsVirtualKeyCode': 13, 'code': 'Enter', 'key': 'Enter'},
+						session_id=cdp_session.session_id,
+					)
+					# The char event is CRITICAL - it tells the browser this key produces a character
+					await cdp_session.cdp_client.send.Input.dispatchKeyEvent(
+						params={'type': 'char', 'text': '\r', 'unmodifiedText': '\r'},
+						session_id=cdp_session.session_id,
+					)
+					await cdp_session.cdp_client.send.Input.dispatchKeyEvent(
+						params={'type': 'keyUp', 'windowsVirtualKeyCode': 13, 'code': 'Enter', 'key': 'Enter'},
+						session_id=cdp_session.session_id,
+					)
+				else:
+					# For all other keys: simple 2-step sequence
+					# Special keys (Tab, arrows) use rawKeyDown, regular characters use keyDown
+					key_type = 'rawKeyDown' if keys in key_map else 'keyDown'
 
-				await cdp_session.cdp_client.send.Input.dispatchKeyEvent(
-					params={'type': key_type, 'key': key},
-					session_id=cdp_session.session_id,
-				)
-				await cdp_session.cdp_client.send.Input.dispatchKeyEvent(
-					params={'type': 'keyUp', 'key': key},
-					session_id=cdp_session.session_id,
-				)
+					await cdp_session.cdp_client.send.Input.dispatchKeyEvent(
+						params={'type': key_type, 'key': key},
+						session_id=cdp_session.session_id,
+					)
+					await cdp_session.cdp_client.send.Input.dispatchKeyEvent(
+						params={'type': 'keyUp', 'key': key},
+						session_id=cdp_session.session_id,
+					)
 
 			self.logger.info(f'⌨️ Sent keys: {event.keys}')
 
@@ -1183,6 +1204,9 @@ class DefaultActionWatchdog(BaseWatchdog):
 				self.browser_session._cached_selector_map.clear()
 				if self.browser_session._dom_watchdog:
 					self.browser_session._dom_watchdog.clear_cache()
+
+				# Wait a moment for potential navigation
+				await asyncio.sleep(0.5)
 		except Exception as e:
 			raise
 
