@@ -52,112 +52,6 @@ def should_show_index_overlay(element_index: Optional[int]) -> bool:
 	return element_index is not None
 
 
-def draw_bounding_box_with_text(
-	draw,  # ImageDraw.Draw - avoiding type annotation due to PIL typing issues
-	bbox: Tuple[int, int, int, int],
-	color: str,
-	text: Optional[str] = None,
-	font: Optional[ImageFont.FreeTypeFont] = None,
-) -> None:
-	"""Draw a bounding box with optional text overlay."""
-	x1, y1, x2, y2 = bbox
-
-	# Draw dashed bounding box
-	dash_length = 2
-	gap_length = 6
-
-	# Top edge
-	x = x1
-	while x < x2:
-		end_x = min(x + dash_length, x2)
-		draw.line([(x, y1), (end_x, y1)], fill=color, width=2)
-		draw.line([(x, y1 + 1), (end_x, y1 + 1)], fill=color, width=2)
-		x += dash_length + gap_length
-
-	# Bottom edge
-	x = x1
-	while x < x2:
-		end_x = min(x + dash_length, x2)
-		draw.line([(x, y2), (end_x, y2)], fill=color, width=2)
-		draw.line([(x, y2 - 1), (end_x, y2 - 1)], fill=color, width=2)
-		x += dash_length + gap_length
-
-	# Left edge
-	y = y1
-	while y < y2:
-		end_y = min(y + dash_length, y2)
-		draw.line([(x1, y), (x1, end_y)], fill=color, width=2)
-		draw.line([(x1 + 1, y), (x1 + 1, end_y)], fill=color, width=2)
-		y += dash_length + gap_length
-
-	# Right edge
-	y = y1
-	while y < y2:
-		end_y = min(y + dash_length, y2)
-		draw.line([(x2, y), (x2, end_y)], fill=color, width=2)
-		draw.line([(x2 - 1, y), (x2 - 1, end_y)], fill=color, width=2)
-		y += dash_length + gap_length
-
-	# Draw index overlay if we have index text
-	if text:
-		try:
-			# Get text size
-			if font:
-				bbox_text = draw.textbbox((0, 0), text, font=font)
-				text_width = bbox_text[2] - bbox_text[0]
-				text_height = bbox_text[3] - bbox_text[1]
-			else:
-				# Fallback for default font
-				bbox_text = draw.textbbox((0, 0), text)
-				text_width = bbox_text[2] - bbox_text[0]
-				text_height = bbox_text[3] - bbox_text[1]
-
-			# Smart positioning based on element size
-			padding = 3
-			element_width = x2 - x1
-			element_height = y2 - y1
-			element_area = element_width * element_height
-			index_box_area = (text_width + padding * 2) * (text_height + padding * 2)
-
-			# Calculate size ratio to determine positioning strategy
-			size_ratio = element_area / max(index_box_area, 1)
-
-			if size_ratio < 4:
-				# Very small elements: place outside in bottom-right corner
-				text_x = x2 + padding
-				text_y = y2 - text_height
-				# Ensure it doesn't go off screen
-				text_x = min(text_x, 1200 - text_width - padding)
-				text_y = max(text_y, 0)
-			elif size_ratio < 16:
-				# Medium elements: place in bottom-right corner inside
-				text_x = x2 - text_width - padding
-				text_y = y2 - text_height - padding
-			else:
-				# Large elements: place in center
-				text_x = x1 + (element_width - text_width) // 2
-				text_y = y1 + (element_height - text_height) // 2
-
-			# Ensure text stays within bounds
-			text_x = max(0, min(text_x, 1200 - text_width))
-			text_y = max(0, min(text_y, 800 - text_height))
-
-			# Draw background rectangle for maximum contrast
-			bg_x1 = text_x - padding
-			bg_y1 = text_y - padding
-			bg_x2 = text_x + text_width + padding
-			bg_y2 = text_y + text_height + padding
-
-			# Use white background with thick black border for maximum visibility
-			draw.rectangle([bg_x1, bg_y1, bg_x2, bg_y2], fill='white', outline='black', width=2)
-
-			# Draw bold dark text on light background for best contrast
-			draw.text((text_x, text_y), text, fill='black', font=font)
-
-		except Exception as e:
-			logger.debug(f'Failed to draw text overlay: {e}')
-
-
 @observe_debug(ignore_input=True, ignore_output=True, name='create_highlighted_screenshot')
 def create_highlighted_screenshot(
 	screenshot_b64: str,
@@ -188,13 +82,34 @@ def create_highlighted_screenshot(
 
 		# Try to load a font, fall back to default if not available
 		font = None
-		try:
-			font = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 12)
-		except (OSError, IOError):
+		font_size = 32  # MUCH larger font size
+
+		# Try multiple font paths for different systems
+		font_paths = [
+			'/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',  # Linux
+			'/System/Library/Fonts/Arial.ttf',  # macOS
+			'/System/Library/Fonts/Helvetica.ttc',  # macOS alternative
+			'arial.ttf',  # Windows/generic
+			'/usr/share/fonts/TTF/arial.ttf',  # Some Linux distributions
+		]
+
+		for font_path in font_paths:
 			try:
-				font = ImageFont.truetype('arial.ttf', 12)
+				font = ImageFont.truetype(font_path, font_size)
+				logger.debug(f'Successfully loaded font {font_path} at {font_size}pt')
+				break
 			except (OSError, IOError):
-				font = None  # Use default font
+				continue
+
+		if font is None:
+			# If all font loading fails, create a much larger default font
+			try:
+				# Use PIL's default but try to make it bigger
+				font = ImageFont.load_default()
+				logger.debug('Using PIL default font (all TrueType fonts failed)')
+			except Exception:
+				font = None
+				logger.debug('All font loading failed, using basic text rendering')
 
 		# Process each interactive element
 		for element_id, element in selector_map.items():
@@ -237,10 +152,66 @@ def create_highlighted_screenshot(
 
 				# Get element index for overlay
 				element_index = getattr(element, 'element_index', None)
-				index_text = str(element_index) if element_index is not None else None
+				if element_index is not None:
+					index_text = str(element_index)
 
-				# Draw bounding box with index
-				draw_bounding_box_with_text(draw, (x1, y1, x2, y2), color, index_text, font)
+					# Calculate element size
+					element_width = x2 - x1
+					element_height = y2 - y1
+
+					# Get text size
+					if font:
+						bbox_text = draw.textbbox((0, 0), index_text, font=font)
+						text_width = bbox_text[2] - bbox_text[0]
+						text_height = bbox_text[3] - bbox_text[1]
+					else:
+						bbox_text = draw.textbbox((0, 0), index_text)
+						text_width = bbox_text[2] - bbox_text[0]
+						text_height = bbox_text[3] - bbox_text[1]
+
+					# Smart positioning: center for most elements, outside only for very tiny ones
+					padding = 6  # Increased padding for better visibility
+
+					# Only place outside if element is extremely small (less than 30px in either dimension)
+					if element_width < 30 or element_height < 30:
+						# Very small elements: place outside in bottom-right corner
+						text_x = x2 + padding
+						text_y = y2 - text_height
+						# Ensure it doesn't go off screen
+						text_x = min(text_x, 1200 - text_width - padding)
+						text_y = max(text_y, 0)
+					else:
+						# All other elements: place in center
+						text_x = x1 + (element_width - text_width) // 2
+						text_y = y1 + (element_height - text_height) // 2
+
+					# Ensure text stays within bounds
+					text_x = max(0, min(text_x, 1200 - text_width))
+					text_y = max(0, min(text_y, 800 - text_height))
+
+					# Draw much larger background box for maximum visibility
+					box_size = 80  # MUCH larger fixed box size
+
+					# Debug logging
+					logger.debug(
+						f'Drawing index {index_text}: element_size={element_width}x{element_height}, text_size={text_width}x{text_height}, box_size={box_size}, font_size={font_size}'
+					)
+
+					# Calculate box position (centered on text position)
+					bg_x1 = text_x - box_size // 2
+					bg_y1 = text_y - box_size // 2
+					bg_x2 = bg_x1 + box_size
+					bg_y2 = bg_y1 + box_size
+
+					# Calculate text position (centered in the large box)
+					final_text_x = bg_x1 + (box_size - text_width) // 2
+					final_text_y = bg_y1 + (box_size - text_height) // 2
+
+					# Use white background with thick black border for maximum visibility
+					draw.rectangle([bg_x1, bg_y1, bg_x2, bg_y2], fill='white', outline='black', width=5)
+
+					# Draw bold dark text on light background for best contrast
+					draw.text((final_text_x, final_text_y), index_text, fill='black', font=font)
 
 			except Exception as e:
 				logger.debug(f'Failed to draw highlight for element {element_id}: {e}')
