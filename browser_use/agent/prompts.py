@@ -243,7 +243,7 @@ Available tabs:
 			+ '\n</agent_history>\n'
 		)
 		state_description += '<agent_state>\n' + self._get_agent_state_description().strip('\n') + '\n</agent_state>\n'
-		state_description += '<browser_state>\n' + self._get_browser_state_description().strip('\n') + '\n</browser_state>\n'
+		# state_description += '<browser_state>\n' + self._get_browser_state_description().strip('\n') + '\n</browser_state>\n'
 		# Only add read_state if it has content
 		read_state_description = self.read_state_description.strip('\n').strip() if self.read_state_description else ''
 		if read_state_description:
