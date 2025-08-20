@@ -436,6 +436,9 @@ class DefaultActionWatchdog(BaseWatchdog):
 			except Exception as e:
 				self.logger.debug(f'Failed to scroll element into view: {e}')
 
+			# animate a cursor on the page using JS
+			await self._show_debug_cursor_indicator(cdp_session, center_x, center_y)
+
 			# Perform the click using CDP
 			# TODO: do occlusion detection first, if element is not on the top, fire JS-based
 			# click event instead using xpath of x,y coordinate clicking, because we wont be able to click *through* occluding elements using x,y clicks
@@ -666,6 +669,30 @@ class DefaultActionWatchdog(BaseWatchdog):
 			self.logger.debug(f'Element focusability check failed: {e}')
 			return {'visible': False, 'focusable': False, 'interactive': False, 'disabled': True}
 
+	async def _show_debug_cursor_indicator(self, cdp_session, center_x: float, center_y: float):
+		await cdp_session.cdp_client.send.Runtime.evaluate(
+			params={
+				'expression': f'''{{
+					const cursor = document.getElementById("browserUseDebugCursor") || document.createElement("div");
+					cursor.id = "browserUseDebugCursor";
+					cursor.style.position = "absolute";
+					cursor.style.width = "6px";
+					cursor.style.height = "6px";
+					cursor.style.zIndex = "1000000000";
+					cursor.style.borderRadius = "50%";
+					cursor.style.backgroundColor = "red";
+					cursor.style.pointerEvents = "none";
+					cursor.style.transform = "translate(-50%, -50%)";
+					cursor.style.transition = "top 0.4s ease-in-out, left 0.4s ease-in-out";
+					cursor.style.top = "{center_y}px";
+					cursor.style.left = "{center_x}px";
+					document.body.appendChild(cursor);
+				}}''',
+			},
+			# cursor.title = "Clicking at x {{center_x}}px, y {{center_y}}px element_index=#{{element_node.element_index}} backendNodeId={{backend_node_id}} target_id={{cdp_session.target_id}}";
+			session_id=cdp_session.session_id,
+		)
+
 	async def _input_text_element_node_impl(self, element_node, text: str, clear_existing: bool = True):
 		"""
 		Input text into an element using pure CDP with improved focus fallbacks.
@@ -776,6 +803,7 @@ class DefaultActionWatchdog(BaseWatchdog):
 							if bounds.get('width', 0) > 0 and bounds.get('height', 0) > 0:
 								click_x = bounds['x'] + bounds['width'] / 2
 								click_y = bounds['y'] + bounds['height'] / 2
+								await self._show_debug_cursor_indicator(cdp_session, click_x, click_y)
 
 								await cdp_session.cdp_client.send.Input.dispatchMouseEvent(
 									params={
