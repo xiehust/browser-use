@@ -92,7 +92,7 @@ class AgentMessagePrompt:
 		available_file_paths: list[str] | None = None,
 		screenshots: list[str] | None = None,
 		vision_detail_level: Literal['auto', 'low', 'high'] = 'auto',
-		include_recent_events: bool = False,
+		include_recent_events: bool = True,
 	):
 		self.browser_state: 'BrowserStateSummary' = browser_state_summary
 		self.file_system: 'FileSystem | None' = file_system

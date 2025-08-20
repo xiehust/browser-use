@@ -808,6 +808,11 @@ class DefaultActionWatchdog(BaseWatchdog):
 			if not focused_successfully:
 				self.logger.warning('⚠️ All focus strategies failed, typing without explicit focus')
 
+			# always give some time for focus change handlers and input field animations to settle on page
+			await asyncio.sleep(0.1)
+			# pages often show popups, dropdowns, autocomplete search results, when you click into a text field
+			# if you type too fast before these settle, input can be lost/cleared/truncated
+
 			# Type the text character by character
 			for char in text:
 				# Send keydown (without text to avoid duplication)
