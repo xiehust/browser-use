@@ -228,6 +228,8 @@ class DownloadsWatchdog(BaseWatchdog):
 			self.browser_session.browser_profile.downloads_path
 			or f'{tempfile.gettempdir()}/browser_use_downloads.{str(self.browser_session.id)[-4:]}'
 		)
+
+		unique_filename = None
 		try:
 			download_url = event.get('url', '')
 			suggested_filename = event.get('suggestedFilename', 'download')
@@ -313,6 +315,11 @@ class DownloadsWatchdog(BaseWatchdog):
 			except Exception as fetch_error:
 				self.logger.error(f'[DownloadsWatchdog] ❌ Failed to download file via fetch: {fetch_error}')
 				# Fall through to polling logic
+
+			if not unique_filename:
+				# if there is no file name, there was no file downloaded, therefore we can just skip the event
+				self.logger.debug('[DownloadsWatchdog] ❌ No file name received from fetch, skipping event')
+				return None
 
 			# Determine file type from extension
 			file_ext = expected_path.suffix.lower().lstrip('.')
