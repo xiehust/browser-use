@@ -2,7 +2,6 @@ import asyncio
 import enum
 import json
 import logging
-import os
 from typing import Generic, TypeVar
 
 try:
@@ -340,32 +339,6 @@ class Controller(Generic[Context]):
 		async def upload_file_to_element(
 			params: UploadFileAction, browser_session: BrowserSession, available_file_paths: list[str], file_system: FileSystem
 		):
-			# Check if file is in available_file_paths (user-provided or downloaded files)
-			if params.path not in available_file_paths:
-				# Also check if it's a recently downloaded file that might not be in available_file_paths yet
-				downloaded_files = browser_session.downloaded_files
-				if params.path not in downloaded_files:
-					# Finally, check if it's a file in the FileSystem service
-					if file_system and file_system.get_dir():
-						# Check if the file is actually managed by the FileSystem service
-						# The path should be just the filename for FileSystem files
-						file_obj = file_system.get_file(params.path)
-						if file_obj:
-							# File is managed by FileSystem, construct the full path
-							file_system_path = str(file_system.get_dir() / params.path)
-							params = UploadFileAction(index=params.index, path=file_system_path)
-						else:
-							raise BrowserError(
-								f'File path {params.path} is not available. Must be in available_file_paths, downloaded_files, or a file managed by file_system.'
-							)
-					else:
-						raise BrowserError(
-							f'File path {params.path} is not available. Must be in available_file_paths or downloaded_files.'
-						)
-
-			if not os.path.exists(params.path):
-				raise BrowserError(f'File {params.path} does not exist')
-
 			# Get the selector map to find the node
 			selector_map = await browser_session.get_selector_map()
 			if params.index not in selector_map:
