@@ -602,8 +602,9 @@ Not recommended to:
 			except Exception as e:
 				raise RuntimeError(f'Could not convert html to markdown: {type(e).__name__}')
 			
-			content_begin = "<page_markdown>\nIn the previous step, you asked to read the entire page as markdown. Here is the markdown of the page:\n"
-			content = content_begin + content + "\n</page_markdown>"
+			content_begin = "In the previous step, you asked to read the entire page as markdown - you can find the page markdown below.\n<page_markdown>\n"
+			content_end = "\n</page_markdown>\nThis content will disappear in the next step. You should read the content carefully to extract all the information you need from the page."
+			content = content_begin + content + content_end
 
 			# Truncate if content is too long
 			if len(content) > MAX_CHAR_LIMIT:
