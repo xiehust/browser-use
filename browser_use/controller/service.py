@@ -595,14 +595,15 @@ Not recommended to:
 				content = re.sub(r'Primary: UNKNOWN\n\nNo specific evidence found', '', content, flags=re.MULTILINE | re.DOTALL)
 				content = re.sub(r'UNKNOWN CONFIDENCE', '', content, flags=re.MULTILINE | re.DOTALL)
 				content = re.sub(r'!\[\]\(\)', '', content, flags=re.MULTILINE | re.DOTALL)
+				# Compress consecutive newlines (4+ newlines become 3 newlines)
+				content = re.sub(r'\n{4,}', '\n' * MAX_NEWLINES, content)
 				# Strip all whitespace (newlines, spaces, tabs) from beginning and end
 				content = content.strip()
-				content = "<page_content>\n" + content + "\n</page_content>"
 			except Exception as e:
 				raise RuntimeError(f'Could not convert html to markdown: {type(e).__name__}')
-
-			# Compress consecutive newlines (4+ newlines become 3 newlines)
-			content = re.sub(r'\n{4,}', '\n' * MAX_NEWLINES, content)
+			
+			content_begin = "<page_markdown>\nIn the previous step, you asked to read the entire page as markdown. Here is the markdown of the page:\n"
+			content = content_begin + content + "\n</page_markdown>"
 
 			# Truncate if content is too long
 			if len(content) > MAX_CHAR_LIMIT:

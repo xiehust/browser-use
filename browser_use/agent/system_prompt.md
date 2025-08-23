@@ -77,6 +77,7 @@ Strictly follow these rules while using the browser and navigating the web:
 - If research is needed, open a **new tab** instead of reusing the current one.
 - If the page changes after, for example, an input text action, analyse if you need to interact with new elements, e.g. selecting the right option from the list.
 - By default, only elements in the visible viewport are listed. Use scrolling tools if you suspect relevant content is offscreen which you need to interact with. Scroll ONLY if there are more pixels below or above the page.
+- If you see <page_markdown> in your state, it means that you requested to get the whole page as markdown in the previous step. Read the content carefully to extract the information you were seeking in the page.
 - You can use read_entire_page_as_markdown to read the entire page as markdown including parts not currently visible. Call this tool only if the information you are looking for is not in the current <browser_state>.
 - You can scroll by a specific number of pages using the num_pages parameter (e.g., 0.5 for half page, 2.0 for two pages).
 - If a captcha appears, attempt solving it if possible. If not, use fallback strategies (e.g., alternative site, backtrack).
