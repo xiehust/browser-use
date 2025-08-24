@@ -1,0 +1,729 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Browser Use Cloud - Settings</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background-color: #0a0a0a;
+            color: #ffffff;
+            line-height: 1.6;
+        }
+
+        .container {
+            display: flex;
+            min-height: 100vh;
+        }
+
+        .sidebar {
+            width: 250px;
+            background-color: #111111;
+            padding: 20px;
+            border-right: 1px solid #222222;
+        }
+
+        .sidebar h2 {
+            font-size: 18px;
+            margin-bottom: 20px;
+            color: #ffffff;
+        }
+
+        .sidebar ul {
+            list-style: none;
+        }
+
+        .sidebar li {
+            margin-bottom: 10px;
+        }
+
+        .sidebar a {
+            color: #888888;
+            text-decoration: none;
+            padding: 8px 12px;
+            display: block;
+            border-radius: 6px;
+            transition: all 0.2s;
+        }
+
+        .sidebar a:hover, .sidebar a.active {
+            background-color: #222222;
+            color: #ffffff;
+        }
+
+        .main-content {
+            flex: 1;
+            padding: 40px;
+        }
+
+        .settings-header {
+            margin-bottom: 40px;
+        }
+
+        .settings-header h1 {
+            font-size: 32px;
+            margin-bottom: 8px;
+        }
+
+        .section {
+            background-color: #111111;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 24px;
+        }
+
+        .section-header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+
+        .section-header h2 {
+            font-size: 18px;
+            color: #ffffff;
+        }
+
+        .section-description {
+            color: #888888;
+            margin-bottom: 24px;
+            line-height: 1.5;
+        }
+
+        .profile-card {
+            background-color: #1a1a1a;
+            border: 1px solid #222222;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 12px;
+            transition: all 0.2s;
+        }
+
+        .profile-card:hover {
+            border-color: #333333;
+        }
+
+        .profile-header {
+            display: flex;
+            justify-content: between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .profile-name {
+            font-weight: 600;
+            color: #ffffff;
+            font-size: 16px;
+        }
+
+        .profile-actions {
+            display: flex;
+            gap: 8px;
+            margin-left: auto;
+        }
+
+        .profile-description {
+            color: #888888;
+            margin-bottom: 12px;
+            font-size: 14px;
+        }
+
+        .profile-meta {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            color: #666666;
+            font-size: 12px;
+        }
+
+        .profile-meta span {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .btn {
+            padding: 6px 12px;
+            border: 1px solid #333333;
+            background-color: transparent;
+            color: #ffffff;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .btn:hover {
+            background-color: #222222;
+            border-color: #444444;
+        }
+
+        .btn-copy {
+            position: relative;
+        }
+
+        .btn-delete {
+            color: #ff4757;
+            border-color: #ff4757;
+        }
+
+        .btn-delete:hover {
+            background-color: #ff4757;
+            color: #ffffff;
+        }
+
+        .upgrade-badge {
+            background-color: #ff6b35;
+            color: #ffffff;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.8);
+            z-index: 1000;
+        }
+
+        .modal.active {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal-content {
+            background-color: #111111;
+            border-radius: 12px;
+            padding: 32px;
+            width: 600px;
+            max-width: 90vw;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+        }
+
+        .modal-title {
+            font-size: 24px;
+            font-weight: 600;
+        }
+
+        .close-btn {
+            background: none;
+            border: none;
+            color: #888888;
+            font-size: 24px;
+            cursor: pointer;
+            padding: 4px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+            color: #ffffff;
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 12px;
+            background-color: #1a1a1a;
+            border: 1px solid #333333;
+            border-radius: 6px;
+            color: #ffffff;
+            font-size: 14px;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: #0066cc;
+        }
+
+        .form-textarea {
+            resize: vertical;
+            min-height: 80px;
+        }
+
+        .form-row {
+            display: flex;
+            gap: 16px;
+        }
+
+        .form-col {
+            flex: 1;
+        }
+
+        .toggle-container {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 0;
+        }
+
+        .toggle {
+            position: relative;
+            width: 44px;
+            height: 24px;
+            background-color: #333333;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .toggle.active {
+            background-color: #ff6b35;
+        }
+
+        .toggle::after {
+            content: '';
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            width: 20px;
+            height: 20px;
+            background-color: #ffffff;
+            border-radius: 50%;
+            transition: transform 0.2s;
+        }
+
+        .toggle.active::after {
+            transform: translateX(20px);
+        }
+
+        .form-actions {
+            display: flex;
+            gap: 12px;
+            justify-content: flex-end;
+            margin-top: 32px;
+        }
+
+        .btn-primary {
+            background-color: #ff6b35;
+            border-color: #ff6b35;
+            color: #ffffff;
+            padding: 12px 24px;
+        }
+
+        .btn-primary:hover {
+            background-color: #e55a2d;
+        }
+
+        .btn-secondary {
+            padding: 12px 24px;
+        }
+
+        .profile-id-section {
+            background-color: #0a0a0a;
+            border: 1px solid #222222;
+            border-radius: 6px;
+            padding: 12px;
+            margin-bottom: 20px;
+        }
+
+        .profile-id-label {
+            font-size: 12px;
+            color: #888888;
+            margin-bottom: 6px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .profile-id-value {
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 14px;
+            color: #ffffff;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .copy-tooltip {
+            position: absolute;
+            top: -30px;
+            right: 0;
+            background-color: #333333;
+            color: #ffffff;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+
+        .copy-tooltip.show {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        .icon {
+            width: 16px;
+            height: 16px;
+            fill: currentColor;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="sidebar">
+            <h2>Browser Use Cloud</h2>
+            <ul>
+                <li><a href="#" class="active">🏠 Browser Profiles</a></li>
+                <li><a href="#">🔗 Integrations</a></li>
+                <li><a href="#">🔍 Discover</a></li>
+                <li><a href="#">📊 Analytics</a></li>
+                <li><a href="#">⏰ Scheduled Tasks</a></li>
+                <li><a href="#">🔗 Webhooks</a></li>
+                <li><a href="#">⚙️ Settings</a></li>
+                <li><a href="#">💳 Billing & API</a></li>
+            </ul>
+        </div>
+
+        <div class="main-content">
+            <div class="settings-header">
+                <h1>Settings</h1>
+            </div>
+
+            <div class="section">
+                <div class="section-header">
+                    <h2>🖥️ Browser Profile Settings</h2>
+                    <div class="upgrade-badge">Upgrade</div>
+                </div>
+                
+                <p class="section-description">
+                    Configure your browser profile settings for automated tasks. These settings will be used for all your browser
+                    automation sessions. You can customize viewport size, proxy settings, ad blocking, and data persistence.
+                </p>
+
+                <div class="profile-card">
+                    <div class="profile-header">
+                        <div class="profile-name">Quickstart Demo Profile - Tablet</div>
+                        <div class="profile-actions">
+                            <button class="btn btn-copy" onclick="copyProfileId('01943234-5678-7abc-8def-123456789012')">
+                                <svg class="icon" viewBox="0 0 24 24">
+                                    <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+                                </svg>
+                                <div class="copy-tooltip">Copied!</div>
+                            </button>
+                            <button class="btn" onclick="editProfile('tablet')">
+                                <svg class="icon" viewBox="0 0 24 24">
+                                    <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/>
+                                </svg>
+                            </button>
+                            <button class="btn btn-delete">
+                                <svg class="icon" viewBox="0 0 24 24">
+                                    <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="profile-description">Quickstart Demo Profile for Tablet</div>
+                    <div class="profile-meta">
+                        <span>📱 Viewport 768 × 1024</span>
+                        <span>🛡️ Ad Blocker</span>
+                    </div>
+                </div>
+
+                <div class="profile-card">
+                    <div class="profile-header">
+                        <div class="profile-name">Quickstart Demo Profile - Laptop</div>
+                        <div class="profile-actions">
+                            <button class="btn btn-copy" onclick="copyProfileId('01943234-5678-7abc-8def-123456789013')">
+                                <svg class="icon" viewBox="0 0 24 24">
+                                    <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+                                </svg>
+                                <div class="copy-tooltip">Copied!</div>
+                            </button>
+                            <button class="btn" onclick="editProfile('laptop')">
+                                <svg class="icon" viewBox="0 0 24 24">
+                                    <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/>
+                                </svg>
+                            </button>
+                            <button class="btn btn-delete">
+                                <svg class="icon" viewBox="0 0 24 24">
+                                    <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="profile-description">Quickstart Demo Profile for Laptop</div>
+                    <div class="profile-meta">
+                        <span>💻 Viewport 1920 × 1080</span>
+                        <span>🛡️ Ad Blocker</span>
+                    </div>
+                </div>
+
+                <div class="profile-card">
+                    <div class="profile-header">
+                        <div class="profile-name">Quickstart Demo Profile - Phone</div>
+                        <div class="profile-actions">
+                            <button class="btn btn-copy" onclick="copyProfileId('01943234-5678-7abc-8def-123456789014')">
+                                <svg class="icon" viewBox="0 0 24 24">
+                                    <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+                                </svg>
+                                <div class="copy-tooltip">Copied!</div>
+                            </button>
+                            <button class="btn" onclick="editProfile('phone')">
+                                <svg class="icon" viewBox="0 0 24 24">
+                                    <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/>
+                                </svg>
+                            </button>
+                            <button class="btn btn-delete">
+                                <svg class="icon" viewBox="0 0 24 24">
+                                    <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="profile-description">Quickstart Demo Profile for Phone</div>
+                    <div class="profile-meta">
+                        <span>📱 Viewport 390 × 828</span>
+                        <span>📱 Mobile</span>
+                        <span>🛡️ Ad Blocker</span>
+                    </div>
+                </div>
+
+                <div class="profile-card">
+                    <div class="profile-header">
+                        <div class="profile-name">Default Profile</div>
+                        <div class="profile-actions">
+                            <button class="btn btn-copy" onclick="copyProfileId('01943234-5678-7abc-8def-123456789015')">
+                                <svg class="icon" viewBox="0 0 24 24">
+                                    <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+                                </svg>
+                                <div class="copy-tooltip">Copied!</div>
+                            </button>
+                            <button class="btn" onclick="editProfile('default')">
+                                <svg class="icon" viewBox="0 0 24 24">
+                                    <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/>
+                                </svg>
+                            </button>
+                            <button class="btn btn-delete">
+                                <svg class="icon" viewBox="0 0 24 24">
+                                    <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="profile-description"></div>
+                    <div class="profile-meta">
+                        <span>💻 Viewport 1280 × 960</span>
+                        <span>🛡️ Ad Blocker</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit Profile Modal -->
+    <div id="editModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title">Edit Browser Profile</h2>
+                <button class="close-btn" onclick="closeModal()">&times;</button>
+            </div>
+            
+            <!-- Profile ID Section - Prominently displayed at the top -->
+            <div class="profile-id-section">
+                <div class="profile-id-label">Profile ID</div>
+                <div class="profile-id-value">
+                    <span id="modalProfileId">01943234-5678-7abc-8def-123456789012</span>
+                    <button class="btn btn-copy" onclick="copyProfileIdFromModal()">
+                        <svg class="icon" viewBox="0 0 24 24">
+                            <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+                        </svg>
+                        <div class="copy-tooltip">Copied!</div>
+                    </button>
+                </div>
+            </div>
+
+            <form>
+                <div class="form-group">
+                    <label class="form-label">Profile Name</label>
+                    <input type="text" class="form-input" id="profileName" value="Quickstart Demo Profile - Tablet">
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Description (Optional)</label>
+                    <textarea class="form-input form-textarea" id="profileDescription" placeholder="Quickstart Demo Profile for Tablet"></textarea>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-col">
+                        <label class="form-label">Viewport Width (px)</label>
+                        <input type="number" class="form-input" id="viewportWidth" value="768">
+                    </div>
+                    <div class="form-col">
+                        <label class="form-label">Viewport Height (px)</label>
+                        <input type="number" class="form-input" id="viewportHeight" value="1024">
+                    </div>
+                </div>
+
+                <div class="toggle-container">
+                    <div>
+                        <strong>Persist Browser Data</strong>
+                        <div style="color: #888888; font-size: 14px;">Save cookies, local storage, and session data between tasks</div>
+                    </div>
+                    <div class="toggle" onclick="toggleSwitch(this)"></div>
+                </div>
+
+                <div class="toggle-container">
+                    <div>
+                        <strong>Store Cache</strong>
+                        <div style="color: #888888; font-size: 14px;">Cache web resources for faster loading and reduced bandwidth usage</div>
+                    </div>
+                    <div class="toggle" onclick="toggleSwitch(this)"></div>
+                </div>
+
+                <div class="toggle-container">
+                    <div>
+                        <strong>Mobile Browser</strong>
+                        <div style="color: #888888; font-size: 14px;">Use mobile user agent and viewport for mobile-specific behavior</div>
+                    </div>
+                    <div class="toggle" onclick="toggleSwitch(this)"></div>
+                </div>
+
+                <div class="toggle-container">
+                    <div>
+                        <strong>Ad Blocker</strong>
+                        <div style="color: #888888; font-size: 14px;">Block ads and popups during automated tasks</div>
+                    </div>
+                    <div class="toggle active" onclick="toggleSwitch(this)"></div>
+                </div>
+
+                <div class="toggle-container">
+                    <div>
+                        <strong>Use Proxy</strong>
+                        <div style="color: #888888; font-size: 14px;">Route traffic through mobile proxies for better stealth</div>
+                    </div>
+                    <div class="toggle" onclick="toggleSwitch(this)"></div>
+                </div>
+
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                    <button type="button" class="btn btn-primary">Save Changes</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        // Profile ID mapping for different profiles
+        const profileIds = {
+            'tablet': '01943234-5678-7abc-8def-123456789012',
+            'laptop': '01943234-5678-7abc-8def-123456789013',
+            'phone': '01943234-5678-7abc-8def-123456789014',
+            'default': '01943234-5678-7abc-8def-123456789015'
+        };
+
+        function copyProfileId(profileId) {
+            navigator.clipboard.writeText(profileId).then(function() {
+                // Find the button that was clicked and show tooltip
+                const buttons = document.querySelectorAll('.btn-copy');
+                buttons.forEach(btn => {
+                    if (btn.onclick && btn.onclick.toString().includes(profileId)) {
+                        const tooltip = btn.querySelector('.copy-tooltip');
+                        tooltip.classList.add('show');
+                        setTimeout(() => {
+                            tooltip.classList.remove('show');
+                        }, 2000);
+                    }
+                });
+            }).catch(function(err) {
+                console.error('Could not copy text: ', err);
+                alert('Failed to copy profile ID');
+            });
+        }
+
+        function copyProfileIdFromModal() {
+            const profileId = document.getElementById('modalProfileId').textContent;
+            navigator.clipboard.writeText(profileId).then(function() {
+                const button = document.querySelector('#editModal .btn-copy');
+                const tooltip = button.querySelector('.copy-tooltip');
+                tooltip.classList.add('show');
+                setTimeout(() => {
+                    tooltip.classList.remove('show');
+                }, 2000);
+            }).catch(function(err) {
+                console.error('Could not copy text: ', err);
+                alert('Failed to copy profile ID');
+            });
+        }
+
+        function editProfile(profileType) {
+            const modal = document.getElementById('editModal');
+            const profileIdElement = document.getElementById('modalProfileId');
+            const profileNameElement = document.getElementById('profileName');
+            
+            // Set the profile ID based on the profile type
+            if (profileIds[profileType]) {
+                profileIdElement.textContent = profileIds[profileType];
+            }
+            
+            // Set profile name based on type
+            const profileNames = {
+                'tablet': 'Quickstart Demo Profile - Tablet',
+                'laptop': 'Quickstart Demo Profile - Laptop', 
+                'phone': 'Quickstart Demo Profile - Phone',
+                'default': 'Default Profile'
+            };
+            
+            if (profileNames[profileType]) {
+                profileNameElement.value = profileNames[profileType];
+            }
+            
+            modal.classList.add('active');
+        }
+
+        function closeModal() {
+            const modal = document.getElementById('editModal');
+            modal.classList.remove('active');
+        }
+
+        function toggleSwitch(element) {
+            element.classList.toggle('active');
+        }
+
+        // Close modal when clicking outside
+        document.getElementById('editModal').addEventListener('click', function(e) {
+            if (e.target === this) {
+                closeModal();
+            }
+        });
+
+        // Close modal with Escape key
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                closeModal();
+            }
+        });
+    </script>
+</body>
+</html>
