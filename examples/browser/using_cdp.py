@@ -29,15 +29,15 @@ browser_session = BrowserSession(
 	browser_profile=BrowserProfile(
 		headless=False,
 	),
-	cdp_url='http://localhost:9222',
-	is_local=True,  # set to False if you want to use a remote browser
+	cdp_url='https://9223-5dee1fd4-903a-4b1c-8d46-5e3cc10513e0.proxy.daytona.works/',
+	is_local=False,  # set to False if you want to use a remote browser
 )
 controller = Controller()
 
 
 async def main():
 	agent = Agent(
-		task='Visit https://duckduckgo.com and search for "browser-use founders"',
+		task='Go to https://gitlab.com/login',
 		lllm=ChatOpenAI(model='gpt-4.1-mini'),
 		controller=controller,
 		browser_session=browser_session,

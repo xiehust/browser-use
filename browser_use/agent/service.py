@@ -1362,7 +1362,17 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 
 			self.logger.debug(f'🔄 Starting main execution loop with max {max_steps} steps...')
 			for step in range(max_steps):
-				# Replace the polling with clean pause-wait
+				# Check if paused for captcha
+				if self.browser_session.agent_paused_for_captcha:
+					self.logger.debug(f'🧩 Step {step}: Waiting for captcha to be solved...')
+					while self.browser_session.agent_paused_for_captcha:
+						await asyncio.sleep(0.5)
+						if self.state.stopped:
+							agent_run_error = 'Agent stopped during captcha solving'
+							break
+					signal_handler.reset()
+
+				# Check if paused (manual pause)
 				if self.state.paused:
 					self.logger.debug(f'⏸️ Step {step}: Agent paused, waiting to resume...')
 					await self.wait_until_resumed()
