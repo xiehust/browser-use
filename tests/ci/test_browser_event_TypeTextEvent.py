@@ -114,7 +114,7 @@ class TestTypeTextEvent:
 		# In a real test, you would get the actual index from the selector map
 
 		# For demonstration, we'll just use a hard-coded mock value
-		# and check that the tools processes the action correctly
+		# and check that the Tools instance processes the action correctly
 		mock_input_index = 1  # This would normally be determined dynamically
 
 		# Create input text action
