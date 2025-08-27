@@ -124,7 +124,7 @@ class TestTypeTextEvent:
 			input_text: InputTextAction | None = None
 
 		# The actual input might fail if the page structure changes or in headless mode
-		# So we'll just verify the tools correctly processes the action
+		# So we'll just verify the Tools instance correctly processes the action
 		result = await tools.act(InputTextActionModel(**input_action), browser_session)
 
 		# Verify the result is an ActionResult
