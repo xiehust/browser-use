@@ -11,6 +11,7 @@ from browser_use.browser.events import (
 	TabCreatedEvent,
 )
 from browser_use.browser.watchdog_base import BaseWatchdog
+from browser_use.browser.connection_health import ConnectionHealthMonitor
 from browser_use.dom.service import DomService
 from browser_use.dom.views import (
 	EnhancedDOMTreeNode,
@@ -39,6 +40,16 @@ class DOMWatchdog(BaseWatchdog):
 
 	# Internal DOM service
 	_dom_service: DomService | None = None
+	
+	# Connection health monitoring
+	_connection_health_monitor: ConnectionHealthMonitor | None = None
+	
+	@property
+	def connection_health_monitor(self) -> ConnectionHealthMonitor:
+		"""Get or create the connection health monitor."""
+		if self._connection_health_monitor is None:
+			self._connection_health_monitor = ConnectionHealthMonitor(self.browser_session)
+		return self._connection_health_monitor
 
 	async def on_TabCreatedEvent(self, event: TabCreatedEvent) -> None:
 		# self.logger.debug('Setting up init scripts in browser')
@@ -255,10 +266,57 @@ class DOMWatchdog(BaseWatchdog):
 				)
 
 				try:
-					# Call the DOM building method directly
-					self.logger.debug('🔍 DOMWatchdog.on_BrowserStateRequestEvent: Starting _build_dom_tree...')
-					content = await self._build_dom_tree(previous_state)
-					self.logger.debug('🔍 DOMWatchdog.on_BrowserStateRequestEvent: ✅ _build_dom_tree completed')
+					# Check connection health before attempting DOM build
+					health_monitor = self.connection_health_monitor
+					if health_monitor.should_check_connection_before_action():
+						self.logger.debug('🔍 Checking connection health before DOM build...')
+						
+						is_broken = await health_monitor.is_connection_broken()
+						if is_broken:
+							self.logger.warning('🚨 Connection appears broken before DOM build, attempting recovery...')
+							recovery_success = await health_monitor.attempt_connection_recovery()
+							
+							if not recovery_success:
+								self.logger.error('❌ Connection recovery failed, using minimal DOM state')
+								content = SerializedDOMState(_root=None, selector_map={})
+							else:
+								self.logger.info('✅ Connection recovery successful, proceeding with DOM build')
+					
+					if 'content' not in locals():
+						# Call the DOM building method directly
+						self.logger.debug('🔍 DOMWatchdog.on_BrowserStateRequestEvent: Starting _build_dom_tree...')
+						content = await self._build_dom_tree(previous_state)
+						self.logger.debug('🔍 DOMWatchdog.on_BrowserStateRequestEvent: ✅ _build_dom_tree completed')
+						
+				except TimeoutError as timeout_error:
+					# Handle CDP timeout specifically - could indicate broken CDP connection
+					self.logger.warning(f'🔍 DOM build timed out (likely CDP connection issue): {timeout_error}')
+					
+					# Mark this as a connection failure for health monitoring
+					health_monitor = self.connection_health_monitor
+					health_monitor.consecutive_failures += 1
+					
+					if 'CDP requests failed or timed out' in str(timeout_error):
+						self.logger.warning('🔧 CDP connection appears broken after PWA dialog or bot protection')
+						
+						# Try connection recovery
+						self.logger.info('🔧 Attempting connection recovery after DOM timeout...')
+						recovery_success = await health_monitor.attempt_connection_recovery()
+						
+						if recovery_success:
+							# Retry DOM build after recovery
+							try:
+								self.logger.debug('🔍 Retrying DOM build after recovery...')
+								content = await self._build_dom_tree(previous_state)
+								self.logger.info('✅ DOM build successful after recovery')
+							except Exception as retry_error:
+								self.logger.error(f'❌ DOM build failed even after recovery: {retry_error}')
+								content = SerializedDOMState(_root=None, selector_map={})
+						else:
+							# Create minimal fallback state with error context
+							content = self._create_fallback_dom_state(str(timeout_error))
+					else:
+						content = SerializedDOMState(_root=None, selector_map={})
 				except Exception as e:
 					self.logger.warning(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: DOM build failed: {e}, using minimal state')
 					content = SerializedDOMState(_root=None, selector_map={})
@@ -271,9 +329,13 @@ class DOMWatchdog(BaseWatchdog):
 				# Skip DOM building if not requested
 				content = SerializedDOMState(_root=None, selector_map={})
 
-			# re-focus top-level page session context
+			# re-focus top-level page session context with error handling
 			assert self.browser_session.agent_focus is not None, 'No current target ID'
-			await self.browser_session.get_or_create_cdp_session(target_id=self.browser_session.agent_focus.target_id, focus=True)
+			try:
+				await self.browser_session.get_or_create_cdp_session(target_id=self.browser_session.agent_focus.target_id, focus=True)
+			except Exception as focus_error:
+				self.logger.warning(f'⚠️ Failed to re-focus CDP session: {focus_error}, continuing with existing session')
+				# Continue without re-focusing - better than crashing
 
 			# Get screenshot if requested
 			screenshot_b64 = None
@@ -593,6 +655,31 @@ class DOMWatchdog(BaseWatchdog):
 		self.current_dom_state = None
 		self.enhanced_dom_tree = None
 		# Keep the DOM service instance to reuse its CDP client connection
+
+	def _create_fallback_dom_state(self, error_context: str) -> 'SerializedDOMState':
+		"""Create a minimal fallback DOM state when CDP connection fails.
+		
+		This provides a basic working state that allows the agent to continue
+		functioning even when CDP requests are completely broken.
+		
+		Args:
+			error_context: Error message describing what went wrong
+			
+		Returns:
+			Minimal SerializedDOMState with empty selector map
+		"""
+		from browser_use.dom.views import SerializedDOMState
+		
+		self.logger.debug(f'🛡️ Creating fallback DOM state due to: {error_context}')
+		
+		# Create absolutely minimal state - no elements, no DOM tree
+		# This will force the agent to rely on screenshot analysis only
+		fallback_state = SerializedDOMState(_root=None, selector_map={})
+		
+		# Clear any cached state since CDP is broken
+		self.clear_cache()
+		
+		return fallback_state
 
 	def is_file_input(self, element: EnhancedDOMTreeNode) -> bool:
 		"""Check if element is a file input."""

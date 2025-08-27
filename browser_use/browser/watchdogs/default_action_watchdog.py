@@ -21,6 +21,7 @@ from browser_use.browser.events import (
 )
 from browser_use.browser.views import BrowserError, URLNotAllowedError
 from browser_use.browser.watchdog_base import BaseWatchdog
+from browser_use.browser.connection_health import ConnectionHealthMonitor
 from browser_use.dom.service import EnhancedDOMTreeNode
 
 # Import EnhancedDOMTreeNode and rebuild event models that have forward references to it
@@ -35,6 +36,17 @@ UploadFileEvent.model_rebuild()
 
 class DefaultActionWatchdog(BaseWatchdog):
 	"""Handles default browser actions like click, type, and scroll using CDP."""
+	
+	def __init__(self, *args, **kwargs):
+		super().__init__(*args, **kwargs)
+		self._connection_health_monitor = None
+	
+	@property
+	def connection_health_monitor(self) -> ConnectionHealthMonitor:
+		"""Get or create the connection health monitor."""
+		if self._connection_health_monitor is None:
+			self._connection_health_monitor = ConnectionHealthMonitor(self.browser_session)
+		return self._connection_health_monitor
 
 	async def on_ClickElementEvent(self, event: ClickElementEvent) -> dict | None:
 		"""Handle click request with CDP."""
@@ -44,14 +56,38 @@ class DefaultActionWatchdog(BaseWatchdog):
 				error_msg = 'Cannot execute click: browser session is corrupted (target_id=None). Session may have crashed.'
 				self.logger.error(f'⚠️ {error_msg}')
 				raise BrowserError(error_msg)
+			
+			# Check connection health before attempting click
+			health_monitor = self.connection_health_monitor
+			if health_monitor.should_check_connection_before_action():
+				self.logger.debug('🔍 Checking connection health before click action...')
+				
+				is_broken = await health_monitor.is_connection_broken()
+				if is_broken:
+					self.logger.warning('🚨 Connection appears broken, attempting recovery...')
+					recovery_success = await health_monitor.attempt_connection_recovery()
+					
+					if not recovery_success:
+						error_msg = 'Cannot execute click: CDP connection is broken and recovery failed'
+						self.logger.error(f'❌ {error_msg}')
+						raise BrowserError(error_msg)
+					else:
+						self.logger.info('✅ Connection recovery successful, proceeding with click')
 
 			# Use the provided node
 			element_node = event.node
 			index_for_logging = element_node.element_index or 'unknown'
 			starting_target_id = self.browser_session.agent_focus.target_id
 
-			# Track initial number of tabs to detect new tab opening
-			initial_target_ids = await self.browser_session._cdp_get_all_pages()
+			# Track initial number of tabs to detect new tab opening with timeout
+			try:
+				initial_target_ids = await asyncio.wait_for(
+					self.browser_session._cdp_get_all_pages(),
+					timeout=3.0
+				)
+			except asyncio.TimeoutError:
+				self.logger.warning('⏱️ Initial tab detection timed out, continuing with click')
+				initial_target_ids = []
 
 			# Check if element is a file input (should not be clicked)
 			if self.browser_session.is_file_input(element_node):
@@ -81,30 +117,46 @@ class DefaultActionWatchdog(BaseWatchdog):
 
 			# Note: We don't clear cached state here - let multi_act handle DOM change detection
 			# by explicitly rebuilding and comparing when needed
-			# Successfully clicked, always reset session back to parent page session context
-			self.browser_session.agent_focus = await self.browser_session.get_or_create_cdp_session(
-				target_id=starting_target_id, focus=True
-			)
+			# Successfully clicked, always reset session back to parent page session context with timeout
+			try:
+				self.browser_session.agent_focus = await asyncio.wait_for(
+					self.browser_session.get_or_create_cdp_session(target_id=starting_target_id, focus=True),
+					timeout=3.0
+				)
+			except asyncio.TimeoutError:
+				self.logger.warning('⏱️ Post-click session reset timed out, continuing anyway')
 
-			# Check if a new tab was opened
-			after_target_ids = await self.browser_session._cdp_get_all_pages()
-			new_target_ids = {t['targetId'] for t in after_target_ids} - {t['targetId'] for t in initial_target_ids}
-			if new_target_ids:
-				new_tab_msg = 'New tab opened - switching to it'
-				msg += f' - {new_tab_msg}'
-				self.logger.info(f'🔗 {new_tab_msg}')
+			# Check if a new tab was opened with timeout
+			try:
+				after_target_ids = await asyncio.wait_for(
+					self.browser_session._cdp_get_all_pages(),
+					timeout=2.0
+				)
+				new_target_ids = {t['targetId'] for t in after_target_ids} - {t['targetId'] for t in initial_target_ids}
+				if new_target_ids:
+					new_tab_msg = 'New tab opened - switching to it'
+					msg += f' - {new_tab_msg}'
+					self.logger.info(f'🔗 {new_tab_msg}')
 
-				if not event.while_holding_ctrl:
-					# if while_holding_ctrl=False it means agent was not expecting a new tab to be opened
-					# so we need to switch to the new tab to make the agent aware of the surprise new tab that was opened.
-					# when while_holding_ctrl=True we dont actually want to switch to it,
-					# we should match human expectations of ctrl+click which opens in the background,
-					# so in multi_act it usually already sends [click_element_by_index(123, while_holding_ctrl=True), switch_tab(tab_id=None)] anyway
-					from browser_use.browser.events import SwitchTabEvent
+					if not event.while_holding_ctrl:
+						# if while_holding_ctrl=False it means agent was not expecting a new tab to be opened
+						# so we need to switch to the new tab to make the agent aware of the surprise new tab that was opened.
+						# when while_holding_ctrl=True we dont actually want to switch to it,
+						# we should match human expectations of ctrl+click which opens in the background,
+						# so in multi_act it usually already sends [click_element_by_index(123, while_holding_ctrl=True), switch_tab(tab_id=None)] anyway
+						from browser_use.browser.events import SwitchTabEvent
 
-					new_target_id = new_target_ids.pop()
-					switch_event = await self.event_bus.dispatch(SwitchTabEvent(target_id=new_target_id))
-					await switch_event
+						new_target_id = new_target_ids.pop()
+						try:
+							switch_event = await asyncio.wait_for(
+								self.event_bus.dispatch(SwitchTabEvent(target_id=new_target_id)),
+								timeout=3.0
+							)
+							await asyncio.wait_for(switch_event, timeout=2.0)
+						except asyncio.TimeoutError:
+							self.logger.warning('⏱️ Tab switch after click timed out')
+			except asyncio.TimeoutError:
+				self.logger.warning('⏱️ Post-click tab detection timed out, continuing anyway')
 
 			# Return click metadata (coordinates) if available
 			return click_metadata
@@ -239,8 +291,36 @@ class DefaultActionWatchdog(BaseWatchdog):
 					f'<llm_error_msg>Cannot click on file input element (index={element_node.element_index}). File uploads must be handled using upload_file_to_element action</llm_error_msg>'
 				)
 
-			# Get CDP client
-			cdp_session = await self.browser_session.cdp_client_for_node(element_node)
+			# Get CDP client with timeout protection
+			try:
+				cdp_session = await asyncio.wait_for(
+					self.browser_session.cdp_client_for_node(element_node),
+					timeout=5.0
+				)
+			except asyncio.TimeoutError:
+				self.logger.warning('⏱️ CDP client creation timed out for click operation')
+				
+				# Mark this as a connection failure for health monitoring
+				health_monitor = self.connection_health_monitor
+				health_monitor.consecutive_failures += 1
+				
+				# Try connection recovery before giving up
+				self.logger.info('🔧 Attempting connection recovery after CDP timeout...')
+				recovery_success = await health_monitor.attempt_connection_recovery()
+				
+				if recovery_success:
+					# Retry CDP client creation after recovery
+					try:
+						cdp_session = await asyncio.wait_for(
+							self.browser_session.cdp_client_for_node(element_node),
+							timeout=3.0
+						)
+						self.logger.info('✅ CDP client creation successful after recovery')
+					except Exception as retry_error:
+						self.logger.error(f'❌ CDP client creation failed even after recovery: {retry_error}')
+						raise Exception('CDP session creation timed out - browser may be unresponsive')
+				else:
+					raise Exception('CDP session creation timed out - browser may be unresponsive')
 
 			# Get the correct session ID for the element's frame
 			session_id = cdp_session.session_id
@@ -248,30 +328,46 @@ class DefaultActionWatchdog(BaseWatchdog):
 			# Get element bounds
 			backend_node_id = element_node.backend_node_id
 
-			# Get viewport dimensions for visibility checks
-			layout_metrics = await cdp_session.cdp_client.send.Page.getLayoutMetrics(session_id=session_id)
-			viewport_width = layout_metrics['layoutViewport']['clientWidth']
-			viewport_height = layout_metrics['layoutViewport']['clientHeight']
+			# Get viewport dimensions for visibility checks with timeout
+			try:
+				layout_metrics = await asyncio.wait_for(
+					cdp_session.cdp_client.send.Page.getLayoutMetrics(session_id=session_id),
+					timeout=3.0
+				)
+				viewport_width = layout_metrics['layoutViewport']['clientWidth']
+				viewport_height = layout_metrics['layoutViewport']['clientHeight']
+			except asyncio.TimeoutError:
+				self.logger.warning('⏱️ Layout metrics timeout, using fallback dimensions')
+				viewport_width = 1200
+				viewport_height = 800
 
 			# Try multiple methods to get element geometry
 			quads = []
 
 			# Method 1: Try DOM.getContentQuads first (best for inline elements and complex layouts)
 			try:
-				content_quads_result = await cdp_session.cdp_client.send.DOM.getContentQuads(
-					params={'backendNodeId': backend_node_id}, session_id=session_id
+				content_quads_result = await asyncio.wait_for(
+					cdp_session.cdp_client.send.DOM.getContentQuads(
+						params={'backendNodeId': backend_node_id}, session_id=session_id
+					),
+					timeout=3.0
 				)
 				if 'quads' in content_quads_result and content_quads_result['quads']:
 					quads = content_quads_result['quads']
 					self.logger.debug(f'Got {len(quads)} quads from DOM.getContentQuads')
+			except asyncio.TimeoutError:
+				self.logger.debug('DOM.getContentQuads timed out')
 			except Exception as e:
 				self.logger.debug(f'DOM.getContentQuads failed: {e}')
 
 			# Method 2: Fall back to DOM.getBoxModel
 			if not quads:
 				try:
-					box_model = await cdp_session.cdp_client.send.DOM.getBoxModel(
-						params={'backendNodeId': backend_node_id}, session_id=session_id
+					box_model = await asyncio.wait_for(
+						cdp_session.cdp_client.send.DOM.getBoxModel(
+							params={'backendNodeId': backend_node_id}, session_id=session_id
+						),
+						timeout=3.0
 					)
 					if 'model' in box_model and 'content' in box_model['model']:
 						content_quad = box_model['model']['content']
@@ -290,37 +386,45 @@ class DefaultActionWatchdog(BaseWatchdog):
 								]
 							]
 							self.logger.debug('Got quad from DOM.getBoxModel')
+				except asyncio.TimeoutError:
+					self.logger.debug('DOM.getBoxModel timed out')
 				except Exception as e:
 					self.logger.debug(f'DOM.getBoxModel failed: {e}')
 
 			# Method 3: Fall back to JavaScript getBoundingClientRect
 			if not quads:
 				try:
-					result = await cdp_session.cdp_client.send.DOM.resolveNode(
-						params={'backendNodeId': backend_node_id},
-						session_id=session_id,
+					result = await asyncio.wait_for(
+						cdp_session.cdp_client.send.DOM.resolveNode(
+							params={'backendNodeId': backend_node_id},
+							session_id=session_id,
+						),
+						timeout=3.0
 					)
 					if 'object' in result and 'objectId' in result['object']:
 						object_id = result['object']['objectId']
 
-						# Get bounding rect via JavaScript
-						bounds_result = await cdp_session.cdp_client.send.Runtime.callFunctionOn(
-							params={
-								'functionDeclaration': """
-									function() {
-										const rect = this.getBoundingClientRect();
-										return {
-											x: rect.left,
-											y: rect.top,
-											width: rect.width,
-											height: rect.height
-										};
-									}
-								""",
-								'objectId': object_id,
-								'returnByValue': True,
-							},
-							session_id=session_id,
+						# Get bounding rect via JavaScript with timeout
+						bounds_result = await asyncio.wait_for(
+							cdp_session.cdp_client.send.Runtime.callFunctionOn(
+								params={
+									'functionDeclaration': """
+										function() {
+											const rect = this.getBoundingClientRect();
+											return {
+												x: rect.left,
+												y: rect.top,
+												width: rect.width,
+												height: rect.height
+											};
+										}
+									""",
+									'objectId': object_id,
+									'returnByValue': True,
+								},
+								session_id=session_id,
+							),
+							timeout=3.0
 						)
 
 						if 'result' in bounds_result and 'value' in bounds_result['result']:
@@ -340,6 +444,8 @@ class DefaultActionWatchdog(BaseWatchdog):
 								]
 							]
 							self.logger.debug('Got quad from getBoundingClientRect')
+				except asyncio.TimeoutError:
+					self.logger.debug('JavaScript getBoundingClientRect timed out')
 				except Exception as e:
 					self.logger.debug(f'JavaScript getBoundingClientRect failed: {e}')
 
@@ -415,12 +521,17 @@ class DefaultActionWatchdog(BaseWatchdog):
 			center_x = max(0, min(viewport_width - 1, center_x))
 			center_y = max(0, min(viewport_height - 1, center_y))
 
-			# Scroll element into view
+			# Scroll element into view with timeout
 			try:
-				await cdp_session.cdp_client.send.DOM.scrollIntoViewIfNeeded(
-					params={'backendNodeId': backend_node_id}, session_id=session_id
+				await asyncio.wait_for(
+					cdp_session.cdp_client.send.DOM.scrollIntoViewIfNeeded(
+						params={'backendNodeId': backend_node_id}, session_id=session_id
+					),
+					timeout=3.0
 				)
 				await asyncio.sleep(0.1)  # Wait for scroll to complete
+			except asyncio.TimeoutError:
+				self.logger.debug('Scroll into view timed out')
 			except Exception as e:
 				self.logger.debug(f'Failed to scroll element into view: {e}')
 
@@ -429,14 +540,17 @@ class DefaultActionWatchdog(BaseWatchdog):
 			# click event instead using xpath of x,y coordinate clicking, because we wont be able to click *through* occluding elements using x,y clicks
 			try:
 				self.logger.debug(f'👆 Dragging mouse over element before clicking x: {center_x}px y: {center_y}px ...')
-				# Move mouse to element
-				await cdp_session.cdp_client.send.Input.dispatchMouseEvent(
-					params={
-						'type': 'mouseMoved',
-						'x': center_x,
-						'y': center_y,
-					},
-					session_id=session_id,
+				# Move mouse to element with timeout
+				await asyncio.wait_for(
+					cdp_session.cdp_client.send.Input.dispatchMouseEvent(
+						params={
+							'type': 'mouseMoved',
+							'x': center_x,
+							'y': center_y,
+						},
+						session_id=session_id,
+					),
+					timeout=2.0
 				)
 				await asyncio.sleep(0.123)
 
@@ -497,25 +611,35 @@ class DefaultActionWatchdog(BaseWatchdog):
 				# Return coordinates as dict for metadata
 				return {'click_x': center_x, 'click_y': center_y}
 
-			except Exception as e:
-				self.logger.warning(f'CDP click failed: {type(e).__name__}: {e}')
-				# Fall back to JavaScript click via CDP
+			except (asyncio.TimeoutError, Exception) as e:
+				if isinstance(e, asyncio.TimeoutError):
+					self.logger.warning('⏱️ CDP click operation timed out, falling back to JavaScript click')
+				else:
+					self.logger.warning(f'CDP click failed: {type(e).__name__}: {e}')
+				
+				# Fall back to JavaScript click via CDP with timeout
 				try:
-					result = await cdp_session.cdp_client.send.DOM.resolveNode(
-						params={'backendNodeId': backend_node_id},
-						session_id=session_id,
+					result = await asyncio.wait_for(
+						cdp_session.cdp_client.send.DOM.resolveNode(
+							params={'backendNodeId': backend_node_id},
+							session_id=session_id,
+						),
+						timeout=3.0
 					)
 					assert 'object' in result and 'objectId' in result['object'], (
 						'Failed to find DOM element based on backendNodeId, maybe page content changed?'
 					)
 					object_id = result['object']['objectId']
 
-					await cdp_session.cdp_client.send.Runtime.callFunctionOn(
-						params={
-							'functionDeclaration': 'function() { this.click(); }',
-							'objectId': object_id,
-						},
-						session_id=session_id,
+					await asyncio.wait_for(
+						cdp_session.cdp_client.send.Runtime.callFunctionOn(
+							params={
+								'functionDeclaration': 'function() { this.click(); }',
+								'objectId': object_id,
+							},
+							session_id=session_id,
+						),
+						timeout=3.0
 					)
 					await asyncio.sleep(0.5)
 					# Navigation is handled by BrowserSession via events
@@ -525,9 +649,23 @@ class DefaultActionWatchdog(BaseWatchdog):
 					raise Exception(f'Failed to click element: {e}')
 			finally:
 				# always re-focus back to original top-level page session context in case click opened a new tab/popup/window/dialog/etc.
-				cdp_session = await self.browser_session.get_or_create_cdp_session(focus=True)
-				await cdp_session.cdp_client.send.Target.activateTarget(params={'targetId': cdp_session.target_id})
-				await cdp_session.cdp_client.send.Runtime.runIfWaitingForDebugger(session_id=cdp_session.session_id)
+				try:
+					cdp_session = await asyncio.wait_for(
+						self.browser_session.get_or_create_cdp_session(focus=True),
+						timeout=3.0
+					)
+					await asyncio.wait_for(
+						cdp_session.cdp_client.send.Target.activateTarget(params={'targetId': cdp_session.target_id}),
+						timeout=2.0
+					)
+					await asyncio.wait_for(
+						cdp_session.cdp_client.send.Runtime.runIfWaitingForDebugger(session_id=cdp_session.session_id),
+						timeout=2.0
+					)
+				except asyncio.TimeoutError:
+					self.logger.debug('⏱️ Final session cleanup timed out, continuing anyway')
+				except Exception as cleanup_e:
+					self.logger.debug(f'Final session cleanup failed: {cleanup_e}, continuing anyway')
 
 		except URLNotAllowedError as e:
 			raise e

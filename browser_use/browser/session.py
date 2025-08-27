@@ -1528,8 +1528,15 @@ class BrowserSession(BaseModel):
 	async def remove_highlights(self) -> None:
 		"""Remove highlights from the page using CDP."""
 		try:
-			# Get cached session
-			cdp_session = await self.get_or_create_cdp_session()
+			# Get cached session with timeout to prevent hanging on broken CDP
+			try:
+				cdp_session = await asyncio.wait_for(
+					self.get_or_create_cdp_session(), 
+					timeout=5.0  # Short timeout for highlight removal
+				)
+			except asyncio.TimeoutError:
+				self.logger.warning('CDP session creation timed out during highlight removal, skipping')
+				return
 
 			# Remove highlights via JavaScript - be thorough
 			script = """
@@ -1553,16 +1560,25 @@ class BrowserSession(BaseModel):
 				return { removed: highlights.length };
 			})();
 			"""
-			result = await cdp_session.cdp_client.send.Runtime.evaluate(
-				params={'expression': script, 'returnByValue': True}, session_id=cdp_session.session_id
-			)
-
-			# Log the result for debugging
-			if result and 'result' in result and 'value' in result['result']:
-				removed_count = result['result']['value'].get('removed', 0)
-				self.logger.debug(f'Successfully removed {removed_count} highlight elements')
-			else:
-				self.logger.debug('Highlight removal completed')
+			# Add timeout to the Runtime.evaluate call to prevent hanging
+			try:
+				result = await asyncio.wait_for(
+					cdp_session.cdp_client.send.Runtime.evaluate(
+						params={'expression': script, 'returnByValue': True}, 
+						session_id=cdp_session.session_id
+					),
+					timeout=3.0  # Short timeout for highlight removal script
+				)
+				
+				# Log the result for debugging
+				if result and 'result' in result and 'value' in result['result']:
+					removed_count = result['result']['value'].get('removed', 0)
+					self.logger.debug(f'Successfully removed {removed_count} highlight elements')
+				else:
+					self.logger.debug('Highlight removal completed')
+			except asyncio.TimeoutError:
+				self.logger.warning('Highlight removal script timed out, skipping')
+				return
 
 		except Exception as e:
 			self.logger.warning(f'Failed to remove highlights: {e}')

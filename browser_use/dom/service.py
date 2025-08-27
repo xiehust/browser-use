@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from cdp_use.cdp.accessibility.commands import GetFullAXTreeReturns
 from cdp_use.cdp.accessibility.types import AXNode
@@ -276,46 +276,72 @@ class DomService:
 		return {'nodes': merged_nodes}
 
 	async def _get_all_trees(self, target_id: TargetID) -> TargetAllTrees:
-		cdp_session = await self.browser_session.get_or_create_cdp_session(target_id=target_id, focus=False)
-
-		# Wait for the page to be ready first
+		# Add timeout protection for CDP session creation and initial calls
 		try:
-			ready_state = await cdp_session.cdp_client.send.Runtime.evaluate(
-				params={'expression': 'document.readyState'}, session_id=cdp_session.session_id
+			# Timeout on CDP session creation to prevent hanging
+			cdp_session = await asyncio.wait_for(
+				self.browser_session.get_or_create_cdp_session(target_id=target_id, focus=False),
+				timeout=5.0
 			)
-		except Exception as e:
-			pass  # Page might not be ready yet
+		except asyncio.TimeoutError:
+			self.logger.warning(f'CDP session creation timed out for target {target_id[-4:]}, attempting reset')
+			# Try CDP reset and retry once
+			try:
+				await self._reset_cdp_connection(target_id)
+				cdp_session = await asyncio.wait_for(
+					self.browser_session.get_or_create_cdp_session(target_id=target_id, focus=False),
+					timeout=3.0
+				)
+				self.logger.info('CDP session creation successful after reset')
+			except Exception as reset_error:
+				self.logger.error(f'CDP session creation failed even after reset: {reset_error}')
+				raise TimeoutError(f'CDP session creation failed for target {target_id}')
+
+		# Wait for the page to be ready first with timeout protection
+		try:
+			ready_state = await asyncio.wait_for(
+				cdp_session.cdp_client.send.Runtime.evaluate(
+					params={'expression': 'document.readyState'}, session_id=cdp_session.session_id
+				),
+				timeout=3.0
+			)
+		except (Exception, asyncio.TimeoutError) as e:
+			self.logger.debug(f'Page readiness check failed or timed out: {e}, continuing anyway')
 		# DEBUG: Log before capturing snapshot
 		self.logger.debug(f'🔍 DEBUG: Capturing DOM snapshot for target {target_id}')
 
 		# Get actual scroll positions for all iframes before capturing snapshot
 		iframe_scroll_positions = {}
 		try:
-			scroll_result = await cdp_session.cdp_client.send.Runtime.evaluate(
-				params={
-					'expression': """
-					(() => {
-						const scrollData = {};
-						const iframes = document.querySelectorAll('iframe');
-						iframes.forEach((iframe, index) => {
-							try {
-								const doc = iframe.contentDocument || iframe.contentWindow.document;
-								if (doc) {
-									scrollData[index] = {
-										scrollTop: doc.documentElement.scrollTop || doc.body.scrollTop || 0,
-										scrollLeft: doc.documentElement.scrollLeft || doc.body.scrollLeft || 0
-									};
+			# Add timeout to iframe scroll position detection
+			scroll_result = await asyncio.wait_for(
+				cdp_session.cdp_client.send.Runtime.evaluate(
+					params={
+						'expression': """
+						(() => {
+							const scrollData = {};
+							const iframes = document.querySelectorAll('iframe');
+							iframes.forEach((iframe, index) => {
+								try {
+									const doc = iframe.contentDocument || iframe.contentWindow.document;
+									if (doc) {
+										scrollData[index] = {
+											scrollTop: doc.documentElement.scrollTop || doc.body.scrollTop || 0,
+											scrollLeft: doc.documentElement.scrollLeft || doc.body.scrollLeft || 0
+										};
+									}
+								} catch (e) {
+									// Cross-origin iframe, can't access
 								}
-							} catch (e) {
-								// Cross-origin iframe, can't access
-							}
-						});
-						return scrollData;
-					})()
-					""",
-					'returnByValue': True,
-				},
-				session_id=cdp_session.session_id,
+							});
+							return scrollData;
+						})()
+						""",
+						'returnByValue': True,
+					},
+					session_id=cdp_session.session_id,
+				),
+				timeout=3.0
 			)
 			if scroll_result and 'result' in scroll_result and 'value' in scroll_result['result']:
 				iframe_scroll_positions = scroll_result['result']['value']
@@ -323,8 +349,8 @@ class DomService:
 					self.logger.debug(
 						f'🔍 DEBUG: Iframe {idx} actual scroll position - scrollTop={scroll_data.get("scrollTop", 0)}, scrollLeft={scroll_data.get("scrollLeft", 0)}'
 					)
-		except Exception as e:
-			self.logger.debug(f'Failed to get iframe scroll positions: {e}')
+		except (Exception, asyncio.TimeoutError) as e:
+			self.logger.debug(f'Failed to get iframe scroll positions or timed out: {e}')
 
 		# Define CDP request factories to avoid duplication
 		def create_snapshot_request():
@@ -396,9 +422,30 @@ class DomService:
 				self.logger.warning(f'CDP request {key} timed out')
 				failed.append(key)
 
-		# If any required tasks failed, raise an exception
+		# If any required tasks failed, attempt CDP connection reset
 		if failed:
-			raise TimeoutError(f'CDP requests failed or timed out: {", ".join(failed)}')
+			# Check if we have multiple failures indicating potential CDP connection issue
+			if len(failed) >= 3:
+				self.logger.warning(f'Multiple CDP requests failed ({len(failed)}/{len(tasks)}), attempting CDP session reset...')
+				try:
+					# Try to reset the CDP connection
+					await self._reset_cdp_connection(target_id)
+					
+					# Retry all failed requests once more with fresh session
+					retry_results = await self._retry_cdp_requests_after_reset(target_id, failed)
+					
+					# Merge successful retry results
+					for key, result in retry_results.items():
+						results[key] = result
+						failed.remove(key)
+						
+					self.logger.info(f'CDP session reset successful, recovered {len(retry_results)} requests')
+				except Exception as reset_error:
+					self.logger.error(f'CDP session reset failed: {reset_error}')
+			
+			# If still have failures after reset attempt, raise exception
+			if failed:
+				raise TimeoutError(f'CDP requests failed or timed out: {", ".join(failed)}')
 
 		snapshot = results['snapshot']
 		dom_tree = results['dom_tree']
@@ -425,6 +472,101 @@ class DomService:
 			device_pixel_ratio=device_pixel_ratio,
 			cdp_timing=cdp_timing,
 		)
+
+	async def _reset_cdp_connection(self, target_id: TargetID) -> None:
+		"""Reset CDP connection for a target when requests are failing.
+		
+		This attempts to recover from broken CDP sessions that can occur after
+		interacting with PWA dialogs or other browser state changes.
+		"""
+		self.logger.debug(f'🔄 Resetting CDP connection for target {target_id[-4:]}...')
+		
+		try:
+			# Clear any cached CDP session for this target
+			try:
+				# Use safe access to clear cached session
+				if hasattr(self.browser_session, '_cdp_sessions'):
+					cdp_sessions = getattr(self.browser_session, '_cdp_sessions', {})
+					if target_id in cdp_sessions:
+						self.logger.debug(f'🗑️ Clearing cached CDP session for target {target_id[-4:]}')
+						cdp_sessions.pop(target_id, None)
+			except Exception as clear_error:
+				self.logger.debug(f'Could not clear cached session: {clear_error}')
+			
+			# Force creation of new CDP session
+			self.logger.debug(f'🆕 Creating new CDP session for target {target_id[-4:]}')
+			new_session = await self.browser_session.get_or_create_cdp_session(target_id=target_id, focus=False)
+			
+			# Test the new session with a simple request
+			_ = await asyncio.wait_for(
+				new_session.cdp_client.send.Runtime.evaluate(
+					params={'expression': 'document.readyState'}, 
+					session_id=new_session.session_id
+				),
+				timeout=3.0
+			)
+			self.logger.debug(f'✅ CDP connection reset successful for target {target_id[-4:]}')
+			
+		except Exception as e:
+			self.logger.warning(f'⚠️ CDP connection reset failed for target {target_id[-4:]}: {e}')
+			raise
+
+	async def _retry_cdp_requests_after_reset(self, target_id: TargetID, failed_requests: list[str]) -> dict[str, Any]:
+		"""Retry specific CDP requests after connection reset."""
+		self.logger.debug(f'🔁 Retrying {len(failed_requests)} CDP requests after reset...')
+		
+		cdp_session = await self.browser_session.get_or_create_cdp_session(target_id=target_id, focus=False)
+		
+		# Create retry tasks only for failed requests
+		retry_tasks = {}
+		if 'snapshot' in failed_requests:
+			retry_tasks['snapshot'] = asyncio.create_task(
+				cdp_session.cdp_client.send.DOMSnapshot.captureSnapshot(
+					params={
+						'computedStyles': REQUIRED_COMPUTED_STYLES,
+						'includePaintOrder': True,
+						'includeDOMRects': True,
+						'includeBlendedBackgroundColors': False,
+						'includeTextColorOpacities': False,
+					},
+					session_id=cdp_session.session_id,
+				)
+			)
+			
+		if 'dom_tree' in failed_requests:
+			retry_tasks['dom_tree'] = asyncio.create_task(
+				cdp_session.cdp_client.send.DOM.getDocument(
+					params={'depth': -1, 'pierce': True}, 
+					session_id=cdp_session.session_id
+				)
+			)
+			
+		if 'ax_tree' in failed_requests:
+			retry_tasks['ax_tree'] = asyncio.create_task(self._get_ax_tree_for_all_frames(target_id))
+			
+		if 'device_pixel_ratio' in failed_requests:
+			retry_tasks['device_pixel_ratio'] = asyncio.create_task(self._get_viewport_ratio(target_id))
+		
+		# Wait for retry tasks with shorter timeout
+		_, pending = await asyncio.wait(retry_tasks.values(), timeout=5.0)
+		
+		# Cancel any remaining pending tasks
+		for task in pending:
+			task.cancel()
+		
+		# Extract successful results
+		results = {}
+		for key, task in retry_tasks.items():
+			if task.done() and not task.cancelled():
+				try:
+					results[key] = task.result()
+					self.logger.debug(f'✅ Retry successful for {key}')
+				except Exception as e:
+					self.logger.warning(f'❌ Retry failed for {key}: {e}')
+			else:
+				self.logger.warning(f'⏱️ Retry timed out for {key}')
+		
+		return results
 
 	async def get_dom_tree(
 		self,
