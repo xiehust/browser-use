@@ -19,6 +19,8 @@ from browser_use.dom.views import (
 
 if TYPE_CHECKING:
 	from browser_use.browser.views import BrowserStateSummary, PageInfo
+else:
+	from browser_use.browser.views import PageInfo
 
 
 class DOMWatchdog(BaseWatchdog):
@@ -307,18 +309,46 @@ class DOMWatchdog(BaseWatchdog):
 
 			# Get target title safely
 			try:
-				self.logger.debug('🔍 DOMWatchdog.on_BrowserStateRequestEvent: Getting page title...')
+				pool_size_before_title = len(self.browser_session._cdp_session_pool)
+				self.logger.debug(
+					f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: Getting page title... (CDP pool size: {pool_size_before_title})'
+				)
 				title = await asyncio.wait_for(self.browser_session.get_current_page_title(), timeout=2.0)
-				self.logger.debug(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: Got title: {title}')
+				pool_size_after_title = len(self.browser_session._cdp_session_pool)
+				self.logger.debug(
+					f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: Got title: {title} (CDP pool size after title: {pool_size_after_title})'
+				)
 			except Exception as e:
 				self.logger.debug(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: Failed to get title: {e}')
 				title = 'Page'
 
-			# Get comprehensive page info from CDP
+			# Get comprehensive page info from CDP with timeout protection
 			try:
-				self.logger.debug('🔍 DOMWatchdog.on_BrowserStateRequestEvent: Getting page info from CDP...')
-				page_info = await self._get_page_info()
+				pool_size = len(self.browser_session._cdp_session_pool)
+				pool_targets = list(self.browser_session._cdp_session_pool.keys())
+				self.logger.debug(
+					f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: Getting page info from CDP... (CDP pool: {pool_size} connections to targets: {pool_targets})'
+				)
+				page_info = await asyncio.wait_for(self._get_page_info(), timeout=15.0)
 				self.logger.debug(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: Got page info from CDP: {page_info}')
+			except asyncio.TimeoutError:
+				self.logger.warning(
+					'🔍 DOMWatchdog.on_BrowserStateRequestEvent: ⏰ Page info CDP call timed out after 15s, using fallback'
+				)
+				# Fallback to default viewport dimensions
+				viewport = self.browser_session.browser_profile.viewport or {'width': 1280, 'height': 720}
+				page_info = PageInfo(
+					viewport_width=viewport['width'],
+					viewport_height=viewport['height'],
+					page_width=viewport['width'],
+					page_height=viewport['height'],
+					scroll_x=0,
+					scroll_y=0,
+					pixels_above=0,
+					pixels_below=0,
+					pixels_left=0,
+					pixels_right=0,
+				)
 			except Exception as e:
 				self.logger.debug(
 					f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: Failed to get page info from CDP: {e}, using fallback'
@@ -507,18 +537,32 @@ class DOMWatchdog(BaseWatchdog):
 
 		from browser_use.browser.views import PageInfo
 
-		# Get CDP session for the current target
+		# Get CDP session for the current target with timeout protection
 		if not self.browser_session.agent_focus:
 			raise RuntimeError('No active CDP session - browser may not be connected yet')
 
-		cdp_session = await self.browser_session.get_or_create_cdp_session(
-			target_id=self.browser_session.agent_focus.target_id, focus=True
+		pool_size = len(self.browser_session._cdp_session_pool)
+		current_target = self.browser_session.agent_focus.target_id
+		pool_has_target = current_target in self.browser_session._cdp_session_pool
+		self.logger.debug(
+			f'🔍 DOMWatchdog._get_page_info: Creating CDP session for target {current_target} (pool size: {pool_size}, has target: {pool_has_target})'
+		)
+
+		cdp_session = await asyncio.wait_for(
+			self.browser_session.get_or_create_cdp_session(target_id=self.browser_session.agent_focus.target_id, focus=True),
+			timeout=10.0,  # 10 second timeout for CDP session creation
+		)
+
+		self.logger.debug(
+			f'🔍 DOMWatchdog._get_page_info: ✅ Got CDP session {cdp_session.session_id} for target {current_target}'
 		)
 
 		# Get layout metrics which includes all the information we need
+		self.logger.debug('🔍 DOMWatchdog._get_page_info: Requesting Page.getLayoutMetrics from CDP...')
 		metrics = await asyncio.wait_for(
 			cdp_session.cdp_client.send.Page.getLayoutMetrics(session_id=cdp_session.session_id), timeout=10.0
 		)
+		self.logger.debug('🔍 DOMWatchdog._get_page_info: ✅ Got layout metrics from CDP')
 
 		# Extract different viewport types
 		layout_viewport = metrics.get('layoutViewport', {})
