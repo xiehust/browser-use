@@ -108,6 +108,8 @@ class AboutBlankWatchdog(BaseWatchdog):
 	async def _show_dvd_screensaver_on_about_blank_tabs(self) -> None:
 		"""Show DVD screensaver on all about:blank pages only."""
 		try:
+			return None  # try timeouts without this
+
 			# Get just the page targets without expensive title fetching
 			page_targets = await self.browser_session._cdp_get_all_pages()
 			browser_session_label = str(self.browser_session.id)[-4:]

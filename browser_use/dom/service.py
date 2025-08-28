@@ -279,52 +279,53 @@ class DomService:
 		cdp_session = await self.browser_session.get_or_create_cdp_session(target_id=target_id, focus=False)
 
 		# Wait for the page to be ready first
-		try:
-			ready_state = await cdp_session.cdp_client.send.Runtime.evaluate(
-				params={'expression': 'document.readyState'}, session_id=cdp_session.session_id
-			)
-		except Exception as e:
-			pass  # Page might not be ready yet
+		# try:
+		# 	ready_state = await cdp_session.cdp_client.send.Runtime.evaluate(
+		# 		params={'expression': 'document.readyState'}, session_id=cdp_session.session_id
+		# 	)
+		# except Exception as e:
+		# 	pass  # Page might not be ready yet
 		# DEBUG: Log before capturing snapshot
 		self.logger.debug(f'🔍 DEBUG: Capturing DOM snapshot for target {target_id}')
 
 		# Get actual scroll positions for all iframes before capturing snapshot
 		iframe_scroll_positions = {}
-		try:
-			scroll_result = await cdp_session.cdp_client.send.Runtime.evaluate(
-				params={
-					'expression': """
-					(() => {
-						const scrollData = {};
-						const iframes = document.querySelectorAll('iframe');
-						iframes.forEach((iframe, index) => {
-							try {
-								const doc = iframe.contentDocument || iframe.contentWindow.document;
-								if (doc) {
-									scrollData[index] = {
-										scrollTop: doc.documentElement.scrollTop || doc.body.scrollTop || 0,
-										scrollLeft: doc.documentElement.scrollLeft || doc.body.scrollLeft || 0
-									};
-								}
-							} catch (e) {
-								// Cross-origin iframe, can't access
-							}
-						});
-						return scrollData;
-					})()
-					""",
-					'returnByValue': True,
-				},
-				session_id=cdp_session.session_id,
-			)
-			if scroll_result and 'result' in scroll_result and 'value' in scroll_result['result']:
-				iframe_scroll_positions = scroll_result['result']['value']
-				for idx, scroll_data in iframe_scroll_positions.items():
-					self.logger.debug(
-						f'🔍 DEBUG: Iframe {idx} actual scroll position - scrollTop={scroll_data.get("scrollTop", 0)}, scrollLeft={scroll_data.get("scrollLeft", 0)}'
-					)
-		except Exception as e:
-			self.logger.debug(f'Failed to get iframe scroll positions: {e}')
+		scroll_result = None
+		# try:
+		# 	scroll_result = await cdp_session.cdp_client.send.Runtime.evaluate(
+		# 		params={
+		# 			'expression': """
+		# 			(() => {
+		# 				const scrollData = {};
+		# 				const iframes = document.querySelectorAll('iframe');
+		# 				iframes.forEach((iframe, index) => {
+		# 					try {
+		# 						const doc = iframe.contentDocument || iframe.contentWindow.document;
+		# 						if (doc) {
+		# 							scrollData[index] = {
+		# 								scrollTop: doc.documentElement.scrollTop || doc.body.scrollTop || 0,
+		# 								scrollLeft: doc.documentElement.scrollLeft || doc.body.scrollLeft || 0
+		# 							};
+		# 						}
+		# 					} catch (e) {
+		# 						// Cross-origin iframe, can't access
+		# 					}
+		# 				});
+		# 				return scrollData;
+		# 			})()
+		# 			""",
+		# 			'returnByValue': True,
+		# 		},
+		# 		session_id=cdp_session.session_id,
+		# 	)
+		# 	if scroll_result and 'result' in scroll_result and 'value' in scroll_result['result']:
+		# 		iframe_scroll_positions = scroll_result['result']['value']
+		# 		for idx, scroll_data in iframe_scroll_positions.items():
+		# 			self.logger.debug(
+		# 				f'🔍 DEBUG: Iframe {idx} actual scroll position - scrollTop={scroll_data.get("scrollTop", 0)}, scrollLeft={scroll_data.get("scrollLeft", 0)}'
+		# 			)
+		# except Exception as e:
+		# 	self.logger.debug(f'Failed to get iframe scroll positions: {e}')
 
 		# Define CDP request factories to avoid duplication
 		def create_snapshot_request():
