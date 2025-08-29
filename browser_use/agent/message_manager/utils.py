@@ -37,7 +37,12 @@ def extract_json_from_model_output(content: str | BaseMessage) -> dict:
 			# for langchain_core.messages.BaseMessage
 			msg_content = content.content
 			if isinstance(msg_content, list):
-				content_str = str(msg_content[0]) if msg_content else ''
+				## add by river	
+				content_str = ''
+				for content_block in msg_content:
+					if isinstance(content_block, dict) and 'type' in content_block and content_block['type'] == 'text':
+						content_str = content_block['text']
+						break
 			else:
 				content_str = msg_content
 		else:

@@ -562,7 +562,10 @@ class Agent(Generic[Context]):
 		elif hasattr(self.llm, 'model'):
 			model = self.llm.model  # type: ignore
 			self.model_name = model if model is not None else 'Unknown'
-
+		elif hasattr(self.llm, 'model_id'):
+			model = self.llm.model_id  # type: ignore
+			self.model_name = model if model is not None else 'Unknown'
+   
 		if self.settings.planner_llm:
 			if hasattr(self.settings.planner_llm, 'model_name'):
 				self.planner_model_name = self.settings.planner_llm.model_name  # type: ignore
@@ -780,6 +783,13 @@ class Agent(Generic[Context]):
 		elif self.chat_model_library in ['ChatAnthropic', 'AnthropicChat']:
 			if any(m in model_lower for m in ['claude-3', 'claude-2']):
 				return 'tools'
+
+		elif self.chat_model_library in ['ChatBedrockConverse']:
+			if any(m in model_lower for m in ['claude-3', 'claude-4']):
+				return 'tools'
+			elif any(m in model_lower for m in ['openai']):
+				return 'function_calling'
+
 
 		# Models known to not support tools
 		elif is_model_without_tool_support(self.model_name):

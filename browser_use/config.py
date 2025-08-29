@@ -141,7 +141,7 @@ class Config:
 
 	@property
 	def SKIP_LLM_API_KEY_VERIFICATION(self) -> bool:
-		return os.getenv('SKIP_LLM_API_KEY_VERIFICATION', 'false').lower()[:1] in 'ty1'
+		return os.getenv('SKIP_LLM_API_KEY_VERIFICATION', 'true').lower()[:1] in 'ty1'
 
 	# Runtime hints
 	@property
