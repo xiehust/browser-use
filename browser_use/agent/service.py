@@ -78,7 +78,10 @@ from browser_use.utils import (
 )
 
 logger = logging.getLogger(__name__)
-
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s',
+)
 
 def log_response(response: AgentOutput, registry=None, logger=None) -> None:
 	"""Utility function to log the model's response."""
@@ -479,6 +482,7 @@ class Agent(Generic[Context]):
 		return self.browser_session.browser_profile
 
 	def _set_file_system(self, file_system_path: str | None = None) -> None:
+		# bypass
 		# Initialize file system
 		if file_system_path:
 			self.file_system = FileSystem(file_system_path)
@@ -565,12 +569,14 @@ class Agent(Generic[Context]):
 		elif hasattr(self.llm, 'model_id'):
 			model = self.llm.model_id  # type: ignore
 			self.model_name = model if model is not None else 'Unknown'
-   
+
 		if self.settings.planner_llm:
 			if hasattr(self.settings.planner_llm, 'model_name'):
 				self.planner_model_name = self.settings.planner_llm.model_name  # type: ignore
 			elif hasattr(self.settings.planner_llm, 'model'):
 				self.planner_model_name = self.settings.planner_llm.model  # type: ignore
+			elif hasattr(self.settings.planner_llm, 'model_id'):
+				self.planner_model_name = self.settings.planner_llm.model_id 
 			else:
 				self.planner_model_name = 'Unknown'
 		else:
@@ -603,9 +609,17 @@ class Agent(Generic[Context]):
 				"""
 				Cleans and validates a raw JSON response string against an expected answer.
 				"""
-				content = getattr(response, 'content', '').strip()
-				# self.logger.debug(f'Raw response content: {content}')
-
+				content = getattr(response, 'content', '')
+				self.logger.debug(f'Raw response content: {content}')
+				## add by river	
+				content_str = ''
+				if isinstance(content, list):
+					for content_block in content:
+						if isinstance(content_block, dict) and 'type' in content_block and content_block['type'] == 'text':
+							content_str = content_block['text']
+							break
+					content = content_str
+					
 				# Remove surrounding markdown code blocks if present
 				if content.startswith('```json') and content.endswith('```'):
 					content = content[7:-3].strip()
@@ -633,20 +647,24 @@ class Agent(Generic[Context]):
 					Respond with a json object like: {{"answer": "city_name_in_lowercase"}}"""
 
 				response = self.llm.invoke([test_prompt])
+				print(f"# For raw mode, repsonse:{response}")	
+
 				# Basic validation of response
 				if not response or not hasattr(response, 'content'):
+					self.logger.info(f'no content in response')
 					return False
-
+ 
 				if not is_valid_raw_response(response, EXPECTED_ANSWER):
+					self.logger.error(f'is not valid raw response')
 					return False
 				return True
 			else:
 				# For other methods, try to use structured output
 				structured_llm = self.llm.with_structured_output(CapitalResponse, include_raw=True, method=method)
 				response = structured_llm.invoke([HumanMessage(content=CAPITAL_QUESTION)])
-
+				print(f"# For structured output mode, repsonse:{response}")	
 				if not response:
-					self.logger.debug(f'🛠️ Tool calling method {method} failed: empty response')
+					self.logger.error(f'🛠️ Tool calling method {method} failed: empty response')
 					return False
 
 				def extract_parsed(response: Any) -> CapitalResponse | None:
@@ -718,6 +736,7 @@ class Agent(Generic[Context]):
 				if 'error' in result:
 					raise result['error']
 				results = result['value']
+				print(results)
 
 			except RuntimeError as e:
 				if 'no running event loop' in str(e):
@@ -756,7 +775,7 @@ class Agent(Generic[Context]):
 		"""Get known tool calling method for common model/library combinations."""
 		# Fast path for known combinations
 		model_lower = self.model_name.lower()
-
+		print(f"chat_model_library:{self.chat_model_library}/{model_lower}")
 		# OpenAI models
 		if self.chat_model_library == 'ChatOpenAI':
 			if any(m in model_lower for m in ['gpt-4', 'gpt-3.5']):
@@ -785,11 +804,8 @@ class Agent(Generic[Context]):
 				return 'tools'
 
 		elif self.chat_model_library in ['ChatBedrockConverse']:
-			if any(m in model_lower for m in ['claude-3', 'claude-4']):
+			if any(m in model_lower for m in ['claude-3', 'claude-4','openai']):
 				return 'tools'
-			elif any(m in model_lower for m in ['openai']):
-				return 'function_calling'
-
 
 		# Models known to not support tools
 		elif is_model_without_tool_support(self.model_name):
@@ -970,7 +986,7 @@ class Agent(Generic[Context]):
 
 			input_messages = self._message_manager.get_messages()
 			tokens = self._message_manager.state.history.current_tokens
-
+			# logger.info(f'input_messages: {input_messages}')
 			try:
 				model_output = await self.get_next_action(input_messages)
 				if (
@@ -1104,6 +1120,7 @@ class Agent(Generic[Context]):
 		error_msg = AgentError.format_error(error, include_trace=include_trace)
 		prefix = f'❌ Result failed {self.state.consecutive_failures + 1}/{self.settings.max_failures} times:\n '
 		self.state.consecutive_failures += 1
+		# logger.info(f"=====error_msg:\n{error_msg}")
 
 		if 'Browser closed' in error_msg:
 			self.logger.error('❌  Browser is closed or disconnected, unable to proceed')
@@ -1226,16 +1243,20 @@ class Agent(Generic[Context]):
 		else:
 			try:
 				self._log_llm_call_info(input_messages, self.tool_calling_method)
+				# [print(f"================\n{message}\n") for message in input_messages]
 				structured_llm = self.llm.with_structured_output(
 					self.AgentOutput, include_raw=True, method=self.tool_calling_method
 				)
 				response: dict[str, Any] = await structured_llm.ainvoke(input_messages)  # type: ignore
 			except Exception as e:
+				# print(f"========handle_llm_error=======\n")
 				response, raw = handle_llm_error(e)
 
 		# Handle tool call responses
 		if response.get('parsing_error') and 'raw' in response:
 			raw_msg = response['raw']
+			# print(f"====self.AgentOutput:{self.AgentOutput.__name__}")
+			# print(f"========raw_msg=======\n{raw_msg}")
 			parsing_error = response.get('parsing_error')
 			if hasattr(raw_msg, 'tool_calls') and raw_msg.tool_calls:
 				# Convert tool calls to AgentOutput format
@@ -1364,7 +1385,7 @@ class Agent(Generic[Context]):
 		# Count available tools/actions from the current ActionModel
 		# This gives us the actual number of tools exposed to the LLM for this specific call
 		tool_count = len(self.ActionModel.model_fields) if hasattr(self, 'ActionModel') else 0
-
+		# print(f"tools {self.ActionModel.model_fields}")
 		# Format the log message parts
 		image_status = ', 📷 img' if has_images else ''
 		if method == 'raw':

@@ -258,7 +258,7 @@ The file system actions do not change the browser state, so I can also click on 
 						'action': [
 							{
 								'write_file': {
-									'path': 'todo.md',
+									'file_name': 'todo.md',
 									'content': """
 # Interesting Github Repositories in Explore Section
 
@@ -276,7 +276,7 @@ The file system actions do not change the browser state, so I can also click on 
 							},
 							{
 								'write_file': {
-									'path': 'github.md',
+									'file_name': 'github.md',
 									'content': """
 # Github Repositories:
 """,
