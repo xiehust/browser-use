@@ -63,6 +63,7 @@ class CDPSession(BaseModel):
 	session_id: SessionID
 	title: str = 'Unknown title'
 	url: str = 'about:blank'
+	headers: dict[str, str] = {}
 
 	# Track if this session owns its CDP client (for cleanup)
 	owns_cdp_client: bool = False
@@ -75,6 +76,7 @@ class CDPSession(BaseModel):
 		new_socket: bool = False,
 		cdp_url: str | None = None,
 		domains: list[str] | None = None,
+  		headers: dict[str, str] = {}
 	):
 		"""Create a CDP session for a target.
 
@@ -94,7 +96,7 @@ class CDPSession(BaseModel):
 			logger = logging.getLogger(f'browser_use.CDPSession.{target_id[-4:]}')
 			logger.debug(f'🔌 Creating new dedicated WebSocket connection for target 🅣 {target_id}')
 
-			target_cdp_client = CDPClient(cdp_url)
+			target_cdp_client = CDPClient(cdp_url,additional_headers=headers)
 			await target_cdp_client.start()
 
 			cdp_session = cls(
@@ -889,6 +891,7 @@ class BrowserSession(BaseModel):
 			target_id,
 			new_socket=should_use_new_socket,
 			cdp_url=self.cdp_url if should_use_new_socket else None,
+   			headers=self.browser_profile.headers
 		)
 		self._cdp_session_pool[target_id] = session
 		# log length of _cdp_session_pool
@@ -1129,7 +1132,7 @@ class BrowserSession(BaseModel):
 			# Convert HTTP URL to WebSocket URL if needed
 
 			# Create and store the CDP client for direct CDP communication
-			self._cdp_client_root = CDPClient(self.cdp_url)
+			self._cdp_client_root = CDPClient(self.cdp_url,additional_headers=self.browser_profile.headers)
 			assert self._cdp_client_root is not None
 			await self._cdp_client_root.start()
 			await self._cdp_client_root.send.Target.setAutoAttach(
